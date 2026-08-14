@@ -1,5 +1,6 @@
 import * as Contacts from 'expo-contacts';
 import * as ImagePicker from 'expo-image-picker';
+import { Camera as ExpoCamera } from 'expo-camera';
 
 export interface AppPermissionState {
   contacts: boolean;
@@ -13,7 +14,7 @@ export interface AppPermissionState {
 export const requestAllAppPermissions = async (): Promise<AppPermissionState> => {
   try {
     const contactsRes = await Contacts.requestPermissionsAsync();
-    const cameraRes = await ImagePicker.requestCameraPermissionsAsync();
+    const cameraRes = await ExpoCamera.requestCameraPermissionsAsync();
     const mediaRes = await ImagePicker.requestMediaLibraryPermissionsAsync();
 
     return {
@@ -36,10 +37,10 @@ export const requestAllAppPermissions = async (): Promise<AppPermissionState> =>
  */
 export const ensureCameraPermission = async (): Promise<boolean> => {
   try {
-    const statusRes = await ImagePicker.getCameraPermissionsAsync();
+    const statusRes = await ExpoCamera.getCameraPermissionsAsync();
     if (statusRes.granted) return true;
 
-    const reqRes = await ImagePicker.requestCameraPermissionsAsync();
+    const reqRes = await ExpoCamera.requestCameraPermissionsAsync();
     return reqRes.granted;
   } catch (error) {
     console.warn('Error checking camera permission:', error);

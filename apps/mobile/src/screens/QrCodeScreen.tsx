@@ -18,6 +18,7 @@ import { useChat } from '../context/ChatContext';
 import { useTheme } from '../context/ThemeContext';
 import Svg, { Rect, G } from 'react-native-svg';
 import * as ImagePicker from 'expo-image-picker';
+import { CameraView } from 'expo-camera';
 import { ensureCameraPermission, ensureMediaLibraryPermission } from '../services/permissionsService';
 import {
   ArrowLeft,
@@ -107,6 +108,27 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
     } catch (e) {
       console.warn('Share error:', e);
     }
+  };
+
+  const handleBarCodeScanned = ({ type, data }: { type: string; data: string }) => {
+    if (scannedResult) return;
+    let parsedName = 'Scanned User';
+    let parsedUsername = '@scanned_user';
+    if (data && data.includes('@')) {
+      parsedUsername = data.startsWith('@') ? data.trim() : `@${data.trim()}`;
+      parsedName = data.replace('@', '').replace(/_/g, ' ').trim();
+    } else if (data) {
+      parsedName = data.trim();
+      parsedUsername = `@${data.toLowerCase().replace(/\s+/g, '_').trim()}`;
+    }
+
+    handleSimulateScan({
+      name: parsedName,
+      username: parsedUsername,
+      status: 'Connected via Live Camera QR Code 🚀',
+      avatar: parsedName[0] ? parsedName[0].toUpperCase() : 'C',
+      phone: '+1 (555) 902-1849',
+    });
   };
 
   const handleSimulateScan = (scannedUser: ScannedUser) => {
@@ -391,12 +413,12 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
             /* 🔍 Active Viewfinder Camera Frame */
             <>
               <Text style={[styles.scannerInstructionText, { color: colors.textSecondary }]}>
-                Tap camera frame or align chatting system QR code to scan automatically
+                Align chatting system QR code inside frame to scan automatically
               </Text>
 
               <TouchableOpacity
                 style={[styles.viewfinderFrame, { borderColor: colors.primaryIndigo }]}
-                activeOpacity={0.85}
+                activeOpacity={0.9}
                 onPress={() =>
                   handleSimulateScan({
                     name: 'Alex Morgan',
@@ -407,14 +429,18 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
                   })
                 }
               >
+                <CameraView
+                  style={StyleSheet.absoluteFillObject}
+                  facing="back"
+                  enableTorch={flashOn}
+                  onBarcodeScanned={scannedResult ? undefined : handleBarCodeScanned}
+                />
                 <View style={[styles.cornerTL, { borderColor: colors.primaryIndigo }]} />
                 <View style={[styles.cornerTR, { borderColor: colors.primaryIndigo }]} />
                 <View style={[styles.cornerBL, { borderColor: colors.primaryIndigo }]} />
                 <View style={[styles.cornerBR, { borderColor: colors.primaryIndigo }]} />
 
                 <View style={[styles.laserLine, { backgroundColor: colors.primaryIndigo }]} />
-                <Scan size={44} color={colors.primaryIndigo} style={{ opacity: 0.4 }} />
-                <Text style={[styles.tapToScanHint, { color: colors.primaryIndigo }]}>Tap Frame to Scan</Text>
               </TouchableOpacity>
 
               {/* Control Buttons Bar */}
