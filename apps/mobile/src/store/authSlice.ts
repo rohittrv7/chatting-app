@@ -1,5 +1,5 @@
 import { createSlice, PayloadAction } from '@reduxjs/toolkit';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { safeStorage } from '../services/storageHelper';
 import { UserProfile } from '../types';
 
 export interface AuthState {
@@ -50,12 +50,11 @@ const authSlice = createSlice({
       state.isAuthenticated = true;
       state.isLoading = false;
 
-      // Persist to AsyncStorage asynchronously
-      AsyncStorage.setItem(AUTH_STORAGE_KEYS.TOKEN, action.payload.token);
-      AsyncStorage.setItem(AUTH_STORAGE_KEYS.PHONE_NUMBER, action.payload.phoneNumber);
-      AsyncStorage.setItem(AUTH_STORAGE_KEYS.IS_NEW_USER, JSON.stringify(action.payload.isNewUser));
+      safeStorage.setItem(AUTH_STORAGE_KEYS.TOKEN, action.payload.token);
+      safeStorage.setItem(AUTH_STORAGE_KEYS.PHONE_NUMBER, action.payload.phoneNumber);
+      safeStorage.setItem(AUTH_STORAGE_KEYS.IS_NEW_USER, JSON.stringify(action.payload.isNewUser));
       if (action.payload.userProfile) {
-        AsyncStorage.setItem(AUTH_STORAGE_KEYS.USER_PROFILE, JSON.stringify(action.payload.userProfile));
+        safeStorage.setItem(AUTH_STORAGE_KEYS.USER_PROFILE, JSON.stringify(action.payload.userProfile));
       }
     },
     profileUpdatedSuccess: (state, action: PayloadAction<UserProfile>) => {
@@ -63,8 +62,8 @@ const authSlice = createSlice({
       state.isNewUser = false;
       state.isAuthenticated = true;
 
-      AsyncStorage.setItem(AUTH_STORAGE_KEYS.IS_NEW_USER, JSON.stringify(false));
-      AsyncStorage.setItem(AUTH_STORAGE_KEYS.USER_PROFILE, JSON.stringify(action.payload));
+      safeStorage.setItem(AUTH_STORAGE_KEYS.IS_NEW_USER, JSON.stringify(false));
+      safeStorage.setItem(AUTH_STORAGE_KEYS.USER_PROFILE, JSON.stringify(action.payload));
     },
     restoreSession: (
       state,
@@ -90,10 +89,10 @@ const authSlice = createSlice({
       state.isAuthenticated = false;
       state.isLoading = false;
 
-      AsyncStorage.removeItem(AUTH_STORAGE_KEYS.TOKEN);
-      AsyncStorage.removeItem(AUTH_STORAGE_KEYS.USER_PROFILE);
-      AsyncStorage.removeItem(AUTH_STORAGE_KEYS.PHONE_NUMBER);
-      AsyncStorage.removeItem(AUTH_STORAGE_KEYS.IS_NEW_USER);
+      safeStorage.removeItem(AUTH_STORAGE_KEYS.TOKEN);
+      safeStorage.removeItem(AUTH_STORAGE_KEYS.USER_PROFILE);
+      safeStorage.removeItem(AUTH_STORAGE_KEYS.PHONE_NUMBER);
+      safeStorage.removeItem(AUTH_STORAGE_KEYS.IS_NEW_USER);
     },
   },
 });

@@ -1,4 +1,4 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { safeStorage } from './storageHelper';
 import { AUTH_STORAGE_KEYS } from '../store/authSlice';
 import { UserProfile } from '../types';
 
@@ -82,7 +82,7 @@ export const apiService = {
     }
 
     // Check if we have stored profile for this phone number
-    const storedUserJson = await AsyncStorage.getItem(AUTH_STORAGE_KEYS.USER_PROFILE);
+    const storedUserJson = await safeStorage.getItem(AUTH_STORAGE_KEYS.USER_PROFILE);
     let storedUser: UserProfile | null = null;
     if (storedUserJson) {
       try {
@@ -134,10 +134,10 @@ export const apiService = {
     isNewUser: boolean;
   }> {
     try {
-      const token = await AsyncStorage.getItem(AUTH_STORAGE_KEYS.TOKEN);
-      const phoneNumber = await AsyncStorage.getItem(AUTH_STORAGE_KEYS.PHONE_NUMBER);
-      const isNewUserJson = await AsyncStorage.getItem(AUTH_STORAGE_KEYS.IS_NEW_USER);
-      const userProfileJson = await AsyncStorage.getItem(AUTH_STORAGE_KEYS.USER_PROFILE);
+      const token = await safeStorage.getItem(AUTH_STORAGE_KEYS.TOKEN);
+      const phoneNumber = await safeStorage.getItem(AUTH_STORAGE_KEYS.PHONE_NUMBER);
+      const isNewUserJson = await safeStorage.getItem(AUTH_STORAGE_KEYS.IS_NEW_USER);
+      const userProfileJson = await safeStorage.getItem(AUTH_STORAGE_KEYS.USER_PROFILE);
 
       let userProfile: UserProfile | null = null;
       if (userProfileJson) {
