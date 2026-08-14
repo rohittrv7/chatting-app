@@ -12,17 +12,23 @@ import {
   Platform,
   Animated,
 } from 'react-native';
+import { useDispatch, useSelector } from 'react-redux';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types';
 import { useChat } from '../context/ChatContext';
 import { useTheme } from '../context/ThemeContext';
 import { useToast } from '../context/ToastContext';
+import { profileUpdatedSuccess } from '../store/authSlice';
+import { apiService } from '../services/apiService';
+import { RootState } from '../store';
 import * as ImagePicker from 'expo-image-picker';
 import { Camera, User, AtSign, Info, Sparkles, ArrowRight } from 'lucide-react-native';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'NewUserProfileSetup'>;
 
 export const NewUserProfileSetupScreen: React.FC<Props> = ({ route, navigation }) => {
+  const dispatch = useDispatch();
+  const token = useSelector((state: RootState) => state.auth.token);
   const { phoneNumber } = route.params || { phoneNumber: '+91 98765 43210' };
   const { updateUserProfile } = useChat();
   const { themeMode, colors } = useTheme();
@@ -105,16 +111,20 @@ export const NewUserProfileSetupScreen: React.FC<Props> = ({ route, navigation }
         duration: 150,
         useNativeDriver: true,
       }),
-    ]).start(() => {
+    ]).start(async () => {
       const formattedUsername = username.startsWith('@') ? username.trim() : `@${username.trim()}`;
 
-      updateUserProfile({
+      const newProfile = {
         name: name.trim(),
         username: formattedUsername,
         status: status.trim() || 'Available',
         phone: phoneNumber,
         avatarUrl: avatarUri || undefined,
-      });
+      };
+
+      updateUserProfile(newProfile);
+      dispatch(profileUpdatedSuccess(newProfile));
+      await apiService.updateProfile(token || '', newProfile);
 
       showToast('Profile Created Successfully!', 'success', 2500);
       navigation.replace('MainTabs');

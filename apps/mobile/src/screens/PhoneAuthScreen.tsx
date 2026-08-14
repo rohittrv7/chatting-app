@@ -15,6 +15,7 @@ import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types';
 import { useTheme } from '../context/ThemeContext';
 import { useToast } from '../context/ToastContext';
+import { apiService } from '../services/apiService';
 import { Phone, ArrowRight, ShieldCheck, MessageSquare, Sparkles } from 'lucide-react-native';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'PhoneAuth'>;
@@ -50,17 +51,15 @@ export const PhoneAuthScreen: React.FC<Props> = ({ navigation }) => {
     ]).start();
   }, []);
 
-  const handleSendOtp = () => {
+  const handleSendOtp = async () => {
     const rawNumber = phoneNumber.trim();
     if (!rawNumber || rawNumber.length < 8) {
       showToast('Please enter a valid phone number with country code.', 'error');
       return;
     }
 
-    // Generate random 6 digit OTP for realistic simulation
-    const randomOtp = Math.floor(100000 + Math.random() * 900000).toString();
-
-    showToast(`Verification OTP Sent: ${randomOtp}`, 'info', 5000);
+    const res = await apiService.requestOtp(rawNumber);
+    showToast(`Verification OTP Sent: ${res.mockOtp}`, 'info', 5000);
 
     Animated.sequence([
       Animated.timing(btnScale, {
@@ -76,7 +75,7 @@ export const PhoneAuthScreen: React.FC<Props> = ({ navigation }) => {
     ]).start(() => {
       navigation.navigate('OtpVerification', {
         phoneNumber: rawNumber,
-        generatedOtp: randomOtp,
+        generatedOtp: res.mockOtp,
       });
     });
   };

@@ -170,9 +170,12 @@ export class AuthService {
 
     await this.authRepository.saveRefreshToken(device.id, tokenHash, expiresAt);
 
+    const isNewUser = !user.displayName;
+
     return {
       accessToken,
       refreshToken: rawRefreshToken,
+      isNewUser,
       user,
       device,
     };

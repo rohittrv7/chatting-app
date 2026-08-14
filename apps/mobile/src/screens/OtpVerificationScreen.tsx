@@ -13,9 +13,12 @@ import {
 } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types';
+import { useDispatch } from 'react-redux';
 import { useChat } from '../context/ChatContext';
 import { useTheme } from '../context/ThemeContext';
 import { useToast } from '../context/ToastContext';
+import { otpVerifiedSuccess } from '../store/authSlice';
+import { apiService } from '../services/apiService';
 import { ArrowLeft, CheckCircle, RefreshCw, KeyRound } from 'lucide-react-native';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'OtpVerification'>;
@@ -28,9 +31,10 @@ export const OtpVerificationScreen: React.FC<Props> = ({ route, navigation }) =>
 
   const [otpDigits, setOtpDigits] = useState<string[]>(['', '', '', '', '', '']);
   const [resendTimer, setResendTimer] = useState(30);
-  const { userProfile } = useChat();
+  const { userProfile, updateUserProfile } = useChat();
   const { themeMode, colors } = useTheme();
   const { showToast } = useToast();
+  const dispatch = useDispatch();
 
   const inputRefs = useRef<Array<TextInput | null>>([]);
 
@@ -109,7 +113,7 @@ export const OtpVerificationScreen: React.FC<Props> = ({ route, navigation }) =>
     }
   };
 
-  const proceedToNextScreen = (codeToVerify?: string) => {
+  const proceedToNextScreen = async (codeToVerify?: string) => {
     const currentCode = codeToVerify || otpDigits.join('');
     if (currentCode.length < 6) {
       showToast('Please enter complete 6-digit OTP code', 'warning');
@@ -127,16 +131,27 @@ export const OtpVerificationScreen: React.FC<Props> = ({ route, navigation }) =>
         duration: 150,
         useNativeDriver: true,
       }),
-    ]).start(() => {
+    ]).start(async () => {
+      const verifyRes = await apiService.verifyOtp(phoneNumber, currentCode);
+
+      dispatch(
+        otpVerifiedSuccess({
+          token: verifyRes.accessToken,
+          phoneNumber,
+          userProfile: verifyRes.user,
+          isNewUser: verifyRes.isNewUser,
+        })
+      );
+
       showToast('Phone Number Verified!', 'success', 2000);
 
-      const isExistingUser =
-        userProfile.name && userProfile.name.trim().length > 0 && userProfile.username;
-
-      if (isExistingUser) {
-        navigation.replace('MainTabs');
-      } else {
+      if (verifyRes.isNewUser) {
         navigation.replace('NewUserProfileSetup', { phoneNumber });
+      } else {
+        if (verifyRes.user) {
+          updateUserProfile(verifyRes.user);
+        }
+        navigation.replace('MainTabs');
       }
     });
   };

@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ConversationItem, ChatMessage, UserProfile } from '../types';
 import { socketService } from '../services/socket';
 
@@ -130,13 +131,27 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       updateLastMessage(convId, text);
     });
 
+    // Load stored user profile on boot
+    AsyncStorage.getItem('@whatsapp_connect_user_profile').then((data) => {
+      if (data) {
+        try {
+          const parsed = JSON.parse(data);
+          setUserProfile(parsed);
+        } catch (e) {}
+      }
+    });
+
     return () => {
       socketService.disconnect();
     };
   }, []);
 
   const updateUserProfile = (profile: Partial<UserProfile>) => {
-    setUserProfile((prev) => ({ ...prev, ...profile }));
+    setUserProfile((prev) => {
+      const updated = { ...prev, ...profile };
+      AsyncStorage.setItem('@whatsapp_connect_user_profile', JSON.stringify(updated));
+      return updated;
+    });
   };
 
   const addMessage = (conversationId: string, text: string, isMe: boolean = true, imagePath?: string) => {

@@ -42,10 +42,10 @@ export const ChatSettingsScreen: React.FC<Props> = ({ navigation }) => {
           </View>
           <View style={{ flex: 1, marginLeft: 12 }}>
             <Text style={[styles.cardTitle, { color: colors.textPrimary }]}>
-              Pure Deep Black Dark Mode 🌙
+              Dark Mode
             </Text>
             <Text style={[styles.cardDesc, { color: colors.textSecondary }]}>
-              Pitch black (#000000) backdrop, OLED battery saver
+              OLED battery saver
             </Text>
           </View>
           {themeMode === 'dark' && (
@@ -70,10 +70,10 @@ export const ChatSettingsScreen: React.FC<Props> = ({ navigation }) => {
           </View>
           <View style={{ flex: 1, marginLeft: 12 }}>
             <Text style={[styles.cardTitle, { color: colors.textPrimary }]}>
-              Light Mode ☀️
+              Light Mode
             </Text>
             <Text style={[styles.cardDesc, { color: colors.textSecondary }]}>
-              Soft lavender light background with high contrast
+              High contrast
             </Text>
           </View>
           {themeMode === 'light' && (

@@ -1,14 +1,37 @@
 import React from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, SafeAreaView, StatusBar, ScrollView } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, SafeAreaView, StatusBar, ScrollView, Alert } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
+import { useDispatch } from 'react-redux';
 import { RootStackParamList } from '../types';
 import { useTheme } from '../context/ThemeContext';
-import { ArrowLeft, User, ShieldCheck, KeyRound, Smartphone } from 'lucide-react-native';
+import { useToast } from '../context/ToastContext';
+import { logout } from '../store/authSlice';
+import { ArrowLeft, User, ShieldCheck, KeyRound, Smartphone, LogOut } from 'lucide-react-native';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'AccountSettings'>;
 
 export const AccountSettingsScreen: React.FC<Props> = ({ navigation }) => {
   const { themeMode, colors } = useTheme();
+  const { showToast } = useToast();
+  const dispatch = useDispatch();
+
+  const handleLogout = () => {
+    Alert.alert('Log Out', 'Are you sure you want to log out of your account?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Log Out',
+        style: 'destructive',
+        onPress: () => {
+          dispatch(logout());
+          showToast('Logged out successfully', 'info');
+          navigation.reset({
+            index: 0,
+            routes: [{ name: 'PhoneAuth' }],
+          });
+        },
+      },
+    ]);
+  };
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
@@ -48,6 +71,25 @@ export const AccountSettingsScreen: React.FC<Props> = ({ navigation }) => {
             </TouchableOpacity>
           );
         })}
+
+        {/* Log Out Option */}
+        <TouchableOpacity
+          style={[
+            styles.card,
+            { backgroundColor: colors.surface, borderColor: 'rgba(239, 68, 68, 0.3)', marginTop: 10 },
+          ]}
+          onPress={handleLogout}
+        >
+          <View style={[styles.iconBox, { backgroundColor: 'rgba(239, 68, 68, 0.12)' }]}>
+            <LogOut size={20} color="#EF4444" />
+          </View>
+          <View style={{ flex: 1, marginLeft: 12 }}>
+            <Text style={[styles.cardTitle, { color: '#EF4444' }]}>Log Out</Text>
+            <Text style={[styles.cardDesc, { color: colors.textSecondary }]}>
+              Clear session & return to login screen
+            </Text>
+          </View>
+        </TouchableOpacity>
       </ScrollView>
     </SafeAreaView>
   );
