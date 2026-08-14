@@ -629,9 +629,16 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
         horizontal
         pagingEnabled
         showsHorizontalScrollIndicator={false}
+        scrollEventThrottle={16}
+        onScroll={(e) => {
+          const pageIndex = Math.round(e.nativeEvent.contentOffset.x / screenWidth);
+          if (pageIndex !== selectedBottomNav && pageIndex >= 0 && pageIndex <= 3) {
+            setSelectedBottomNav(pageIndex);
+          }
+        }}
         onMomentumScrollEnd={(e) => {
           const pageIndex = Math.round(e.nativeEvent.contentOffset.x / screenWidth);
-          if (pageIndex !== selectedBottomNav) {
+          if (pageIndex !== selectedBottomNav && pageIndex >= 0 && pageIndex <= 3) {
             setSelectedBottomNav(pageIndex);
           }
         }}
