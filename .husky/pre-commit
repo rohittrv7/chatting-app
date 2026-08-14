@@ -1,0 +1,6 @@
+#!/usr/bin/env sh
+# .husky/pre-commit
+# Runs lint-staged on all staged files before each commit.
+# lint-staged config lives in the root package.json under the "lint-staged" key.
+
+npx lint-staged

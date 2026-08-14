@@ -1,0 +1,39 @@
+{
+  "name": "whatsapp-e2ee-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Production-grade, WhatsApp-style E2EE messaging and calling system",
+  "scripts": {
+    "build": "pnpm --filter './packages/*' --filter './apps/backend' build",
+    "lint": "pnpm --filter './packages/*' --filter './apps/backend' lint",
+    "lint:root": "eslint \"{packages,apps}/*/src/**/*.ts\" --max-warnings=0",
+    "format": "prettier --write \"**/*.{ts,js,json,md}\"",
+    "format:check": "prettier --check \"**/*.{ts,js,json,md}\"",
+    "test": "pnpm --filter './apps/backend' test",
+    "test:e2e": "pnpm --filter './apps/backend' test:e2e",
+    "typecheck": "pnpm --filter './packages/*' --filter './apps/backend' exec tsc --noEmit",
+    "prepare": "husky",
+    "docker:up": "docker-compose -f infra/docker/docker-compose.yml up -d",
+    "docker:down": "docker-compose -f infra/docker/docker-compose.yml down"
+  },
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^8.2.0",
+    "@typescript-eslint/parser": "^8.2.0",
+    "eslint": "^9.9.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-prettier": "^5.2.1",
+    "husky": "^9.1.5",
+    "lint-staged": "^15.2.9",
+    "prettier": "^3.3.3",
+    "typescript": "^5.5.4"
+  },
+  "lint-staged": {
+    "**/*.ts": [
+      "eslint --fix --max-warnings=0",
+      "prettier --write"
+    ],
+    "**/*.{js,json,md,yaml,yml}": [
+      "prettier --write"
+    ]
+  }
+}

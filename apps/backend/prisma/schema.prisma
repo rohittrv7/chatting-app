@@ -1,0 +1,302 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  MEMBER
+  ADMIN
+}
+
+enum ConversationType {
+  DIRECT
+  GROUP
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  VIDEO
+  AUDIO
+  DOCUMENT
+  LOCATION
+  SYSTEM
+}
+
+enum DeliveryStatus {
+  QUEUED
+  SENDING
+  SERVER_RECEIVED
+  DELIVERED
+  READ
+  FAILED
+}
+
+enum CallType {
+  AUDIO
+  VIDEO
+}
+
+enum CallStatus {
+  INITIATED
+  RINGING
+  ACCEPTED
+  DECLINED
+  ENDED
+  MISSED
+  BUSY
+}
+
+model User {
+  id            String               @id @default(uuid())
+  phoneNumber   String               @unique
+  displayName   String?
+  avatarUrl     String?
+  about         String?              @default("Hey there! I am using WhatsApp.")
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+
+  devices       Device[]
+  memberships   ConversationMember[]
+  messages      Message[]
+  identityKeys  IdentityKey[]
+  signedPreKeys SignedPreKey[]
+  oneTimePreKeys OneTimePreKey[]
+  reactions     Reaction[]
+  receipts      Receipt[]
+  callsInitiated Call[]              @relation("CallerUser")
+  callParticipations Participant[]
+  blockedBy     BlockedUser[]        @relation("BlockerUser")
+  blockedTarget BlockedUser[]        @relation("BlockedTargetUser")
+  settings      Setting?
+
+  @@index([phoneNumber])
+}
+
+model Device {
+  id             String         @id @default(uuid())
+  userId         String
+  deviceId       Int
+  deviceName     String
+  platform       String
+  fcmToken       String?
+  lastActiveAt   DateTime       @default(now())
+  createdAt      DateTime       @default(now())
+  
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshTokens  RefreshToken[]
+  sentMessages   Message[]      @relation("SenderDevice")
+  identityKeys   IdentityKey[]
+  signedPreKeys  SignedPreKey[]
+  oneTimePreKeys OneTimePreKey[]
+
+  @@unique([userId, deviceId])
+  @@index([userId])
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  deviceId  String
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  device    Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+}
+
+model IdentityKey {
+  id        String   @id @default(uuid())
+  userId    String
+  deviceId  String
+  publicKey String
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  device    Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, deviceId])
+}
+
+model SignedPreKey {
+  id         String   @id @default(uuid())
+  userId     String
+  deviceId   String
+  keyId      Int
+  publicKey  String
+  signature  String
+  createdAt  DateTime @default(now())
+
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  device     Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, deviceId, keyId])
+}
+
+model OneTimePreKey {
+  id        String   @id @default(uuid())
+  userId    String
+  deviceId  String
+  keyId     Int
+  publicKey String
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  device    Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, deviceId, keyId])
+  @@index([userId, deviceId, used])
+}
+
+model Conversation {
+  id           String               @id @default(uuid())
+  type         ConversationType
+  title        String?
+  avatarUrl    String?
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+  deletedAt    DateTime?
+
+  members      ConversationMember[]
+  messages     Message[]
+  calls        Call[]
+}
+
+model ConversationMember {
+  id             String       @id @default(uuid())
+  conversationId String
+  userId         String
+  role           Role         @default(MEMBER)
+  joinedAt       DateTime     @default(now())
+
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([conversationId, userId])
+  @@index([userId])
+}
+
+model Message {
+  id             String         @id @default(uuid())
+  conversationId String
+  senderId       String
+  senderDeviceId String
+  type           MessageType    @default(TEXT)
+  ciphertexts    Json
+  status         DeliveryStatus @default(SERVER_RECEIVED)
+  replyToId      String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  conversation   Conversation   @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender         User           @relation(fields: [senderId], references: [id], onDelete: Restrict)
+  senderDevice   Device         @relation("SenderDevice", fields: [senderDeviceId], references: [id], onDelete: Restrict)
+  replyTo        Message?       @relation("MessageReplies", fields: [replyToId], references: [id], onDelete: SetNull)
+  replies        Message[]      @relation("MessageReplies")
+  
+  attachments    Attachment[]
+  reactions      Reaction[]
+  receipts       Receipt[]
+
+  @@index([conversationId, createdAt])
+  @@index([senderId])
+}
+
+model Attachment {
+  id            String   @id @default(uuid())
+  messageId     String
+  fileUrl       String
+  fileName      String
+  fileSize      Int
+  mimeType      String
+  encryptionKey String
+  iv            String
+  createdAt     DateTime @default(now())
+
+  message       Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+}
+
+model Receipt {
+  id        String         @id @default(uuid())
+  messageId String
+  userId    String
+  deviceId  String
+  status    DeliveryStatus
+  updatedAt DateTime       @default(now())
+
+  message   Message        @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId, deviceId])
+  @@index([messageId])
+}
+
+model Reaction {
+  id        String   @id @default(uuid())
+  messageId String
+  userId    String
+  emoji     String
+  createdAt DateTime @default(now())
+
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId, emoji])
+}
+
+model Call {
+  id             String        @id @default(uuid())
+  conversationId String
+  callerId       String
+  type           CallType
+  status         CallStatus    @default(INITIATED)
+  startedAt      DateTime      @default(now())
+  endedAt        DateTime?
+
+  conversation   Conversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  caller         User          @relation("CallerUser", fields: [callerId], references: [id], onDelete: Restrict)
+  participants   Participant[]
+}
+
+model Participant {
+  id        String     @id @default(uuid())
+  callId    String
+  userId    String
+  status    CallStatus @default(INITIATED)
+  joinedAt  DateTime?
+  leftAt    DateTime?
+
+  call      Call       @relation(fields: [callId], references: [id], onDelete: Cascade)
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([callId, userId])
+}
+
+model BlockedUser {
+  id        String   @id @default(uuid())
+  blockerId String
+  blockedId String
+  createdAt DateTime @default(now())
+
+  blocker   User     @relation("BlockerUser", fields: [blockerId], references: [id], onDelete: Cascade)
+  blocked   User     @relation("BlockedTargetUser", fields: [blockedId], references: [id], onDelete: Cascade)
+
+  @@unique([blockerId, blockedId])
+}
+
+model Setting {
+  id                String   @id @default(uuid())
+  userId            String   @unique
+  readReceipts      Boolean  @default(true)
+  lastSeenVisibility String  @default("EVERYONE")
+  profilePhotoVis   String   @default("EVERYONE")
+  theme             String   @default("DARK")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}

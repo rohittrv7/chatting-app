@@ -1,0 +1,34 @@
+{
+  "expo": {
+    "name": "WhatsApp Connect",
+    "slug": "whatsapp-connect",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#6366F1"
+    },
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#6366F1"
+      },
+      "package": "com.anonymous.whatsappconnect"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "20c19279-cfd5-4dba-8594-3dabc6695bff"
+      }
+    },
+    "owner": "rohitrv_7"
+  }
+}

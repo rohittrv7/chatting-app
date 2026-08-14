@@ -1,0 +1,33 @@
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+RUN npm install -g pnpm
+
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml* tsconfig.json ./
+COPY packages/ ./packages/
+COPY apps/backend/ ./apps/backend/
+
+RUN pnpm install --frozen-lockfile || pnpm install
+RUN pnpm --filter ./packages/* build
+RUN pnpm --filter ./apps/backend build
+
+FROM node:20-alpine AS runner
+
+WORKDIR /app
+
+RUN npm install -g pnpm
+
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml* tsconfig.json ./
+COPY packages/ ./packages/
+COPY apps/backend/ ./apps/backend/
+
+RUN pnpm install --prod
+
+COPY --from=builder /app/packages/shared-config/dist ./packages/shared-config/dist
+COPY --from=builder /app/packages/shared-contracts/dist ./packages/shared-contracts/dist
+COPY --from=builder /app/apps/backend/dist ./apps/backend/dist
+
+EXPOSE 3000
+
+CMD ["node", "apps/backend/dist/main.js"]
