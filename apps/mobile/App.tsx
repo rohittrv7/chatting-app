@@ -4,6 +4,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { RootStackParamList } from './src/types';
 import { ThemeProvider } from './src/context/ThemeContext';
 import { ChatProvider } from './src/context/ChatContext';
+import { ToastProvider } from './src/context/ToastContext';
 
 import { PhoneAuthScreen } from './src/screens/PhoneAuthScreen';
 import { OtpVerificationScreen } from './src/screens/OtpVerificationScreen';
@@ -28,33 +29,35 @@ export default function App() {
   return (
     <ThemeProvider>
       <ChatProvider>
-        <NavigationContainer>
-          <Stack.Navigator
-            id="root-stack"
-            initialRouteName="PhoneAuth"
-            screenOptions={{
-              headerShown: false,
-              animation: 'slide_from_right',
-            }}
-          >
-            <Stack.Screen name="PhoneAuth" component={PhoneAuthScreen} />
-            <Stack.Screen name="OtpVerification" component={OtpVerificationScreen} />
-            <Stack.Screen name="NewUserProfileSetup" component={NewUserProfileSetupScreen} />
-            <Stack.Screen name="MainTabs" component={ConversationListScreen} />
-            <Stack.Screen name="Chat" component={ChatScreen} />
-            <Stack.Screen name="Call" component={CallScreen} />
-            <Stack.Screen name="Contacts" component={ContactsScreen} />
-            <Stack.Screen name="EditProfile" component={EditProfileScreen} />
-            <Stack.Screen name="AccountSettings" component={AccountSettingsScreen} />
-            <Stack.Screen name="PrivacySettings" component={PrivacySettingsScreen} />
-            <Stack.Screen name="ChatSettings" component={ChatSettingsScreen} />
-            <Stack.Screen name="CallSettings" component={CallSettingsScreen} />
-            <Stack.Screen name="NotificationSettings" component={NotificationSettingsScreen} />
-            <Stack.Screen name="StorageSettings" component={StorageSettingsScreen} />
-            <Stack.Screen name="HelpSettings" component={HelpSettingsScreen} />
-            <Stack.Screen name="QrCode" component={QrCodeScreen} />
-          </Stack.Navigator>
-        </NavigationContainer>
+        <ToastProvider>
+          <NavigationContainer>
+            <Stack.Navigator
+              id="root-stack"
+              initialRouteName="PhoneAuth"
+              screenOptions={{
+                headerShown: false,
+                animation: 'slide_from_right',
+              }}
+            >
+              <Stack.Screen name="PhoneAuth" component={PhoneAuthScreen} />
+              <Stack.Screen name="OtpVerification" component={OtpVerificationScreen} />
+              <Stack.Screen name="NewUserProfileSetup" component={NewUserProfileSetupScreen} />
+              <Stack.Screen name="MainTabs" component={ConversationListScreen} />
+              <Stack.Screen name="Chat" component={ChatScreen} />
+              <Stack.Screen name="Call" component={CallScreen} />
+              <Stack.Screen name="Contacts" component={ContactsScreen} />
+              <Stack.Screen name="EditProfile" component={EditProfileScreen} />
+              <Stack.Screen name="AccountSettings" component={AccountSettingsScreen} />
+              <Stack.Screen name="PrivacySettings" component={PrivacySettingsScreen} />
+              <Stack.Screen name="ChatSettings" component={ChatSettingsScreen} />
+              <Stack.Screen name="CallSettings" component={CallSettingsScreen} />
+              <Stack.Screen name="NotificationSettings" component={NotificationSettingsScreen} />
+              <Stack.Screen name="StorageSettings" component={StorageSettingsScreen} />
+              <Stack.Screen name="HelpSettings" component={HelpSettingsScreen} />
+              <Stack.Screen name="QrCode" component={QrCodeScreen} />
+            </Stack.Navigator>
+          </NavigationContainer>
+        </ToastProvider>
       </ChatProvider>
     </ThemeProvider>
   );

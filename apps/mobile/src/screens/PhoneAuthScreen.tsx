@@ -9,12 +9,12 @@ import {
   StatusBar,
   ScrollView,
   Platform,
-  Alert,
   Animated,
 } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types';
 import { useTheme } from '../context/ThemeContext';
+import { useToast } from '../context/ToastContext';
 import { Phone, ArrowRight, ShieldCheck, MessageSquare, Sparkles } from 'lucide-react-native';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'PhoneAuth'>;
@@ -22,8 +22,8 @@ type Props = NativeStackScreenProps<RootStackParamList, 'PhoneAuth'>;
 export const PhoneAuthScreen: React.FC<Props> = ({ navigation }) => {
   const [phoneNumber, setPhoneNumber] = useState('+91 98765 43210');
   const { themeMode, colors } = useTheme();
+  const { showToast } = useToast();
 
-  // Pure React Native Animated values for buttery smooth 60fps transitions
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(30)).current;
   const scaleAnim = useRef(new Animated.Value(0.8)).current;
@@ -51,10 +51,16 @@ export const PhoneAuthScreen: React.FC<Props> = ({ navigation }) => {
   }, []);
 
   const handleSendOtp = () => {
-    if (!phoneNumber.trim() || phoneNumber.trim().length < 8) {
-      Alert.alert('Invalid Number', 'Please enter a valid phone number with country code.');
+    const rawNumber = phoneNumber.trim();
+    if (!rawNumber || rawNumber.length < 8) {
+      showToast('Please enter a valid phone number with country code.', 'error');
       return;
     }
+
+    // Generate random 6 digit OTP for realistic simulation
+    const randomOtp = Math.floor(100000 + Math.random() * 900000).toString();
+
+    showToast(`Verification OTP Sent: ${randomOtp}`, 'info', 5000);
 
     Animated.sequence([
       Animated.timing(btnScale, {
@@ -68,7 +74,10 @@ export const PhoneAuthScreen: React.FC<Props> = ({ navigation }) => {
         useNativeDriver: true,
       }),
     ]).start(() => {
-      navigation.navigate('OtpVerification', { phoneNumber: phoneNumber.trim() });
+      navigation.navigate('OtpVerification', {
+        phoneNumber: rawNumber,
+        generatedOtp: randomOtp,
+      });
     });
   };
 
@@ -99,10 +108,10 @@ export const PhoneAuthScreen: React.FC<Props> = ({ navigation }) => {
           </View>
         </Animated.View>
 
-        {/* Animated Title & Subtitle */}
+        {/* Animated Title & Subtitle without emojis */}
         <Animated.View style={[styles.textSection, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
           <Text style={[styles.title, { color: colors.textPrimary }]}>
-            Connect & Chat{'\n'}With Loved Ones ✨
+            Connect & Chat{'\n'}With Loved Ones
           </Text>
           <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
             Enter your phone number to receive a 6-digit OTP verification code.

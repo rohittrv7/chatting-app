@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -11,6 +11,7 @@ import {
   ScrollView,
   ActivityIndicator,
   Platform,
+  useWindowDimensions,
 } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types';
@@ -56,6 +57,13 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
   const { themeMode, colors, setThemeMode } = useTheme();
 
   const [selectedBottomNav, setSelectedBottomNav] = useState<number>(0); // 0: Chats, 1: Calls, 2: People, 3: Settings
+  const horizontalScrollRef = useRef<ScrollView>(null);
+  const { width: screenWidth } = useWindowDimensions();
+
+  const handleTabPress = (idx: number) => {
+    setSelectedBottomNav(idx);
+    horizontalScrollRef.current?.scrollTo({ x: idx * screenWidth, animated: true });
+  };
   const [selectedFilter, setSelectedFilter] = useState<string>('All'); // 'All', 'Unread'
   const [isSearching, setIsSearching] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -303,17 +311,9 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
           { name: 'Michael Smith', username: '@michael_s', time: '↗ Tuesday', isMissed: false },
           { name: 'Emily Davis', username: '@emily_d', time: '↗ Monday', isMissed: false },
         ].map((call, index) => (
-          <TouchableOpacity
+          <View
             key={index}
             style={[styles.callCard, { backgroundColor: colors.surface, borderColor: colors.cardBorder }]}
-            onPress={() =>
-              navigation.navigate('Call', {
-                callId: `call_${index}`,
-                targetUserId: call.name,
-                isCaller: true,
-                isVideo: false,
-              })
-            }
           >
             <View style={[styles.avatarBox, { backgroundColor: colors.cardBorder }]}>
               <Text style={[styles.avatarLetter, { color: colors.textPrimary }]}>{call.name[0]}</Text>
@@ -327,6 +327,7 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
             </View>
             <TouchableOpacity
               style={styles.callIconBtn}
+              activeOpacity={0.7}
               onPress={() =>
                 navigation.navigate('Call', {
                   callId: `call_${index}`,
@@ -338,7 +339,7 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
             >
               <Phone size={18} color={colors.primaryIndigo} />
             </TouchableOpacity>
-          </TouchableOpacity>
+          </View>
         ))}
       </ScrollView>
     </View>
@@ -622,15 +623,25 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
         backgroundColor={colors.bg}
       />
 
-      <View style={{ flex: 1 }}>
-        {selectedBottomNav === 0
-          ? renderChatsTab()
-          : selectedBottomNav === 1
-          ? renderCallsTab()
-          : selectedBottomNav === 2
-          ? renderPeopleTab()
-          : renderSettingsTab()}
-      </View>
+      {/* Swipeable Main Tabs Container */}
+      <ScrollView
+        ref={horizontalScrollRef}
+        horizontal
+        pagingEnabled
+        showsHorizontalScrollIndicator={false}
+        onMomentumScrollEnd={(e) => {
+          const pageIndex = Math.round(e.nativeEvent.contentOffset.x / screenWidth);
+          if (pageIndex !== selectedBottomNav) {
+            setSelectedBottomNav(pageIndex);
+          }
+        }}
+        style={{ flex: 1 }}
+      >
+        <View style={{ width: screenWidth, flex: 1 }}>{renderChatsTab()}</View>
+        <View style={{ width: screenWidth, flex: 1 }}>{renderCallsTab()}</View>
+        <View style={{ width: screenWidth, flex: 1 }}>{renderPeopleTab()}</View>
+        <View style={{ width: screenWidth, flex: 1 }}>{renderSettingsTab()}</View>
+      </ScrollView>
 
       {/* Dynamic Bottom Navigation Bar */}
       <View style={[styles.bottomBar, { backgroundColor: colors.bottomBarBg, borderTopColor: colors.cardBorder }]}>
@@ -649,7 +660,7 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
             <TouchableOpacity
               key={nav.label}
               style={styles.navItem}
-              onPress={() => setSelectedBottomNav(idx)}
+              onPress={() => handleTabPress(idx)}
             >
               <IconComponent size={22} color={isSelected ? activeColor : inactiveColor} />
               <Text

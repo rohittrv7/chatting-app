@@ -9,25 +9,31 @@ import {
   StatusBar,
   ScrollView,
   Platform,
-  Alert,
   Animated,
 } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types';
 import { useChat } from '../context/ChatContext';
 import { useTheme } from '../context/ThemeContext';
+import { useToast } from '../context/ToastContext';
 import { ArrowLeft, CheckCircle, RefreshCw, KeyRound } from 'lucide-react-native';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'OtpVerification'>;
 
 export const OtpVerificationScreen: React.FC<Props> = ({ route, navigation }) => {
-  const { phoneNumber } = route.params || { phoneNumber: '+91 98765 43210' };
-  const [otp, setOtp] = useState('123456');
+  const { phoneNumber, generatedOtp = '849201' } = route.params || {
+    phoneNumber: '+91 98765 43210',
+    generatedOtp: '849201',
+  };
+
+  const [otpDigits, setOtpDigits] = useState<string[]>(['', '', '', '', '', '']);
   const [resendTimer, setResendTimer] = useState(30);
   const { userProfile } = useChat();
   const { themeMode, colors } = useTheme();
+  const { showToast } = useToast();
 
-  // Pure React Native Animated values
+  const inputRefs = useRef<Array<TextInput | null>>([]);
+
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(30)).current;
   const scaleAnim = useRef(new Animated.Value(0.8)).current;
@@ -52,6 +58,25 @@ export const OtpVerificationScreen: React.FC<Props> = ({ route, navigation }) =>
         useNativeDriver: true,
       }),
     ]).start();
+
+    // Notify simulated SMS receipt in Toast
+    showToast(`SMS Auto-Detected: Code is ${generatedOtp}`, 'info', 4500);
+
+    // Auto-fill simulation after 800ms
+    const autoFillTimer = setTimeout(() => {
+      const digits = generatedOtp.split('').slice(0, 6);
+      setOtpDigits(digits);
+      showToast('OTP Auto-Filled Successfully!', 'success', 2500);
+
+      // Auto-proceed after auto-fill
+      const autoProceedTimer = setTimeout(() => {
+        proceedToNextScreen();
+      }, 900);
+
+      return () => clearTimeout(autoProceedTimer);
+    }, 900);
+
+    return () => clearTimeout(autoFillTimer);
   }, []);
 
   useEffect(() => {
@@ -62,9 +87,32 @@ export const OtpVerificationScreen: React.FC<Props> = ({ route, navigation }) =>
     return () => clearTimeout(timer);
   }, [resendTimer]);
 
-  const handleVerify = () => {
-    if (otp.length < 6) {
-      Alert.alert('Invalid OTP', 'Please enter a valid 6-digit OTP code.');
+  const handleDigitChange = (text: string, index: number) => {
+    const newDigits = [...otpDigits];
+    newDigits[index] = text;
+    setOtpDigits(newDigits);
+
+    // Auto-focus next input box
+    if (text && index < 5) {
+      inputRefs.current[index + 1]?.focus();
+    }
+
+    // Auto-verify if all 6 digits entered
+    if (newDigits.join('').length === 6) {
+      proceedToNextScreen(newDigits.join(''));
+    }
+  };
+
+  const handleKeyPress = (e: any, index: number) => {
+    if (e.nativeEvent.key === 'Backspace' && !otpDigits[index] && index > 0) {
+      inputRefs.current[index - 1]?.focus();
+    }
+  };
+
+  const proceedToNextScreen = (codeToVerify?: string) => {
+    const currentCode = codeToVerify || otpDigits.join('');
+    if (currentCode.length < 6) {
+      showToast('Please enter complete 6-digit OTP code', 'warning');
       return;
     }
 
@@ -80,8 +128,11 @@ export const OtpVerificationScreen: React.FC<Props> = ({ route, navigation }) =>
         useNativeDriver: true,
       }),
     ]).start(() => {
-      // If user has not configured name or username, route to NewUserProfileSetup Screen!
-      const isExistingUser = userProfile.name && userProfile.name.trim().length > 0 && userProfile.username;
+      showToast('Phone Number Verified!', 'success', 2000);
+
+      const isExistingUser =
+        userProfile.name && userProfile.name.trim().length > 0 && userProfile.username;
+
       if (isExistingUser) {
         navigation.replace('MainTabs');
       } else {
@@ -92,7 +143,10 @@ export const OtpVerificationScreen: React.FC<Props> = ({ route, navigation }) =>
 
   const handleResend = () => {
     setResendTimer(30);
-    Alert.alert('OTP Sent', `A new verification code has been sent to ${phoneNumber}`);
+    const newOtp = Math.floor(100000 + Math.random() * 900000).toString();
+    showToast(`New Code Sent: ${newOtp}`, 'info', 4000);
+    setOtpDigits(['', '', '', '', '', '']);
+    inputRefs.current[0]?.focus();
   };
 
   return (
@@ -109,7 +163,10 @@ export const OtpVerificationScreen: React.FC<Props> = ({ route, navigation }) =>
       >
         {/* Animated Top Header */}
         <Animated.View style={[styles.header, { opacity: fadeAnim }]}>
-          <TouchableOpacity onPress={() => navigation.goBack()} style={[styles.backBtn, { backgroundColor: colors.surface, borderColor: colors.cardBorder }]}>
+          <TouchableOpacity
+            onPress={() => navigation.goBack()}
+            style={[styles.backBtn, { backgroundColor: colors.surface, borderColor: colors.cardBorder }]}
+          >
             <ArrowLeft size={20} color={colors.textPrimary} />
           </TouchableOpacity>
         </Animated.View>
@@ -121,28 +178,43 @@ export const OtpVerificationScreen: React.FC<Props> = ({ route, navigation }) =>
           </View>
         </Animated.View>
 
-        {/* Title & Info */}
+        {/* Title & Info without emojis */}
         <Animated.View style={[styles.textSection, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
-          <Text style={[styles.title, { color: colors.textPrimary }]}>Verification Code 🔑</Text>
+          <Text style={[styles.title, { color: colors.textPrimary }]}>Verification Code</Text>
           <Text style={[styles.infoText, { color: colors.textSecondary }]}>
             Enter 6-digit code sent via SMS to{' '}
             <Text style={{ fontWeight: '700', color: colors.textPrimary }}>{phoneNumber}</Text>
           </Text>
         </Animated.View>
 
-        {/* OTP Input Box */}
-        <Animated.View style={[styles.inputSection, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
-          <View style={[styles.otpInputContainer, { backgroundColor: colors.surface, borderColor: colors.cardBorder }]}>
-            <TextInput
-              style={[styles.otpInput, { color: colors.textPrimary }]}
-              value={otp}
-              onChangeText={setOtp}
-              keyboardType="number-pad"
-              maxLength={6}
-              textAlign="center"
-              autoFocus
-            />
-          </View>
+        {/* 6 Individual Centered OTP Digit Boxes */}
+        <Animated.View style={[styles.otpRowContainer, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
+          {otpDigits.map((digit, idx) => (
+            <View
+              key={idx}
+              style={[
+                styles.otpBox,
+                {
+                  backgroundColor: colors.surface,
+                  borderColor: digit ? colors.primaryIndigo : colors.cardBorder,
+                  borderWidth: digit ? 2 : 1,
+                },
+              ]}
+            >
+              <TextInput
+                ref={(el) => {
+                  inputRefs.current[idx] = el;
+                }}
+                style={[styles.otpBoxText, { color: colors.textPrimary }]}
+                keyboardType="number-pad"
+                maxLength={1}
+                value={digit}
+                onChangeText={(text) => handleDigitChange(text, idx)}
+                onKeyPress={(e) => handleKeyPress(e, idx)}
+                selectTextOnFocus
+              />
+            </View>
+          ))}
         </Animated.View>
 
         {/* Resend Link */}
@@ -163,7 +235,7 @@ export const OtpVerificationScreen: React.FC<Props> = ({ route, navigation }) =>
         <Animated.View style={{ width: '100%', marginTop: 24, opacity: fadeAnim, transform: [{ scale: btnScale }] }}>
           <TouchableOpacity
             style={[styles.verifyButton, { backgroundColor: colors.primaryIndigo }]}
-            onPress={handleVerify}
+            onPress={() => proceedToNextScreen()}
             activeOpacity={0.85}
           >
             <Text style={styles.verifyButtonText}>Verify & Continue</Text>
@@ -235,21 +307,30 @@ const styles = StyleSheet.create({
     marginTop: 10,
     lineHeight: 22,
   },
-  inputSection: {
+  otpRowContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
     width: '100%',
-    marginBottom: 16,
+    maxWidth: 380,
+    marginBottom: 20,
   },
-  otpInputContainer: {
-    width: '100%',
-    borderRadius: 20,
-    paddingVertical: 16,
-    paddingHorizontal: 20,
-    borderWidth: 1,
+  otpBox: {
+    width: 48,
+    height: 56,
+    borderRadius: 14,
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2,
   },
-  otpInput: {
-    fontSize: 32,
+  otpBoxText: {
+    fontSize: 24,
     fontWeight: '800',
-    letterSpacing: 14,
+    textAlign: 'center',
+    width: '100%',
   },
   resendSection: {
     marginVertical: 12,

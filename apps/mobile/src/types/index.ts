@@ -34,7 +34,7 @@ export interface UserProfile {
 
 export type RootStackParamList = {
   PhoneAuth: undefined;
-  OtpVerification: { phoneNumber: string };
+  OtpVerification: { phoneNumber: string; generatedOtp?: string };
   NewUserProfileSetup: { phoneNumber: string };
   MainTabs: undefined;
   Chat: { conversationId: string; title: string };

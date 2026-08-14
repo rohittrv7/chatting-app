@@ -10,13 +10,13 @@ import {
   ScrollView,
   Image,
   Platform,
-  Alert,
   Animated,
 } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types';
 import { useChat } from '../context/ChatContext';
 import { useTheme } from '../context/ThemeContext';
+import { useToast } from '../context/ToastContext';
 import * as ImagePicker from 'expo-image-picker';
 import { Camera, User, AtSign, Info, Sparkles, ArrowRight } from 'lucide-react-native';
 
@@ -26,13 +26,13 @@ export const NewUserProfileSetupScreen: React.FC<Props> = ({ route, navigation }
   const { phoneNumber } = route.params || { phoneNumber: '+91 98765 43210' };
   const { updateUserProfile } = useChat();
   const { themeMode, colors } = useTheme();
+  const { showToast } = useToast();
 
   const [name, setName] = useState('');
   const [username, setUsername] = useState('');
-  const [status, setStatus] = useState('Available | Let’s chat 🚀');
+  const [status, setStatus] = useState('Available | Ready to connect');
   const [avatarUri, setAvatarUri] = useState<string | null>(null);
 
-  // Pure React Native Animated values
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(30)).current;
   const scaleAnim = useRef(new Animated.Value(0.8)).current;
@@ -63,7 +63,7 @@ export const NewUserProfileSetupScreen: React.FC<Props> = ({ route, navigation }
     try {
       const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (!permission.granted) {
-        Alert.alert('Permission Denied', 'Please allow media gallery access to pick a profile photo.');
+        showToast('Media gallery permission is required to select profile photo', 'warning');
         return;
       }
 
@@ -76,19 +76,21 @@ export const NewUserProfileSetupScreen: React.FC<Props> = ({ route, navigation }
 
       if (!result.canceled && result.assets[0]?.uri) {
         setAvatarUri(result.assets[0].uri);
+        showToast('Profile photo selected!', 'success', 2000);
       }
     } catch (error) {
       console.log('Error picking avatar:', error);
+      showToast('Could not open image gallery', 'error');
     }
   };
 
   const handleCompleteSetup = () => {
     if (!name.trim()) {
-      Alert.alert('Name Required', 'Please enter your display name to continue.');
+      showToast('Full Name is required to continue', 'error');
       return;
     }
     if (!username.trim()) {
-      Alert.alert('Username Required', 'Please choose a unique @username handle.');
+      showToast('Username handle (@username) is required', 'error');
       return;
     }
 
@@ -114,6 +116,7 @@ export const NewUserProfileSetupScreen: React.FC<Props> = ({ route, navigation }
         avatarUrl: avatarUri || undefined,
       });
 
+      showToast('Profile Created Successfully!', 'success', 2500);
       navigation.replace('MainTabs');
     });
   };
@@ -138,9 +141,9 @@ export const NewUserProfileSetupScreen: React.FC<Props> = ({ route, navigation }
           </View>
         </Animated.View>
 
-        {/* Animated Headline */}
+        {/* Animated Headline without emojis */}
         <Animated.View style={[styles.titleSection, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
-          <Text style={[styles.title, { color: colors.textPrimary }]}>Welcome! Let’s set up your profile ✨</Text>
+          <Text style={[styles.title, { color: colors.textPrimary }]}>Welcome! Setup Your Profile</Text>
           <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
             Personalize your identity so your friends & contacts can find you easily.
           </Text>
