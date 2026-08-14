@@ -13,6 +13,7 @@ export enum SocketEvent {
   MESSAGE_ACK = 'v1.message.ack',
   /** C → S: DELIVERED / READ receipt from the recipient device */
   MESSAGE_RECEIPT = 'v1.message.receipt',
+  MESSAGE_RECEIPT_UPDATE = 'v1.message.receipt',
   /** S → C: Receipt update fan-out to the original sender */
   MESSAGE_RECEIPT_FAN_OUT = 'v1.message.receipt.fan-out',
   /** S → C: Delete-for-everyone notification */
@@ -45,14 +46,17 @@ export enum SocketEvent {
   CALL_ACCEPT = 'v1.call.accept',
   /** C → S: Decline an incoming call */
   CALL_DECLINE = 'v1.call.decline',
+  CALL_REJECT = 'v1.call.decline',
   /** C → S: End an active call */
   CALL_END = 'v1.call.end',
   /** C ↔ S: ICE candidate relay for WebRTC negotiation */
   CALL_ICE_CANDIDATE = 'v1.call.ice-candidate',
   /** C → S: WebRTC SDP offer relay */
   CALL_SDP_OFFER = 'v1.call.sdp-offer',
+  CALL_OFFER = 'v1.call.sdp-offer',
   /** C → S: WebRTC SDP answer relay */
   CALL_SDP_ANSWER = 'v1.call.sdp-answer',
+  CALL_ANSWER = 'v1.call.sdp-answer',
 
   // ─── Key management events ───────────────────────────────────────────────────
   /** S → C: OneTimePreKey pool is low — client should replenish */

@@ -74,7 +74,7 @@ export const OtpVerificationScreen: React.FC<Props> = ({ route, navigation }) =>
 
       // Auto-proceed after auto-fill
       const autoProceedTimer = setTimeout(() => {
-        proceedToNextScreen();
+        proceedToNextScreen(generatedOtp);
       }, 900);
 
       return () => clearTimeout(autoProceedTimer);

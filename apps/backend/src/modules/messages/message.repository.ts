@@ -41,12 +41,12 @@ export class MessageRepository {
       where: {
         messageId_userId_deviceId: { messageId, userId, deviceId },
       },
-      update: { status, updatedAt: new Date() },
+      update: { status: status as any, updatedAt: new Date() },
       create: {
         messageId,
         userId,
         deviceId,
-        status,
+        status: status as any,
       },
     });
   }

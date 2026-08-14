@@ -65,7 +65,7 @@ export class AuthService {
   // ──────────────────────────────────────────────────────────────────────────
   async verifyOtp(
     dto: VerifyOtpDto,
-  ): Promise<{ accessToken: string; refreshToken: string; user: unknown; device: unknown }> {
+  ): Promise<{ accessToken: string; refreshToken: string; user: unknown; device: unknown; isNewUser?: boolean }> {
     const record = await this.otpRedis.getOtp(dto.phoneNumber);
 
     // ── 1. No record (never sent / expired) ──────────────────────────────
@@ -266,5 +266,17 @@ export class AuthService {
     }
 
     return { success: true, message: 'Device session revoked' };
+  }
+
+  async updateProfile(
+    userId: string,
+    dto: { name?: string; username?: string; status?: string; avatarUrl?: string },
+  ) {
+    const user = await this.authRepository.updateUserProfile(userId, dto);
+    return {
+      success: true,
+      message: 'Profile updated successfully',
+      user,
+    };
   }
 }

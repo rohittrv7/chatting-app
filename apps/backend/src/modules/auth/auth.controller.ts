@@ -47,4 +47,14 @@ export class AuthController {
   ) {
     return this.authService.revokeDevice(user.userId, deviceId);
   }
+
+  @Post('profile')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Update user profile (Name, Username, Bio, Avatar)' })
+  async updateProfile(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: { name?: string; username?: string; status?: string; avatarUrl?: string },
+  ) {
+    return this.authService.updateProfile(user.userId, dto);
+  }
 }

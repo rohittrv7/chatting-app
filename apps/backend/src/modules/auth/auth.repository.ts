@@ -140,4 +140,19 @@ export class AuthRepository {
       },
     });
   }
+
+  async updateUserProfile(
+    userId: string,
+    data: { name?: string; username?: string; status?: string; avatarUrl?: string },
+  ): Promise<User> {
+    return this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        displayName: data.name,
+        username: data.username,
+        about: data.status,
+        avatarUrl: data.avatarUrl,
+      },
+    });
+  }
 }

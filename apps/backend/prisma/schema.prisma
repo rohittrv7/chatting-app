@@ -54,6 +54,7 @@ enum CallStatus {
 model User {
   id            String               @id @default(uuid())
   phoneNumber   String               @unique
+  username      String?              @unique
   displayName   String?
   avatarUrl     String?
   about         String?              @default("Hey there! I am using WhatsApp.")
