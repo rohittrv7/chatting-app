@@ -7,6 +7,7 @@ import { ChatProvider } from './src/context/ChatContext';
 
 import { PhoneAuthScreen } from './src/screens/PhoneAuthScreen';
 import { OtpVerificationScreen } from './src/screens/OtpVerificationScreen';
+import { NewUserProfileSetupScreen } from './src/screens/NewUserProfileSetupScreen';
 import { ConversationListScreen } from './src/screens/ConversationListScreen';
 import { ChatScreen } from './src/screens/ChatScreen';
 import { CallScreen } from './src/screens/CallScreen';
@@ -30,7 +31,7 @@ export default function App() {
         <NavigationContainer>
           <Stack.Navigator
             id="root-stack"
-            initialRouteName="MainTabs"
+            initialRouteName="PhoneAuth"
             screenOptions={{
               headerShown: false,
               animation: 'slide_from_right',
@@ -38,6 +39,7 @@ export default function App() {
           >
             <Stack.Screen name="PhoneAuth" component={PhoneAuthScreen} />
             <Stack.Screen name="OtpVerification" component={OtpVerificationScreen} />
+            <Stack.Screen name="NewUserProfileSetup" component={NewUserProfileSetupScreen} />
             <Stack.Screen name="MainTabs" component={ConversationListScreen} />
             <Stack.Screen name="Chat" component={ChatScreen} />
             <Stack.Screen name="Call" component={CallScreen} />

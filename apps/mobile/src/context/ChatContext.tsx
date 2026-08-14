@@ -13,9 +13,9 @@ interface ChatContextType {
 }
 
 const defaultUserProfile: UserProfile = {
-  name: 'Rohit Sharma',
-  username: '@rohit_dev',
-  status: 'Available | Building next-gen Chat System 🚀',
+  name: '',
+  username: '',
+  status: 'Available | Let’s chat 🚀',
   phone: '+91 98765 43210',
 };
 

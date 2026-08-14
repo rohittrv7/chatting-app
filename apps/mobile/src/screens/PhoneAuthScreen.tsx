@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   View,
   Text,
@@ -7,26 +7,69 @@ import {
   StyleSheet,
   SafeAreaView,
   StatusBar,
+  ScrollView,
+  Platform,
+  Alert,
+  Animated,
 } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types';
 import { useTheme } from '../context/ThemeContext';
-import { Phone } from 'lucide-react-native';
+import { Phone, ArrowRight, ShieldCheck, MessageSquare, Sparkles } from 'lucide-react-native';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'PhoneAuth'>;
 
 export const PhoneAuthScreen: React.FC<Props> = ({ navigation }) => {
-  const [phoneNumber, setPhoneNumber] = useState('+1 234 567 8900');
+  const [phoneNumber, setPhoneNumber] = useState('+91 98765 43210');
   const { themeMode, colors } = useTheme();
 
-  const handleProceed = () => {
-    if (phoneNumber.trim()) {
-      navigation.navigate('OtpVerification', { phoneNumber: phoneNumber.trim() });
-    }
-  };
+  // Pure React Native Animated values for buttery smooth 60fps transitions
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const slideAnim = useRef(new Animated.Value(30)).current;
+  const scaleAnim = useRef(new Animated.Value(0.8)).current;
+  const btnScale = useRef(new Animated.Value(1)).current;
 
-  const handleGoogleSignup = () => {
-    navigation.replace('MainTabs');
+  useEffect(() => {
+    Animated.parallel([
+      Animated.timing(fadeAnim, {
+        toValue: 1,
+        duration: 700,
+        useNativeDriver: true,
+      }),
+      Animated.timing(slideAnim, {
+        toValue: 0,
+        duration: 700,
+        useNativeDriver: true,
+      }),
+      Animated.spring(scaleAnim, {
+        toValue: 1,
+        friction: 6,
+        tension: 40,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, []);
+
+  const handleSendOtp = () => {
+    if (!phoneNumber.trim() || phoneNumber.trim().length < 8) {
+      Alert.alert('Invalid Number', 'Please enter a valid phone number with country code.');
+      return;
+    }
+
+    Animated.sequence([
+      Animated.timing(btnScale, {
+        toValue: 0.94,
+        duration: 100,
+        useNativeDriver: true,
+      }),
+      Animated.timing(btnScale, {
+        toValue: 1,
+        duration: 150,
+        useNativeDriver: true,
+      }),
+    ]).start(() => {
+      navigation.navigate('OtpVerification', { phoneNumber: phoneNumber.trim() });
+    });
   };
 
   return (
@@ -35,53 +78,75 @@ export const PhoneAuthScreen: React.FC<Props> = ({ navigation }) => {
         barStyle={themeMode === 'dark' ? 'light-content' : 'dark-content'}
         backgroundColor={colors.bg}
       />
-      <View style={styles.content}>
-        <View style={styles.topSpacer} />
 
-        <Text style={[styles.title, { color: colors.textPrimary }]}>
-          Chat And{'\n'}Connect 👩🏻‍💻 With{'\n'}Your 👩🏻 Loved{'\n'}Ones Easily
-        </Text>
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+      >
+        {/* Animated Hero Logo */}
+        <Animated.View style={[styles.heroLogoWrapper, { opacity: fadeAnim, transform: [{ scale: scaleAnim }] }]}>
+          <View style={[styles.heroLogoCircle, { backgroundColor: colors.surface, borderColor: colors.cardBorder }]}>
+            <MessageSquare size={44} color={colors.primaryIndigo} />
+          </View>
+        </Animated.View>
 
-        <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
-          Sign in right now to get started and{'\n'}get all the greatest perks!
-        </Text>
+        {/* Animated Badge */}
+        <Animated.View style={[styles.badgeWrapper, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
+          <View style={[styles.badge, { backgroundColor: colors.surface, borderColor: colors.cardBorder }]}>
+            <Sparkles size={14} color={colors.primaryIndigo} />
+            <Text style={[styles.badgeText, { color: colors.primaryIndigo }]}>Fast & Secure Login</Text>
+          </View>
+        </Animated.View>
 
-        <View style={styles.middleSpacer} />
+        {/* Animated Title & Subtitle */}
+        <Animated.View style={[styles.textSection, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
+          <Text style={[styles.title, { color: colors.textPrimary }]}>
+            Connect & Chat{'\n'}With Loved Ones ✨
+          </Text>
+          <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
+            Enter your phone number to receive a 6-digit OTP verification code.
+          </Text>
+        </Animated.View>
 
         {/* Phone Input Box */}
-        <View style={[styles.inputContainer, { backgroundColor: colors.surface, borderColor: colors.cardBorder }]}>
-          <TextInput
-            style={[styles.input, { color: colors.textPrimary }]}
-            placeholder="Enter Phone Number"
-            placeholderTextColor={colors.textSecondary}
-            keyboardType="phone-pad"
-            value={phoneNumber}
-            onChangeText={setPhoneNumber}
-          />
-        </View>
-
-        <View style={{ height: 16 }} />
-
-        {/* Phone Button */}
-        <TouchableOpacity style={styles.phoneButton} onPress={handleProceed} activeOpacity={0.8}>
-          <Text style={styles.phoneButtonText}>Sign up with phone number</Text>
-          <View style={styles.iconCircle}>
-            <Phone size={18} color="#000" />
+        <Animated.View style={[styles.inputSection, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
+          <Text style={[styles.inputLabel, { color: colors.textPrimary }]}>Phone Number</Text>
+          <View style={[styles.inputContainer, { backgroundColor: colors.surface, borderColor: colors.cardBorder }]}>
+            <Phone size={20} color={colors.primaryIndigo} style={styles.phoneIcon} />
+            <TextInput
+              style={[styles.input, { color: colors.textPrimary }]}
+              placeholder="+91 98765 43210"
+              placeholderTextColor={colors.textSecondary}
+              keyboardType="phone-pad"
+              value={phoneNumber}
+              onChangeText={setPhoneNumber}
+            />
           </View>
-        </TouchableOpacity>
+        </Animated.View>
 
-        <View style={{ height: 12 }} />
+        {/* Animated Send OTP Button */}
+        <Animated.View style={{ width: '100%', marginTop: 24, opacity: fadeAnim, transform: [{ scale: btnScale }] }}>
+          <TouchableOpacity
+            style={[styles.phoneButton, { backgroundColor: colors.primaryIndigo }]}
+            onPress={handleSendOtp}
+            activeOpacity={0.85}
+          >
+            <Text style={styles.phoneButtonText}>Send OTP Code</Text>
+            <View style={styles.iconCircleWhite}>
+              <ArrowRight size={18} color={colors.primaryIndigo} />
+            </View>
+          </TouchableOpacity>
+        </Animated.View>
 
-        {/* Indigo Google Button */}
-        <TouchableOpacity style={[styles.googleButton, { backgroundColor: colors.primaryIndigo }]} onPress={handleGoogleSignup} activeOpacity={0.8}>
-          <Text style={styles.googleButtonText}>Sign up with Google account</Text>
-          <View style={styles.iconCircleWhite}>
-            <Text style={[styles.gText, { color: colors.primaryIndigo }]}>G</Text>
-          </View>
-        </TouchableOpacity>
-
-        <View style={{ height: 24 }} />
-      </View>
+        {/* Footer Security Guarantee */}
+        <Animated.View style={[styles.footerInfo, { opacity: fadeAnim }]}>
+          <ShieldCheck size={16} color={colors.textSecondary} style={{ marginRight: 6 }} />
+          <Text style={[styles.footerText, { color: colors.textSecondary }]}>
+            End-to-End Encrypted & Private
+          </Text>
+        </Animated.View>
+      </ScrollView>
     </SafeAreaView>
   );
 };
@@ -89,92 +154,126 @@ export const PhoneAuthScreen: React.FC<Props> = ({ navigation }) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+    paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight || 0 : 0,
   },
-  content: {
-    flex: 1,
+  scrollContent: {
+    flexGrow: 1,
     paddingHorizontal: 24,
+    paddingVertical: 20,
     justifyContent: 'center',
     alignItems: 'center',
     maxWidth: 500,
     alignSelf: 'center',
     width: '100%',
   },
-  topSpacer: {
-    flex: 1,
+  heroLogoWrapper: {
+    marginBottom: 20,
+    alignItems: 'center',
   },
-  middleSpacer: {
-    flex: 1,
+  heroLogoCircle: {
+    width: 90,
+    height: 90,
+    borderRadius: 45,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1.5,
+    shadowColor: '#6366F1',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.25,
+    shadowRadius: 10,
+    elevation: 6,
+  },
+  badgeWrapper: {
+    marginBottom: 12,
+  },
+  badge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 20,
+    borderWidth: 1,
+  },
+  badgeText: {
+    fontSize: 12,
+    fontWeight: '700',
+    marginLeft: 6,
+  },
+  textSection: {
+    alignItems: 'center',
+    marginBottom: 28,
   },
   title: {
-    fontSize: 30,
+    fontSize: 28,
     fontWeight: '800',
     textAlign: 'center',
-    lineHeight: 38,
+    lineHeight: 36,
   },
   subtitle: {
     fontSize: 14,
     textAlign: 'center',
-    marginTop: 14,
+    marginTop: 10,
     lineHeight: 20,
+  },
+  inputSection: {
+    width: '100%',
+  },
+  inputLabel: {
+    fontSize: 14,
+    fontWeight: '700',
+    marginBottom: 8,
   },
   inputContainer: {
     width: '100%',
-    borderRadius: 28,
-    paddingHorizontal: 20,
+    borderRadius: 18,
+    paddingHorizontal: 18,
     paddingVertical: 14,
     borderWidth: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  phoneIcon: {
+    marginRight: 12,
   },
   input: {
+    flex: 1,
     fontSize: 16,
     fontWeight: '700',
   },
   phoneButton: {
     width: '100%',
     height: 56,
-    backgroundColor: '#F59E0B',
     borderRadius: 28,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 20,
+    shadowColor: '#6366F1',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+    elevation: 8,
   },
   phoneButtonText: {
-    color: '#000',
-    fontSize: 15,
-    fontWeight: '700',
-  },
-  iconCircle: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: '#FFF',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  googleButton: {
-    width: '100%',
-    height: 56,
-    borderRadius: 28,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 20,
-  },
-  googleButtonText: {
     color: '#FFF',
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: '700',
   },
   iconCircleWhite: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     backgroundColor: '#FFF',
     justifyContent: 'center',
     alignItems: 'center',
   },
-  gText: {
-    fontSize: 16,
-    fontWeight: '800',
+  footerInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 32,
+  },
+  footerText: {
+    fontSize: 13,
+    fontWeight: '500',
   },
 });
