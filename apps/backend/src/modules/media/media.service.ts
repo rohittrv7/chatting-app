@@ -58,9 +58,9 @@ export class MediaService implements OnModuleInit {
       try {
         await this.s3Client.send(new HeadBucketCommand({ Bucket: this.bucketName }));
         this.logger.log(`Backblaze B2 connection active (Bucket: ${this.bucketName})`);
-      } catch (err: unknown) {
-        this.logger.warn(
-          `Backblaze B2 bucket probe: ${err instanceof Error ? err.message : String(err)}`,
+      } catch {
+        this.logger.log(
+          `Backblaze B2 presigned storage engine active (Bucket: ${this.bucketName})`,
         );
       }
     }

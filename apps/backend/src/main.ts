@@ -57,7 +57,7 @@ async function bootstrap() {
   app.flushLogs();
 
   app.setGlobalPrefix('api/v1', {
-    exclude: ['metrics', 'metrics/(.*)'],
+    exclude: ['metrics', 'metrics/(.*)', '', '/'],
   });
 
   app.useGlobalPipes(

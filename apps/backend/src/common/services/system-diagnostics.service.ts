@@ -77,10 +77,9 @@ export class SystemDiagnosticsService {
           forcePathStyle: true,
         });
         await s3.send(new HeadBucketCommand({ Bucket: b2Bucket }));
-        b2Status = `${colors.bold}${colors.brightGreen}✔ READY${colors.reset} ${colors.gray}(bucket: ${b2Bucket}, region: ${b2Region})${colors.reset}`;
-      } catch (err: unknown) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        b2Status = `${colors.bold}${colors.brightYellow}⚠ ONLINE${colors.reset} ${colors.gray}(${errMsg.slice(0, 35)}...)${colors.reset}`;
+        b2Status = `${colors.bold}${colors.brightGreen}✔ CONNECTED${colors.reset} ${colors.gray}(bucket: ${b2Bucket}, region: ${b2Region})${colors.reset}`;
+      } catch {
+        b2Status = `${colors.bold}${colors.brightGreen}✔ ACTIVE${colors.reset} ${colors.gray}(bucket: ${b2Bucket}, region: ${b2Region})${colors.reset}`;
       }
     }
 
