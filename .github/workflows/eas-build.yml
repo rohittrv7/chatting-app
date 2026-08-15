@@ -1,4 +1,4 @@
-name: Expo EAS Mobile Build & Deploy
+name: Expo EAS Mobile Build
 
 on:
   workflow_dispatch:
@@ -20,6 +20,12 @@ on:
           - android
           - ios
           - all
+  push:
+    paths:
+      - 'apps/mobile/**'
+      - '.github/workflows/eas-build.yml'
+    branches:
+      - build-apk
 
 jobs:
   eas-build:
