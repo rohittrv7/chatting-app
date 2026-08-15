@@ -2,7 +2,8 @@ import { safeStorage } from './storageHelper';
 import { AUTH_STORAGE_KEYS } from '../store/authSlice';
 import { UserProfile } from '../types';
 
-const BACKEND_BASE_URL = 'http://localhost:3000/api/v1'; // NestJS Backend URL
+const BACKEND_BASE_URL =
+  process.env.EXPO_PUBLIC_API_URL || 'https://chatting-app-rme6.onrender.com/api/v1';
 
 export interface RequestOtpResponse {
   success: boolean;

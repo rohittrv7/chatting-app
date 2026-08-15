@@ -1,6 +1,6 @@
 import { io, Socket } from 'socket.io-client';
 
-const SOCKET_URL = 'http://localhost:3000';
+const SOCKET_URL = process.env.EXPO_PUBLIC_SOCKET_URL || 'https://chatting-app-rme6.onrender.com';
 
 class RealtimeSocketService {
   private socket: Socket | null = null;
