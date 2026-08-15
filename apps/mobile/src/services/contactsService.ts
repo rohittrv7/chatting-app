@@ -1,4 +1,6 @@
 import * as Contacts from 'expo-contacts';
+import { Share, Platform as RNPlatform } from 'react-native';
+import { apiService } from './apiService';
 
 export interface DeviceContact {
   id: string;
@@ -7,6 +9,10 @@ export interface DeviceContact {
   phone: string;
   emails?: string[];
   imageAvailable?: boolean;
+  isRegistered?: boolean;
+  userId?: string;
+  avatarUrl?: string;
+  about?: string;
 }
 
 /**
@@ -49,7 +55,7 @@ export const fetchDeviceContacts = async (): Promise<{
     }
 
     const { data } = await Contacts.getContactsAsync({
-      fields: [Contacts.Fields.PhoneNumbers, Contacts.Fields.Emails],
+      fields: [Contacts.Fields.PhoneNumbers, Contacts.Fields.Emails, Contacts.Fields.Image],
       sort: Contacts.SortTypes.FirstName,
     });
 
@@ -66,15 +72,112 @@ export const fetchDeviceContacts = async (): Promise<{
             id: c.id || Math.random().toString(),
             name: c.name || 'Unknown Contact',
             username: `@${cleanName}`,
-            phone: primaryPhone || 'No phone number',
+            phone: primaryPhone || '',
             emails: c.emails ? (c.emails.map((e) => e.email).filter(Boolean) as string[]) : [],
+            isRegistered: false,
           };
-        });
+        })
+        .filter((c) => c.phone.trim().length > 0);
+
       return { granted: true, contacts: formatted };
     }
     return { granted: true, contacts: [] };
   } catch (error) {
     console.warn('Error fetching device contacts:', error);
     return { granted: false, contacts: [] };
+  }
+};
+
+/**
+ * Sync phone contacts with server to discover registered app users.
+ * Returns contacts sorted with Registered App Users on TOP!
+ */
+export const syncContactsWithServer = async (
+  contacts: DeviceContact[],
+  token?: string,
+): Promise<{
+  registered: DeviceContact[];
+  unregistered: DeviceContact[];
+  allSorted: DeviceContact[];
+}> => {
+  if (!contacts || contacts.length === 0) {
+    return { registered: [], unregistered: [], allSorted: [] };
+  }
+
+  if (!token) {
+    return {
+      registered: [],
+      unregistered: contacts,
+      allSorted: contacts,
+    };
+  }
+
+  const phoneNumbers = contacts.map((c) => c.phone).filter((p) => p && p.trim().length > 5);
+  const syncResult = await apiService.syncContacts(token, phoneNumbers);
+
+  const registeredPhoneMap = new Map<string, any>();
+  for (const regUser of syncResult.registered) {
+    const rawDigits = regUser.phoneNumber.replace(/\D/g, '');
+    registeredPhoneMap.set(regUser.phoneNumber, regUser);
+    registeredPhoneMap.set(rawDigits, regUser);
+    registeredPhoneMap.set(`+${rawDigits}`, regUser);
+    if (rawDigits.length === 10) {
+      registeredPhoneMap.set(`+91${rawDigits}`, regUser);
+    }
+  }
+
+  const registeredList: DeviceContact[] = [];
+  const unregisteredList: DeviceContact[] = [];
+
+  for (const contact of contacts) {
+    const digits = contact.phone.replace(/\D/g, '');
+    const matchedUser =
+      registeredPhoneMap.get(contact.phone) ||
+      registeredPhoneMap.get(digits) ||
+      registeredPhoneMap.get(`+${digits}`) ||
+      (digits.length === 10 ? registeredPhoneMap.get(`+91${digits}`) : null);
+
+    if (matchedUser) {
+      const regContact: DeviceContact = {
+        ...contact,
+        isRegistered: true,
+        userId: matchedUser.id,
+        name: matchedUser.displayName || contact.name,
+        username: matchedUser.username ? `@${matchedUser.username}` : contact.username,
+        avatarUrl: matchedUser.avatarUrl || undefined,
+        about: matchedUser.about || 'Available | Ready to connect',
+      };
+      registeredList.push(regContact);
+    } else {
+      unregisteredList.push({
+        ...contact,
+        isRegistered: false,
+      });
+    }
+  }
+
+  // Sort registered alphabetically, then unregistered alphabetically
+  registeredList.sort((a, b) => a.name.localeCompare(b.name));
+  unregisteredList.sort((a, b) => a.name.localeCompare(b.name));
+
+  return {
+    registered: registeredList,
+    unregistered: unregisteredList,
+    allSorted: [...registeredList, ...unregisteredList],
+  };
+};
+
+/**
+ * Invite a contact via native SMS / Share sheet
+ */
+export const inviteContact = async (phoneNumber: string, contactName: string): Promise<void> => {
+  try {
+    const inviteMessage = `Hey ${contactName}! Let's connect on this secure, end-to-end encrypted chat & call app. Download it here: https://chat.app/download`;
+    await Share.share({
+      title: 'Invite to Chat App',
+      message: inviteMessage,
+    });
+  } catch (error) {
+    console.warn('Error sharing invite:', error);
   }
 };

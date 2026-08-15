@@ -72,7 +72,11 @@ export class AuthRepository {
     });
   }
 
-  async saveRefreshToken(deviceId: string, tokenHash: string, expiresAt: Date): Promise<RefreshToken> {
+  async saveRefreshToken(
+    deviceId: string,
+    tokenHash: string,
+    expiresAt: Date,
+  ): Promise<RefreshToken> {
     return this.prisma.refreshToken.create({
       data: {
         deviceId,
@@ -86,7 +90,9 @@ export class AuthRepository {
    * Finds a refresh token record by its exact hash value.
    * The record includes the associated Device via a Prisma relation.
    */
-  async findRefreshTokenByHash(tokenHash: string): Promise<(RefreshToken & { device: Device }) | null> {
+  async findRefreshTokenByHash(
+    tokenHash: string,
+  ): Promise<(RefreshToken & { device: Device }) | null> {
     return this.prisma.refreshToken.findUnique({
       where: { tokenHash },
       include: { device: true },
@@ -154,5 +160,32 @@ export class AuthRepository {
         avatarUrl: data.avatarUrl,
       },
     });
+  }
+
+  /**
+   * Find registered users matching a list of phone numbers (excluding the requesting user)
+   */
+  async findRegisteredUsersByPhoneNumbers(
+    phoneNumbers: string[],
+    excludeUserId?: string,
+  ): Promise<User[]> {
+    if (!phoneNumbers || phoneNumbers.length === 0) return [];
+
+    return this.prisma.user.findMany({
+      where: {
+        phoneNumber: { in: phoneNumbers },
+        ...(excludeUserId ? { id: { not: excludeUserId } } : {}),
+      },
+      select: {
+        id: true,
+        phoneNumber: true,
+        displayName: true,
+        username: true,
+        avatarUrl: true,
+        about: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    }) as unknown as Promise<User[]>;
   }
 }

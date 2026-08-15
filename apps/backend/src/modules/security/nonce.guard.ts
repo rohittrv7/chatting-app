@@ -12,6 +12,7 @@ import Redis from 'ioredis';
 @Injectable()
 export class NonceGuard implements CanActivate {
   private readonly redis: Redis;
+  private readonly memoryNonces = new Map<string, number>();
 
   constructor(private readonly configService: ConfigService) {
     this.redis = new Redis({
@@ -19,6 +20,12 @@ export class NonceGuard implements CanActivate {
       port: this.configService.get<number>('REDIS_PORT', 6379),
       password: this.configService.get<string>('REDIS_PASSWORD'),
       lazyConnect: true,
+      enableOfflineQueue: false,
+      maxRetriesPerRequest: 1,
+      retryStrategy: (times) => (times > 3 ? null : Math.min(times * 1000, 3000)),
+    });
+    this.redis.on('error', () => {
+      // Suppress unhandled crash — memory fallback handles nonces when Redis is offline
     });
   }
 
@@ -34,11 +41,31 @@ export class NonceGuard implements CanActivate {
     const key = `nonce:${nonce}`;
     const ttlSeconds = 300; // 5 minutes
 
-    // SET key value NX EX ttl — returns "OK" if set (key did not exist), null if key already existed
-    const result = await this.redis.set(key, '1', 'EX', ttlSeconds, 'NX');
+    try {
+      if (this.redis.status === 'ready' || this.redis.status === 'connect') {
+        const result = await this.redis.set(key, '1', 'EX', ttlSeconds, 'NX');
+        if (result === null) {
+          throw new HttpException(
+            {
+              success: false,
+              code: 'REPLAY_DETECTED',
+              message: 'Duplicate nonce detected',
+              details: null,
+            },
+            HttpStatus.CONFLICT,
+          );
+        }
+        return true;
+      }
+    } catch (err) {
+      if (err instanceof HttpException) throw err;
+      // fallback to memory
+    }
 
-    if (result === null) {
-      // Key already existed → replay detected
+    // In-memory nonce check
+    const now = Date.now();
+    const existingExpiry = this.memoryNonces.get(nonce);
+    if (existingExpiry && existingExpiry > now) {
       throw new HttpException(
         {
           success: false,
@@ -50,6 +77,7 @@ export class NonceGuard implements CanActivate {
       );
     }
 
+    this.memoryNonces.set(nonce, now + ttlSeconds * 1000);
     return true;
   }
 }

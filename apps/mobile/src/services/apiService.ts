@@ -2,7 +2,7 @@ import { safeStorage } from './storageHelper';
 import { AUTH_STORAGE_KEYS } from '../store/authSlice';
 import { UserProfile } from '../types';
 
-const BACKEND_BASE_URL = 'http://localhost:3000'; // NestJS Backend URL
+const BACKEND_BASE_URL = 'http://localhost:3000/api/v1'; // NestJS Backend URL
 
 export interface RequestOtpResponse {
   success: boolean;
@@ -30,11 +30,12 @@ export const apiService = {
       });
 
       if (response.ok) {
-        const data = await response.json();
+        const json = await response.json();
+        const payload = json.data || json;
         return {
           success: true,
-          message: data.message || 'OTP Sent Successfully',
-          mockOtp: data.mockOtp || Math.floor(100000 + Math.random() * 900000).toString(),
+          message: payload.message || 'OTP Sent Successfully',
+          mockOtp: payload.mockOtp || Math.floor(100000 + Math.random() * 900000).toString(),
         };
       }
     } catch (e) {
@@ -58,22 +59,30 @@ export const apiService = {
       const response = await fetch(`${BACKEND_BASE_URL}/auth/otp/verify`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phoneNumber, otp, deviceId: 1, platform: 'android' }),
+        body: JSON.stringify({
+          phoneNumber,
+          otp,
+          deviceId: 1,
+          deviceName: 'Mobile App Device',
+          platform: 'ANDROID',
+        }),
       });
 
       if (response.ok) {
-        const data = await response.json();
-        const isNewUser = !data.user?.name || !data.user?.displayName || !data.user?.username;
+        const json = await response.json();
+        const data = json.data || json;
+        const userObj = data.user || {};
+        const isNewUser = data.isNewUser ?? (!userObj.displayName && !userObj.username);
         return {
           success: true,
           accessToken: data.accessToken || `token_${Date.now()}`,
           isNewUser,
           user: {
-            name: data.user?.displayName || data.user?.name || '',
-            username: data.user?.username || '',
-            status: data.user?.about || 'Available | Ready to connect',
+            name: userObj.displayName || userObj.name || '',
+            username: userObj.username || '',
+            status: userObj.about || 'Available | Ready to connect',
             phone: phoneNumber,
-            avatarUrl: data.user?.avatarUrl || undefined,
+            avatarUrl: userObj.avatarUrl || undefined,
           },
         };
       }
@@ -116,7 +125,12 @@ export const apiService = {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify(profile),
+        body: JSON.stringify({
+          name: profile.name,
+          username: profile.username,
+          status: profile.status,
+          avatarUrl: profile.avatarUrl,
+        }),
       });
     } catch (e) {
       console.log('Profile updated in local persistent store');
@@ -155,5 +169,43 @@ export const apiService = {
     } catch (e) {
       return { token: null, phoneNumber: null, userProfile: null, isNewUser: true };
     }
+  },
+
+  /**
+   * Sync phone contacts with backend to discover registered app users
+   */
+  async syncContacts(
+    token: string,
+    phoneNumbers: string[],
+  ): Promise<{
+    registered: Array<{
+      id: string;
+      phoneNumber: string;
+      displayName: string | null;
+      username: string | null;
+      avatarUrl: string | null;
+      about: string | null;
+      isRegistered: boolean;
+    }>;
+    unregistered: string[];
+  }> {
+    try {
+      const response = await fetch(`${BACKEND_BASE_URL}/auth/contacts/sync`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ phoneNumbers }),
+      });
+
+      if (response.ok) {
+        const json = await response.json();
+        return json.data || json;
+      }
+    } catch (e) {
+      console.log('Error syncing contacts with backend:', e);
+    }
+    return { registered: [], unregistered: phoneNumbers };
   },
 };

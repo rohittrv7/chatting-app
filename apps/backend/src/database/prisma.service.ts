@@ -9,9 +9,14 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
   async onModuleInit(): Promise<void> {
     try {
       await this.$connect();
-      this.logger.log('Successfully connected to PostgreSQL database');
+      console.log(
+        '\x1b[92m✔ [Database]\x1b[0m \x1b[1m\x1b[97mPostgreSQL connected successfully via Prisma\x1b[0m',
+      );
     } catch (err) {
-      this.logger.warn(`PostgreSQL connection pending (start PostgreSQL/Docker to enable DB persistence): ${err instanceof Error ? err.message : err}`);
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `\x1b[93m⚠ [Database]\x1b[0m \x1b[1m\x1b[93mPostgreSQL connection pending\x1b[0m (Run \x1b[96mpnpm docker:up\x1b[0m to start local database container): ${msg.slice(0, 80)}...`,
+      );
     }
   }
 

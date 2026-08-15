@@ -168,57 +168,71 @@ model Conversation {
 }
 
 model ConversationMember {
-  id             String       @id @default(uuid())
-  conversationId String
-  userId         String
-  role           Role         @default(MEMBER)
-  joinedAt       DateTime     @default(now())
+  id               String       @id @default(uuid())
+  conversationId   String
+  userId           String
+  role             Role         @default(MEMBER)
+  joinedAt         DateTime     @default(now())
+  clearedHistoryAt DateTime?
 
-  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conversation     Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user             User         @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([conversationId, userId])
   @@index([userId])
 }
 
 model Message {
-  id             String         @id @default(uuid())
-  conversationId String
-  senderId       String
-  senderDeviceId String
-  type           MessageType    @default(TEXT)
-  ciphertexts    Json
-  status         DeliveryStatus @default(SERVER_RECEIVED)
-  replyToId      String?
-  createdAt      DateTime       @default(now())
-  updatedAt      DateTime       @updatedAt
+  id                String         @id @default(uuid())
+  conversationId    String
+  senderId          String
+  senderDeviceId    String
+  type              MessageType    @default(TEXT)
+  ciphertexts       Json
+  status            DeliveryStatus @default(SERVER_RECEIVED)
+  replyToId         String?
+  isEdited          Boolean        @default(false)
+  deletedAt         DateTime?
+  deletedForUserIds String[]       @default([])
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
 
-  conversation   Conversation   @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  sender         User           @relation(fields: [senderId], references: [id], onDelete: Restrict)
-  senderDevice   Device         @relation("SenderDevice", fields: [senderDeviceId], references: [id], onDelete: Restrict)
-  replyTo        Message?       @relation("MessageReplies", fields: [replyToId], references: [id], onDelete: SetNull)
-  replies        Message[]      @relation("MessageReplies")
+  conversation      Conversation   @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender            User           @relation(fields: [senderId], references: [id], onDelete: Restrict)
+  senderDevice      Device         @relation("SenderDevice", fields: [senderDeviceId], references: [id], onDelete: Restrict)
+  replyTo           Message?       @relation("MessageReplies", fields: [replyToId], references: [id], onDelete: SetNull)
+  replies           Message[]      @relation("MessageReplies")
   
-  attachments    Attachment[]
-  reactions      Reaction[]
-  receipts       Receipt[]
+  attachments       Attachment[]
+  reactions         Reaction[]
+  receipts          Receipt[]
 
   @@index([conversationId, createdAt])
   @@index([senderId])
+  @@index([deletedAt])
 }
 
 model Attachment {
-  id            String   @id @default(uuid())
-  messageId     String
-  fileUrl       String
-  fileName      String
-  fileSize      Int
-  mimeType      String
-  encryptionKey String
-  iv            String
-  createdAt     DateTime @default(now())
+  id              String    @id @default(uuid())
+  messageId       String
+  fileUrl         String
+  fileName        String
+  fileSize        Int
+  mimeType        String
+  encryptionKey   String
+  iv              String
+  contentEncoding String?   @default("identity")
+  originalSize    Int?
+  compressedSize  Int?
+  width           Int?
+  height          Int?
+  durationSeconds Float?
+  deletedAt       DateTime?
+  createdAt       DateTime  @default(now())
 
-  message       Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  message         Message   @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([deletedAt])
 }
 
 model Receipt {

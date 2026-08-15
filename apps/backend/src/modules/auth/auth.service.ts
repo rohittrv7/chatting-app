@@ -65,7 +65,13 @@ export class AuthService {
   // ──────────────────────────────────────────────────────────────────────────
   async verifyOtp(
     dto: VerifyOtpDto,
-  ): Promise<{ accessToken: string; refreshToken: string; user: unknown; device: unknown; isNewUser?: boolean }> {
+  ): Promise<{
+    accessToken: string;
+    refreshToken: string;
+    user: unknown;
+    device: unknown;
+    isNewUser?: boolean;
+  }> {
     const record = await this.otpRedis.getOtp(dto.phoneNumber);
 
     // ── 1. No record (never sent / expired) ──────────────────────────────
@@ -162,7 +168,10 @@ export class AuthService {
     // ── 10. Issue RefreshToken hashed with argon2id (7 days) (Requirement 1.2) ─
     const rawRefreshToken = this.jwtService.sign(payload, {
       expiresIn: '7d',
-      secret: this.configService.get<string>('JWT_REFRESH_SECRET', 'super_secret_jwt_refresh_key_12345'),
+      secret: this.configService.get<string>(
+        'JWT_REFRESH_SECRET',
+        'super_secret_jwt_refresh_key_12345',
+      ),
     });
 
     const tokenHash = (await argon2.hash(rawRefreshToken, ARGON2_OPTIONS)) as string;
@@ -187,7 +196,10 @@ export class AuthService {
   async refreshToken(dto: RefreshTokenDto): Promise<{ accessToken: string; refreshToken: string }> {
     try {
       const payload = this.jwtService.verify(dto.refreshToken, {
-        secret: this.configService.get<string>('JWT_REFRESH_SECRET', 'super_secret_jwt_refresh_key_12345'),
+        secret: this.configService.get<string>(
+          'JWT_REFRESH_SECRET',
+          'super_secret_jwt_refresh_key_12345',
+        ),
       });
 
       const device = await this.authRepository.findDeviceById(dto.deviceId);
@@ -228,7 +240,10 @@ export class AuthService {
       const newAccessToken = this.jwtService.sign(newPayload, { expiresIn: '15m' });
       const newRefreshToken = this.jwtService.sign(newPayload, {
         expiresIn: '7d',
-        secret: this.configService.get<string>('JWT_REFRESH_SECRET', 'super_secret_jwt_refresh_key_12345'),
+        secret: this.configService.get<string>(
+          'JWT_REFRESH_SECRET',
+          'super_secret_jwt_refresh_key_12345',
+        ),
       });
 
       const tokenHash = (await argon2.hash(newRefreshToken, ARGON2_OPTIONS)) as string;
@@ -277,6 +292,84 @@ export class AuthService {
       success: true,
       message: 'Profile updated successfully',
       user,
+    };
+  }
+
+  /**
+   * Sync phone contacts and discover who is registered on the platform.
+   * Registered users are prioritized with full profiles.
+   */
+  async syncContacts(userId: string, rawPhoneNumbers: string[]) {
+    if (!rawPhoneNumbers || !Array.isArray(rawPhoneNumbers)) {
+      return { registered: [], unregistered: [] };
+    }
+
+    // Normalize phone numbers
+    const cleanNumbersSet = new Set<string>();
+    const phoneMap = new Map<string, string>(); // normalized -> raw original
+
+    for (const raw of rawPhoneNumbers) {
+      if (!raw || typeof raw !== 'string') continue;
+      const digitsOnly = raw.replace(/\D/g, '');
+      if (digitsOnly.length < 7) continue;
+
+      // Check with plus
+      const formattedWithPlus = raw.startsWith('+') ? `+${digitsOnly}` : `+${digitsOnly}`;
+      cleanNumbersSet.add(formattedWithPlus);
+      phoneMap.set(formattedWithPlus, raw);
+
+      // Also support 10-digit without plus or Indian +91 default
+      if (digitsOnly.length === 10) {
+        cleanNumbersSet.add(`+91${digitsOnly}`);
+        phoneMap.set(`+91${digitsOnly}`, raw);
+        cleanNumbersSet.add(digitsOnly);
+        phoneMap.set(digitsOnly, raw);
+      }
+    }
+
+    const numbersToQuery = Array.from(cleanNumbersSet);
+    const registeredUsers = await this.authRepository.findRegisteredUsersByPhoneNumbers(
+      numbersToQuery,
+      userId,
+    );
+
+    const registeredPhoneSet = new Set<string>();
+    const registered = registeredUsers.map((u) => {
+      registeredPhoneSet.add(u.phoneNumber);
+      const digits = u.phoneNumber.replace(/\D/g, '');
+      registeredPhoneSet.add(digits);
+      registeredPhoneSet.add(`+${digits}`);
+
+      return {
+        id: u.id,
+        phoneNumber: u.phoneNumber,
+        displayName: u.displayName,
+        username: u.username,
+        avatarUrl: u.avatarUrl,
+        about: u.about,
+        isRegistered: true,
+      };
+    });
+
+    const unregisteredSet = new Set<string>();
+    for (const raw of rawPhoneNumbers) {
+      const digits = raw.replace(/\D/g, '');
+      const plusDigits = `+${digits}`;
+      const indDigits = `+91${digits}`;
+
+      if (
+        !registeredPhoneSet.has(raw) &&
+        !registeredPhoneSet.has(digits) &&
+        !registeredPhoneSet.has(plusDigits) &&
+        !registeredPhoneSet.has(indDigits)
+      ) {
+        unregisteredSet.add(raw);
+      }
+    }
+
+    return {
+      registered,
+      unregistered: Array.from(unregisteredSet),
     };
   }
 }

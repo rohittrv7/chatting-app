@@ -45,6 +45,9 @@ import { AuthGateway } from '../auth/auth.gateway';
         connection: {
           host: configService.get<string>('REDIS_HOST', 'localhost'),
           port: configService.get<number>('REDIS_PORT', 6379),
+          maxRetriesPerRequest: null,
+          enableOfflineQueue: false,
+          retryStrategy: (times: number) => (times > 3 ? null : Math.min(times * 1000, 3000)),
         },
       }),
     }),

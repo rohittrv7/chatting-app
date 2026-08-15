@@ -37,7 +37,8 @@ export class ConversationController {
     @Body() dto: CreateConversationDto,
   ) {
     if (dto.type === 'DIRECT') {
-      return this.conversationService.getOrCreateDirect(user.userId, dto.targetUserId!);
+      const targetUserId = dto.targetUserId || dto.participantUserIds?.[0];
+      return this.conversationService.getOrCreateDirect(user.userId, targetUserId!);
     } else {
       return this.conversationService.createGroup(
         user.userId,

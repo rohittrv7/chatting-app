@@ -41,10 +41,7 @@ export class AuthController {
   @Delete('devices/:deviceId')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Remote logout target device' })
-  async revokeDevice(
-    @CurrentUser() user: AuthenticatedUser,
-    @Param('deviceId') deviceId: string,
-  ) {
+  async revokeDevice(@CurrentUser() user: AuthenticatedUser, @Param('deviceId') deviceId: string) {
     return this.authService.revokeDevice(user.userId, deviceId);
   }
 
@@ -56,5 +53,15 @@ export class AuthController {
     @Body() dto: { name?: string; username?: string; status?: string; avatarUrl?: string },
   ) {
     return this.authService.updateProfile(user.userId, dto);
+  }
+
+  @Post('contacts/sync')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Sync phone contacts and discover registered users' })
+  async syncContacts(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: { phoneNumbers: string[] },
+  ) {
+    return this.authService.syncContacts(user.userId, dto.phoneNumbers || []);
   }
 }

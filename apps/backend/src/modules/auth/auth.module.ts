@@ -20,11 +20,18 @@ import { PrismaService } from '../../database/prisma.service';
 const REDIS_CLIENT_PROVIDER = {
   provide: 'REDIS_CLIENT',
   useFactory: (configService: ConfigService): Redis => {
-    return new Redis({
+    const client = new Redis({
       host: configService.get<string>('REDIS_HOST', 'localhost'),
       port: configService.get<number>('REDIS_PORT', 6379),
       lazyConnect: true,
+      enableOfflineQueue: false,
+      maxRetriesPerRequest: 1,
+      retryStrategy: (times) => (times > 3 ? null : Math.min(times * 1000, 3000)),
     });
+    client.on('error', () => {
+      // Suppress unhandled crash — in-memory fallback handles cache operations when Redis is offline
+    });
+    return client;
   },
   inject: [ConfigService],
 };

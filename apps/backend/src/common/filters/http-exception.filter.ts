@@ -1,10 +1,4 @@
-import {
-  ExceptionFilter,
-  Catch,
-  ArgumentsHost,
-  HttpException,
-  HttpStatus,
-} from '@nestjs/common';
+import { ExceptionFilter, Catch, ArgumentsHost, HttpException, HttpStatus } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { ApiErrorEnvelope } from '@chat/shared-contracts';
 import { REQUEST_ID_HEADER } from '../middleware/request-id.middleware';
@@ -79,9 +73,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
           const payloadCode = (payloadObj['code'] ?? payloadObj['error']) as string | undefined;
           if (payloadCode) {
             // Only use it when it looks like UPPER_SNAKE_CASE (custom code)
-            errorCode = /^[A-Z][A-Z0-9_]+$/.test(payloadCode)
-              ? payloadCode
-              : errorCode;
+            errorCode = /^[A-Z][A-Z0-9_]+$/.test(payloadCode) ? payloadCode : errorCode;
           }
           message = (payloadObj['message'] as string) || message;
         }
@@ -102,6 +94,21 @@ export class HttpExceptionFilter implements ExceptionFilter {
     const requestId = request?.requestId;
     if (requestId && !response.getHeader(REQUEST_ID_HEADER)) {
       response.setHeader(REQUEST_ID_HEADER, requestId);
+    }
+
+    // Print clear colorful error details in terminal for instant debugging (skipping noise like sw.js / favicon)
+    const method = request?.method ?? 'UNKNOWN';
+    const url = request?.originalUrl || request?.url || '';
+    const isBrowserProbe = url === '/sw.js' || url === '/favicon.ico';
+    if (!isBrowserProbe) {
+      const reqId = requestId ? `[${requestId.slice(0, 8)}]` : '';
+      const valErr = details['validationErrors']
+        ? ` | Validation: ${JSON.stringify(details['validationErrors'])}`
+        : '';
+      console.error(
+        `\x1b[90m[${new Date().toTimeString().split(' ')[0]}]\x1b[0m \x1b[1m\x1b[91m✖ [ERROR]\x1b[0m \x1b[1m\x1b[97m${method} ${url}\x1b[0m -> \x1b[1m\x1b[93m${status} ${errorCode}\x1b[0m ${reqId}\n` +
+          `   \x1b[93m↳ Reason:\x1b[0m \x1b[97m${message}\x1b[0m${valErr}`,
+      );
     }
 
     const errorEnvelope: ApiErrorEnvelope = {

@@ -7,18 +7,58 @@ import { TransformInterceptor } from './common/interceptors/transform.intercepto
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { PrometheusInterceptor } from './modules/observability/prometheus.interceptor';
 import { PrismaService } from './database/prisma.service';
+import { SystemDiagnosticsService } from './common/services/system-diagnostics.service';
+import Redis from 'ioredis';
+
+import { ColorfulLogger } from './common/services/colorful-logger.service';
+
+// Safely absorb unhandled ioredis error events (from BullMQ/ioredis) when local Redis is offline
+const originalRedisEmit = Redis.prototype.emit;
+Redis.prototype.emit = function (this: unknown, event: string | symbol, ...args: unknown[]) {
+  if (
+    event === 'error' &&
+    (this as { listenerCount: (ev: string | symbol) => number }).listenerCount(event) === 0
+  ) {
+    // Suppress unhandled EventEmitter crash dump
+    return false;
+  }
+  return originalRedisEmit.apply(this, [event, ...args]);
+};
+
+// Gracefully suppress unhandled ECONNREFUSED spam when optional local Redis is offline
+process.on('unhandledRejection', (reason: unknown) => {
+  const msg = (reason as Error)?.message || String(reason);
+  if (msg.includes('ECONNREFUSED') || (reason as { code?: string })?.code === 'ECONNREFUSED') {
+    return;
+  }
+  console.error('[UnhandledRejection]', reason);
+});
+
+process.on('uncaughtException', (err: Error) => {
+  const msg = err?.message || String(err);
+  if (
+    msg.includes('ECONNREFUSED') ||
+    (err as { code?: string })?.code === 'ECONNREFUSED' ||
+    err?.name === 'AggregateError'
+  ) {
+    return;
+  }
+  console.error('[UncaughtException]', err);
+});
 
 async function bootstrap() {
+  const colorfulLogger = new ColorfulLogger();
   const app = await NestFactory.create(AppModule, {
-    // Suppress default NestJS logger — pino (via nestjs-pino LoggerModule) takes over
+    logger: colorfulLogger,
     bufferLogs: true,
   });
 
-  // Bind pino as the global NestJS logger (Requirement 23.6)
-  app.useLogger(app.get(Logger));
+  app.useLogger(colorfulLogger);
   app.flushLogs();
 
-  app.setGlobalPrefix('api/v1');
+  app.setGlobalPrefix('api/v1', {
+    exclude: ['metrics', 'metrics/(.*)'],
+  });
 
   app.useGlobalPipes(
     new ValidationPipe({
@@ -29,10 +69,7 @@ async function bootstrap() {
   );
 
   // PrometheusInterceptor tracks request count + duration (Requirement 23.3)
-  app.useGlobalInterceptors(
-    app.get(PrometheusInterceptor),
-    new TransformInterceptor(),
-  );
+  app.useGlobalInterceptors(app.get(PrometheusInterceptor), new TransformInterceptor());
   app.useGlobalFilters(new HttpExceptionFilter());
 
   app.enableCors({ origin: '*' });
@@ -50,10 +87,9 @@ async function bootstrap() {
   const port = process.env.PORT ?? 3000;
   await app.listen(port);
 
-  const logger = app.get(Logger);
-  logger.log(`Backend server running on http://localhost:${port}/api/v1`, 'Bootstrap');
-  logger.log(`Swagger documentation available at http://localhost:${port}/docs/api`, 'Bootstrap');
-  logger.log(`Prometheus metrics available at http://localhost:${port}/metrics`, 'Bootstrap');
+  // Print rich colorful dashboard banner and live infrastructure connectivity status
+  const diagnosticsService = app.get(SystemDiagnosticsService);
+  await diagnosticsService.printSystemBanner(port);
 
   // Register graceful shutdown hooks — on SIGTERM/SIGINT, PrismaService will
   // call app.close() which triggers onModuleDestroy → $disconnect().

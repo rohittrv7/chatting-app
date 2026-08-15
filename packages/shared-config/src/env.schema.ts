@@ -9,9 +9,7 @@ import { z } from 'zod';
  */
 export const envSchema = z.object({
   // ── Runtime ─────────────────────────────────────────────────────────────
-  NODE_ENV: z
-    .enum(['development', 'production', 'test'])
-    .default('development'),
+  NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
 
   PORT: z
     .string()
@@ -36,17 +34,12 @@ export const envSchema = z.object({
     }),
 
   // ── Redis ─────────────────────────────────────────────────────────────────
-  REDIS_URL: z
-    .string()
-    .url('REDIS_URL must be a valid URL')
-    .startsWith('redis', {
-      message: 'REDIS_URL must start with redis:// or rediss://',
-    }),
+  REDIS_URL: z.string().url('REDIS_URL must be a valid URL').startsWith('redis', {
+    message: 'REDIS_URL must start with redis:// or rediss://',
+  }),
 
   // ── JWT / Auth ────────────────────────────────────────────────────────────
-  JWT_SECRET: z
-    .string()
-    .min(32, 'JWT_SECRET must be at least 32 characters long'),
+  JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters long'),
 
   JWT_EXPIRES_IN: z
     .string()
@@ -60,49 +53,40 @@ export const envSchema = z.object({
     .default('7d')
     .describe('Refresh token lifetime — e.g. 7d, 30d'),
 
-  // ── MinIO (object storage) ────────────────────────────────────────────────
-  MINIO_ENDPOINT: z
-    .string()
-    .min(1, 'MINIO_ENDPOINT is required'),
-
-  MINIO_PORT: z
+  // ── Backblaze B2 (Cloud Object Storage) ───────────────────────────────────
+  B2_BUCKET_NAME: z
     .string()
     .optional()
-    .default('9000')
-    .transform((v) => parseInt(v, 10))
-    .refine((v) => !isNaN(v) && v > 0 && v <= 65535, {
-      message: 'MINIO_PORT must be a valid port number (1–65535)',
-    }),
+    .default('chatting-media')
+    .describe('Backblaze B2 bucket name'),
 
-  MINIO_ACCESS_KEY: z
+  B2_REGION: z
     .string()
-    .min(1, 'MINIO_ACCESS_KEY is required'),
+    .optional()
+    .default('us-east-005')
+    .describe('Backblaze B2 region (e.g. us-east-005, us-west-004)'),
 
-  MINIO_SECRET_KEY: z
+  B2_ENDPOINT: z
     .string()
-    .min(8, 'MINIO_SECRET_KEY must be at least 8 characters long'),
+    .optional()
+    .describe('Backblaze B2 S3 endpoint (e.g. s3.us-east-005.backblazeb2.com)'),
 
-  MINIO_BUCKET: z
+  B2_KEY_ID: z.string().optional().describe('Backblaze B2 Application Key ID / S3 Access Key'),
+
+  B2_APPLICATION_KEY: z
     .string()
-    .min(1, 'MINIO_BUCKET is required')
-    .regex(/^[a-z0-9][a-z0-9\-.]{1,61}[a-z0-9]$/, {
-      message:
-        'MINIO_BUCKET must be a valid S3-compatible bucket name (3–63 lower-case chars)',
-    }),
+    .optional()
+    .describe('Backblaze B2 Application Key / S3 Secret Key'),
 
   // ── Firebase (push notifications) ─────────────────────────────────────────
-  FIREBASE_PROJECT_ID: z
-    .string()
-    .min(1, 'FIREBASE_PROJECT_ID is required'),
+  FIREBASE_PROJECT_ID: z.string().min(1, 'FIREBASE_PROJECT_ID is required'),
 
   FIREBASE_PRIVATE_KEY: z
     .string()
     .min(1, 'FIREBASE_PRIVATE_KEY is required')
     .describe('PEM-encoded RSA private key for Firebase Admin SDK'),
 
-  FIREBASE_CLIENT_EMAIL: z
-    .string()
-    .email('FIREBASE_CLIENT_EMAIL must be a valid email address'),
+  FIREBASE_CLIENT_EMAIL: z.string().email('FIREBASE_CLIENT_EMAIL must be a valid email address'),
 
   // ── Rate limiting (NestJS Throttler) ──────────────────────────────────────
   THROTTLE_TTL: z

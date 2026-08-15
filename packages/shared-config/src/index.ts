@@ -6,10 +6,8 @@ export const APP_CONSTANTS = {
   PREKEY_POOL_MIN_THRESHOLD: 15,
   PREKEY_POOL_REPLENISH_COUNT: 50,
   DEFAULT_PAGE_SIZE: 30,
-  MAX_FILE_SIZE_BYTES: 100 * 1024 * 1024, // 100 MB
-  CALL_ICE_SERVERS: [
-    { urls: 'stun:stun.l.google.com:19302' }
-  ]
+  MAX_FILE_SIZE_BYTES: 10 * 1024 * 1024, // 10 MB Max Attachment Size
+  CALL_ICE_SERVERS: [{ urls: 'stun:stun.l.google.com:19302' }],
 } as const;
 
 export interface AppEnvironment {
@@ -19,11 +17,11 @@ export interface AppEnvironment {
   REDIS_HOST: string;
   REDIS_PORT: number;
   REDIS_PASSWORD?: string;
-  MINIO_ENDPOINT: string;
-  MINIO_PORT: number;
-  MINIO_ACCESS_KEY: string;
-  MINIO_SECRET_KEY: string;
-  MINIO_BUCKET_NAME: string;
+  B2_BUCKET_NAME: string;
+  B2_REGION?: string;
+  B2_ENDPOINT?: string;
+  B2_KEY_ID?: string;
+  B2_APPLICATION_KEY?: string;
   COTURN_SECRET: string;
   JWT_SECRET: string;
   JWT_REFRESH_SECRET: string;

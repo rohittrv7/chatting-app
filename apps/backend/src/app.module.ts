@@ -11,6 +11,8 @@ import { PresenceModule } from './modules/presence/presence.module';
 import { SecurityModule } from './modules/security/security.module';
 import { SecurityHeadersMiddleware } from './modules/security/security-headers.middleware';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
+import { HttpLoggerMiddleware } from './common/middleware/http-logger.middleware';
+import { SystemDiagnosticsService } from './common/services/system-diagnostics.service';
 import { ObservabilityModule } from './modules/observability/observability.module';
 import { HealthController } from './modules/health/health.controller';
 import { MetricsController } from './modules/metrics/metrics.controller';
@@ -39,11 +41,13 @@ import { LastActiveInterceptor } from './common/interceptors/last-active.interce
   controllers: [HealthController, MetricsController],
   providers: [
     PrismaService,
+    SystemDiagnosticsService,
     // Global JWT guard — requires @Public() to bypass authentication
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     // Global interceptor — updates Device.lastActiveAt on authenticated requests
     { provide: APP_INTERCEPTOR, useClass: LastActiveInterceptor },
   ],
+  exports: [SystemDiagnosticsService],
 })
 export class AppModule {
   configure(consumer: MiddlewareConsumer): void {
@@ -51,7 +55,7 @@ export class AppModule {
     // filter, and interceptor can read req.requestId and the response header
     // is set before any other middleware writes to the response.
     consumer
-      .apply(RequestIdMiddleware, SecurityHeadersMiddleware)
+      .apply(RequestIdMiddleware, HttpLoggerMiddleware, SecurityHeadersMiddleware)
       .forRoutes('*');
   }
 }

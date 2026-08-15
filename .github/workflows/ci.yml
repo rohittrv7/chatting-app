@@ -1,0 +1,93 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  validate-and-test:
+    name: Build & Test Backend & Monorepo
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Get pnpm store directory
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Install Monorepo Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma Client
+        run: pnpm --filter @chat/backend exec prisma generate
+
+      - name: Build Shared Packages
+        run: |
+          pnpm --filter @chat/shared-config build
+          pnpm --filter @chat/shared-contracts build
+          pnpm --filter @chat/shared-crypto build
+
+      - name: Build Backend Service
+        run: pnpm --filter @chat/backend build
+
+      - name: Run Backend Unit & Integration Tests
+        run: pnpm --filter @chat/backend test
+        env:
+          NODE_ENV: test
+          PORT: 3000
+          DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/chat_test'
+          REDIS_URL: 'redis://localhost:6379'
+          JWT_SECRET: 'ci_pipeline_dummy_jwt_secret_minimum_32_characters_long'
+          B2_KEY_ID: 'dummy_key_id'
+          B2_APPLICATION_KEY: 'dummy_app_key'
+          B2_BUCKET_NAME: 'dummy_bucket'
+          B2_REGION: 'us-east-005'
+          MOCK_SMS_MODE: 'true'
+
+  mobile-typecheck:
+    name: Mobile Typecheck & Validation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck Mobile App
+        working-directory: apps/mobile
+        run: npx tsc --noEmit

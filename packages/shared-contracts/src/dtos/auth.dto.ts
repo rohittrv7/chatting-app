@@ -1,4 +1,14 @@
-import { IsString, IsNotEmpty, IsNumber, IsOptional, IsNumberString, Length, MinLength, MaxLength, IsEnum } from 'class-validator';
+import {
+  IsString,
+  IsNotEmpty,
+  IsNumber,
+  IsOptional,
+  IsNumberString,
+  Length,
+  MinLength,
+  MaxLength,
+  IsEnum,
+} from 'class-validator';
 import { Platform } from '../enums/domain.enums';
 
 export class RequestOtpDto {
@@ -42,4 +52,24 @@ export class RefreshTokenDto {
   @IsString()
   @IsNotEmpty()
   deviceId!: string;
+}
+
+export class SyncContactsDto {
+  @IsNotEmpty()
+  phoneNumbers!: string[];
+}
+
+export interface RegisteredContactUserDto {
+  id: string;
+  phoneNumber: string;
+  displayName: string | null;
+  username: string | null;
+  avatarUrl: string | null;
+  about: string | null;
+  isRegistered: boolean;
+}
+
+export interface SyncContactsResponseDto {
+  registered: RegisteredContactUserDto[];
+  unregistered: string[];
 }

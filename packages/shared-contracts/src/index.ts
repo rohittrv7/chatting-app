@@ -6,3 +6,4 @@ export * from './dtos/key.dto';
 export * from './dtos/message.dto';
 export * from './dtos/call.dto';
 export * from './dtos/presence.dto';
+export * from './dtos/media.dto';

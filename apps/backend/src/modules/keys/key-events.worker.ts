@@ -1,15 +1,11 @@
 import { Processor, WorkerHost, InjectQueue } from '@nestjs/bullmq';
-import { Logger, Optional } from '@nestjs/common';
+import { Logger, Optional, OnModuleInit } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { Job, Queue } from 'bullmq';
 import { SocketEvent } from '@chat/shared-contracts';
 import { PrismaService } from '../../database/prisma.service';
 import { AuthGateway } from '../auth/auth.gateway';
-import {
-  KEY_EVENTS_QUEUE,
-  JOB_REPLENISH_OTPK,
-  JOB_ROTATE_SIGNED,
-} from './key.service';
+import { KEY_EVENTS_QUEUE, JOB_REPLENISH_OTPK, JOB_ROTATE_SIGNED } from './key.service';
 
 /**
  * Payload for the replenish-otpk job.
@@ -50,7 +46,7 @@ export interface RotateSignedJobData {
 @Processor(KEY_EVENTS_QUEUE, {
   concurrency: 5,
 })
-export class KeyEventsWorker extends WorkerHost {
+export class KeyEventsWorker extends WorkerHost implements OnModuleInit {
   private readonly logger = new Logger(KeyEventsWorker.name);
 
   constructor(
@@ -67,6 +63,15 @@ export class KeyEventsWorker extends WorkerHost {
     super();
   }
 
+  onModuleInit() {
+    this.worker?.on('error', () => {
+      // Suppress unhandled ioredis error event when Redis is offline
+    });
+    this.keyEventsQueue?.on('error', () => {
+      // Suppress unhandled ioredis error event when Redis is offline
+    });
+  }
+
   /**
    * Routes jobs to the appropriate handler based on job name.
    */
@@ -77,9 +82,7 @@ export class KeyEventsWorker extends WorkerHost {
       case JOB_ROTATE_SIGNED:
         return this.handleRotateSigned(job as Job<RotateSignedJobData>);
       default:
-        this.logger.warn(
-          `Unknown job name in ${KEY_EVENTS_QUEUE}: ${job.name}`,
-        );
+        this.logger.warn(`Unknown job name in ${KEY_EVENTS_QUEUE}: ${job.name}`);
     }
   }
 
@@ -91,9 +94,7 @@ export class KeyEventsWorker extends WorkerHost {
    * Devices join room `device:{deviceInternalId}` on WebSocket connection.
    * Requirements 3.5, 31.1
    */
-  private async handleReplenishOtpk(
-    job: Job<ReplenishOtpkJobData>,
-  ): Promise<void> {
+  private async handleReplenishOtpk(job: Job<ReplenishOtpkJobData>): Promise<void> {
     const { deviceInternalId, deviceId } = job.data;
     const room = `device:${deviceInternalId}`;
 
@@ -109,9 +110,7 @@ export class KeyEventsWorker extends WorkerHost {
    * rotate-signed-pre-key: Emits `v1.keys.rotate-signed` to the device's socket room.
    * Requirements 3.7, 31.2
    */
-  private async handleRotateSigned(
-    job: Job<RotateSignedJobData>,
-  ): Promise<void> {
+  private async handleRotateSigned(job: Job<RotateSignedJobData>): Promise<void> {
     const { deviceInternalId, deviceId } = job.data;
     const room = `device:${deviceInternalId}`;
 
@@ -135,9 +134,7 @@ export class KeyEventsWorker extends WorkerHost {
    */
   @Cron('0 0 1 * *')
   async scheduleSignedPreKeyRotation(): Promise<void> {
-    this.logger.log(
-      'Starting monthly SignedPreKey rotation sweep for all devices',
-    );
+    this.logger.log('Starting monthly SignedPreKey rotation sweep for all devices');
 
     const devices = await this.prisma.device.findMany({
       select: { id: true, deviceId: true },
@@ -163,9 +160,7 @@ export class KeyEventsWorker extends WorkerHost {
     }));
 
     await this.keyEventsQueue.addBulk(jobs);
-    this.logger.log(
-      `Dispatched ${jobs.length} ${JOB_ROTATE_SIGNED} jobs for monthly rotation`,
-    );
+    this.logger.log(`Dispatched ${jobs.length} ${JOB_ROTATE_SIGNED} jobs for monthly rotation`);
   }
 
   // ─── Helpers ───────────────────────────────────────────────────────────────
@@ -177,9 +172,7 @@ export class KeyEventsWorker extends WorkerHost {
    */
   private emitToRoom(room: string, event: string, data: unknown): void {
     if (!this.authGateway?.server) {
-      this.logger.warn(
-        `Socket.io server not available. Cannot emit ${event} to room ${room}`,
-      );
+      this.logger.warn(`Socket.io server not available. Cannot emit ${event} to room ${room}`);
       return;
     }
     this.authGateway.server.to(room).emit(event, data);

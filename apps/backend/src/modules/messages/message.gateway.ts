@@ -8,9 +8,14 @@ import {
   MessageBody,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
-import { UsePipes, ValidationPipe, Logger } from '@nestjs/common';
+import { UsePipes, ValidationPipe, Logger, Inject, forwardRef } from '@nestjs/common';
 import { MessageService } from './message.service';
-import { SocketEvent, SendMessageDto, UpdateReceiptDto, DeliveryStatus } from '@chat/shared-contracts';
+import {
+  SocketEvent,
+  SendMessageDto,
+  UpdateReceiptDto,
+  DeliveryStatus,
+} from '@chat/shared-contracts';
 
 @WebSocketGateway({
   cors: { origin: '*' },
@@ -22,7 +27,10 @@ export class MessageGateway implements OnGatewayConnection, OnGatewayDisconnect 
 
   private readonly logger = new Logger(MessageGateway.name);
 
-  constructor(private readonly messageService: MessageService) {}
+  constructor(
+    @Inject(forwardRef(() => MessageService))
+    private readonly messageService: MessageService,
+  ) {}
 
   async handleConnection(client: Socket) {
     const userId = client.handshake.query['userId'] as string;
@@ -62,13 +70,17 @@ export class MessageGateway implements OnGatewayConnection, OnGatewayDisconnect 
       createdAt: message.createdAt.toISOString(),
     });
 
-    const ciphertextsMap = payload.ciphertexts as Record<string, { ciphertext: string; type: number; registrationId: number }>;
+    const ciphertextsMap = payload.ciphertexts as Record<
+      string,
+      { ciphertext: string; type: number; registrationId: number }
+    >;
 
     for (const member of members) {
       for (const device of member.user.devices) {
         if (member.userId === senderUserId && device.id === senderDeviceId) continue;
 
-        const deviceCiphertext = ciphertextsMap[device.deviceId.toString()] || ciphertextsMap[device.id];
+        const deviceCiphertext =
+          ciphertextsMap[device.deviceId.toString()] || ciphertextsMap[device.id];
         if (deviceCiphertext) {
           const targetRoom = `user_${member.userId}_device_${device.id}`;
           this.server.to(targetRoom).emit(SocketEvent.MESSAGE_RECEIVE, {
