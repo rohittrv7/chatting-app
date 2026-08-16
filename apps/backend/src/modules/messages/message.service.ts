@@ -7,6 +7,7 @@ import {
   forwardRef,
 } from '@nestjs/common';
 import { MessageRepository } from './message.repository';
+import { MessageRedisService } from './message-redis.service';
 import { SendMessageDto, DeliveryStatus, SocketEvent } from '@chat/shared-contracts';
 import { MessageGateway } from './message.gateway';
 
@@ -14,6 +15,7 @@ import { MessageGateway } from './message.gateway';
 export class MessageService {
   constructor(
     private readonly messageRepository: MessageRepository,
+    private readonly messageRedisService: MessageRedisService,
     @Optional()
     @Inject(forwardRef(() => MessageGateway))
     private readonly messageGateway?: MessageGateway,
@@ -22,6 +24,13 @@ export class MessageService {
   async handleSendMessage(senderUserId: string, senderDeviceId: string, dto: SendMessageDto) {
     const message = await this.messageRepository.createMessage(senderUserId, senderDeviceId, dto);
     const members = await this.messageRepository.getConversationMembers(dto.conversationId);
+
+    // Cache message in Redis for lightning-fast subsequent fetches
+    await this.messageRedisService.cacheMessage(dto.conversationId, {
+      ...message,
+      clientMessageId: dto.clientMessageId,
+      status: DeliveryStatus.SERVER_RECEIVED,
+    });
 
     return {
       message,
@@ -32,19 +41,45 @@ export class MessageService {
   async getMessages(
     conversationId: string,
     requestingUserId?: string,
-    limit?: number,
+    limit = 50,
     cursor?: string,
   ) {
-    return this.messageRepository.getHistoricalMessages(
+    // Check Redis cache first if no cursor is requested
+    if (!cursor) {
+      const cached = await this.messageRedisService.getCachedMessages(conversationId, limit);
+      if (cached && cached.length > 0) {
+        return cached;
+      }
+    }
+
+    const messages = await this.messageRepository.getHistoricalMessages(
       conversationId,
       requestingUserId,
       limit,
       cursor,
     );
+
+    // Warm up Redis cache with recent messages
+    if (!cursor && messages && messages.length > 0) {
+      for (const msg of [...messages].reverse()) {
+        await this.messageRedisService.cacheMessage(conversationId, msg);
+      }
+    }
+
+    return messages;
   }
 
   async updateReceipt(messageId: string, userId: string, deviceId: string, status: DeliveryStatus) {
-    return this.messageRepository.updateReceipt(messageId, userId, deviceId, status);
+    const receipt = await this.messageRepository.updateReceipt(messageId, userId, deviceId, status);
+    const msg = await this.messageRepository.findMessageById(messageId);
+    if (msg) {
+      await this.messageRedisService.updateCachedMessageStatus(
+        msg.conversationId,
+        messageId,
+        status,
+      );
+    }
+    return receipt;
   }
 
   /**

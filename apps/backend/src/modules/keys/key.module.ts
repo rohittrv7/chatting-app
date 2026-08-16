@@ -41,15 +41,31 @@ import { AuthGateway } from '../auth/auth.gateway';
     BullModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
-      useFactory: (configService: ConfigService) => ({
-        connection: {
-          host: configService.get<string>('REDIS_HOST', 'localhost'),
-          port: configService.get<number>('REDIS_PORT', 6379),
-          maxRetriesPerRequest: null,
-          enableOfflineQueue: false,
-          retryStrategy: (times: number) => (times > 3 ? null : Math.min(times * 1000, 3000)),
-        },
-      }),
+      useFactory: (configService: ConfigService) => {
+        const redisUrl = configService.get<string>('REDIS_URL');
+        if (redisUrl && redisUrl.trim().length > 0) {
+          const isTls = redisUrl.startsWith('rediss://');
+          return {
+            connection: {
+              url: redisUrl,
+              maxRetriesPerRequest: null,
+              enableOfflineQueue: false,
+              tls: isTls ? { rejectUnauthorized: false } : undefined,
+              retryStrategy: (times: number) => (times > 3 ? null : Math.min(times * 1000, 3000)),
+            },
+          };
+        }
+        return {
+          connection: {
+            host: configService.get<string>('REDIS_HOST', 'localhost'),
+            port: configService.get<number>('REDIS_PORT', 6379),
+            password: configService.get<string>('REDIS_PASSWORD'),
+            maxRetriesPerRequest: null,
+            enableOfflineQueue: false,
+            retryStrategy: (times: number) => (times > 3 ? null : Math.min(times * 1000, 3000)),
+          },
+        };
+      },
     }),
     // Register the key-events queue with default job options applied to every
     // job added via this module's Queue instance.

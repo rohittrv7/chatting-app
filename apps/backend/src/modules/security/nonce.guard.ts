@@ -8,6 +8,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { Request } from 'express';
 import Redis from 'ioredis';
+import { createRedisClient } from '../../common/utils/redis-factory';
 
 @Injectable()
 export class NonceGuard implements CanActivate {
@@ -15,18 +16,7 @@ export class NonceGuard implements CanActivate {
   private readonly memoryNonces = new Map<string, number>();
 
   constructor(private readonly configService: ConfigService) {
-    this.redis = new Redis({
-      host: this.configService.get<string>('REDIS_HOST', 'localhost'),
-      port: this.configService.get<number>('REDIS_PORT', 6379),
-      password: this.configService.get<string>('REDIS_PASSWORD'),
-      lazyConnect: true,
-      enableOfflineQueue: false,
-      maxRetriesPerRequest: 1,
-      retryStrategy: (times) => (times > 3 ? null : Math.min(times * 1000, 3000)),
-    });
-    this.redis.on('error', () => {
-      // Suppress unhandled crash — memory fallback handles nonces when Redis is offline
-    });
+    this.redis = createRedisClient(this.configService);
   }
 
   async canActivate(context: ExecutionContext): Promise<boolean> {

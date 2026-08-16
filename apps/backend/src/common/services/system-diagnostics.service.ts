@@ -29,26 +29,41 @@ export class SystemDiagnosticsService {
     }
 
     // 2. Check Redis
+    const redisUrl = this.configService.get<string>('REDIS_URL', '');
     const redisHost = this.configService.get<string>('REDIS_HOST', 'localhost');
     const redisPort = this.configService.get<number>('REDIS_PORT', 6379);
-    let redisStatus = `${colors.bold}${colors.brightYellow}⚠ OFFLINE / MEMORY MODE${colors.reset} ${colors.gray}(${redisHost}:${redisPort})${colors.reset}`;
+    const displayTarget = redisUrl
+      ? redisUrl.replace(/:\/\/.*@/, '://***@').slice(0, 45) + '...'
+      : `${redisHost}:${redisPort}`;
+
+    let redisStatus = `${colors.bold}${colors.brightYellow}⚠ OFFLINE / MEMORY MODE${colors.reset} ${colors.gray}(${displayTarget})${colors.reset}`;
     try {
-      const testRedis = new Redis({
-        host: redisHost,
-        port: redisPort,
-        connectTimeout: 800,
-        maxRetriesPerRequest: 1,
-        lazyConnect: true,
-        enableOfflineQueue: false,
-        retryStrategy: () => null,
-      });
+      const testRedis = redisUrl
+        ? new Redis(redisUrl, {
+            connectTimeout: 3000,
+            maxRetriesPerRequest: 1,
+            lazyConnect: true,
+            enableOfflineQueue: false,
+            tls: redisUrl.startsWith('rediss://') ? { rejectUnauthorized: false } : undefined,
+            retryStrategy: () => null,
+          })
+        : new Redis({
+            host: redisHost,
+            port: redisPort,
+            connectTimeout: 1000,
+            maxRetriesPerRequest: 1,
+            lazyConnect: true,
+            enableOfflineQueue: false,
+            retryStrategy: () => null,
+          });
+
       testRedis.on('error', () => {});
       await testRedis.connect();
       await testRedis.ping();
-      redisStatus = `${colors.bold}${colors.brightGreen}✔ CONNECTED${colors.reset} ${colors.gray}(${redisHost}:${redisPort})${colors.reset}`;
+      redisStatus = `${colors.bold}${colors.brightGreen}✔ CONNECTED${colors.reset} ${colors.gray}(${displayTarget})${colors.reset}`;
       testRedis.disconnect();
     } catch {
-      redisStatus = `${colors.bold}${colors.brightYellow}⚠ OFFLINE / MEMORY MODE${colors.reset} ${colors.gray}(${redisHost}:${redisPort})${colors.reset}`;
+      redisStatus = `${colors.bold}${colors.brightYellow}⚠ OFFLINE / MEMORY MODE${colors.reset} ${colors.gray}(${displayTarget})${colors.reset}`;
     }
 
     // 3. Check Backblaze B2 Storage

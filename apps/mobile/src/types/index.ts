@@ -22,6 +22,7 @@ export interface ChatMessage {
   isFile?: boolean;
   fileSize?: string;
   imagePath?: string;
+  isStarred?: boolean;
 }
 
 export interface UserProfile {

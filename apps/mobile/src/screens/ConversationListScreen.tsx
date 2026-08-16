@@ -12,11 +12,15 @@ import {
   ActivityIndicator,
   Platform,
   useWindowDimensions,
+  BackHandler,
 } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types';
 import { useChat } from '../context/ChatContext';
 import { useTheme } from '../context/ThemeContext';
+import { useSelector } from 'react-redux';
+import { RootState } from '../store';
+import { useToast } from '../context/ToastContext';
 import {
   Search,
   Plus,
@@ -41,9 +45,13 @@ import {
   HardDrive,
   HelpCircle,
   ChevronRight,
+  Share2,
+  Sparkles,
 } from 'lucide-react-native';
 import {
   fetchDeviceContacts,
+  syncContactsWithServer,
+  inviteContact,
   DeviceContact,
   requestContactsPermission,
 } from '../services/contactsService';
@@ -55,6 +63,8 @@ type Props = NativeStackScreenProps<RootStackParamList, 'MainTabs'>;
 export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
   const { conversations, addConversation, userProfile } = useChat();
   const { themeMode, colors, setThemeMode } = useTheme();
+  const { showToast } = useToast();
+  const token = useSelector((state: RootState) => state.auth.token);
 
   const [selectedBottomNav, setSelectedBottomNav] = useState<number>(0); // 0: Chats, 1: Calls, 2: People, 3: Settings
   const horizontalScrollRef = useRef<ScrollView>(null);
@@ -69,7 +79,8 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
   const [searchQuery, setSearchQuery] = useState<string>('');
 
   // Device contacts state for People tab
-  const [deviceContacts, setDeviceContacts] = useState<DeviceContact[]>([]);
+  const [registeredContacts, setRegisteredContacts] = useState<DeviceContact[]>([]);
+  const [unregisteredContacts, setUnregisteredContacts] = useState<DeviceContact[]>([]);
   const [contactsLoading, setContactsLoading] = useState<boolean>(false);
   const [hasContactsPermission, setHasContactsPermission] = useState<boolean>(false);
   const [peopleSearchQuery, setPeopleSearchQuery] = useState<string>('');
@@ -78,14 +89,35 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
     setContactsLoading(true);
     const result = await fetchDeviceContacts();
     setHasContactsPermission(result.granted);
-    setDeviceContacts(result.contacts);
+
+    if (result.granted && result.contacts.length > 0) {
+      const syncRes = await syncContactsWithServer(result.contacts, token || undefined);
+      setRegisteredContacts(syncRes.registered);
+      setUnregisteredContacts(syncRes.unregistered);
+    } else {
+      setRegisteredContacts([]);
+      setUnregisteredContacts([]);
+    }
     setContactsLoading(false);
   };
 
   useEffect(() => {
     requestAllAppPermissions();
     loadContacts();
-  }, []);
+  }, [token]);
+
+  useEffect(() => {
+    const onBackPress = () => {
+      if (selectedBottomNav !== 0) {
+        handleTabPress(0);
+        return true;
+      }
+      return false;
+    };
+
+    const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+    return () => subscription.remove();
+  }, [selectedBottomNav, screenWidth]);
 
   const handleGrantPermission = async () => {
     const granted = await requestContactsPermission();
@@ -111,25 +143,57 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
     return true;
   });
 
-  const filteredPeople = deviceContacts.filter((c) => {
-    const q = peopleSearchQuery.toLowerCase();
-    return (
-      c.name.toLowerCase().includes(q) ||
-      c.phone.toLowerCase().includes(q) ||
-      (c.username && c.username.toLowerCase().includes(q))
+  const handleInviteContact = async (contact: DeviceContact) => {
+    showToast(`Sending invite to ${contact.name}...`, 'info');
+    await inviteContact(contact.phone, contact.name);
+  };
+
+  const peopleQuery = peopleSearchQuery.toLowerCase().trim();
+  const filteredRegistered = registeredContacts.filter(
+    (c) =>
+      c.name.toLowerCase().includes(peopleQuery) ||
+      c.phone.toLowerCase().includes(peopleQuery) ||
+      (c.username && c.username.toLowerCase().includes(peopleQuery)),
+  );
+  const filteredUnregistered = unregisteredContacts.filter(
+    (c) =>
+      c.name.toLowerCase().includes(peopleQuery) ||
+      c.phone.toLowerCase().includes(peopleQuery) ||
+      (c.username && c.username.toLowerCase().includes(peopleQuery)),
+  );
+
+  type PeopleListItem =
+    | { type: 'header_registered'; count: number }
+    | { type: 'contact_registered'; data: DeviceContact }
+    | { type: 'header_unregistered'; count: number }
+    | { type: 'contact_unregistered'; data: DeviceContact };
+
+  const peopleListItems: PeopleListItem[] = [];
+  if (filteredRegistered.length > 0) {
+    peopleListItems.push({ type: 'header_registered', count: filteredRegistered.length });
+    filteredRegistered.forEach((c) =>
+      peopleListItems.push({ type: 'contact_registered', data: c }),
     );
-  });
+  }
+  if (filteredUnregistered.length > 0) {
+    peopleListItems.push({ type: 'header_unregistered', count: filteredUnregistered.length });
+    filteredUnregistered.forEach((c) =>
+      peopleListItems.push({ type: 'contact_unregistered', data: c }),
+    );
+  }
 
   // 💬 CHATS TAB (Dynamic Pure Deep Black / Light Theme)
   const renderChatsTab = () => (
     <View style={{ flex: 1 }}>
       {/* Top Header Bar */}
       <View style={styles.topHeaderRow}>
-        <TouchableOpacity
-          style={styles.avatarWrapper}
-          onPress={() => setSelectedBottomNav(3)}
-        >
-          <View style={[styles.headerAvatar, { backgroundColor: colors.surface, borderColor: colors.cardBorder }]}>
+        <TouchableOpacity style={styles.avatarWrapper} onPress={() => setSelectedBottomNav(3)}>
+          <View
+            style={[
+              styles.headerAvatar,
+              { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+            ]}
+          >
             <Text style={[styles.headerAvatarLetter, { color: colors.primaryIndigo }]}>
               {userProfile.name ? userProfile.name[0].toUpperCase() : 'R'}
             </Text>
@@ -138,7 +202,12 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
         </TouchableOpacity>
 
         {isSearching ? (
-          <View style={[styles.searchInputWrapper, { backgroundColor: colors.surface, borderColor: colors.cardBorder }]}>
+          <View
+            style={[
+              styles.searchInputWrapper,
+              { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+            ]}
+          >
             <TextInput
               style={[styles.searchInput, { color: colors.textPrimary }]}
               placeholder="Search by name or @username..."
@@ -154,7 +223,10 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
 
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
           <TouchableOpacity
-            style={[styles.circleIconBtn, { backgroundColor: colors.surface, borderColor: colors.cardBorder }]}
+            style={[
+              styles.circleIconBtn,
+              { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+            ]}
             onPress={() => {
               setIsSearching(!isSearching);
               if (isSearching) setSearchQuery('');
@@ -217,7 +289,10 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
 
           return (
             <TouchableOpacity
-              style={[styles.chatCard, { backgroundColor: colors.surface, borderColor: colors.cardBorder }]}
+              style={[
+                styles.chatCard,
+                { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+              ]}
               activeOpacity={0.8}
               onPress={() =>
                 navigation.navigate('Chat', { conversationId: item.id, title: item.title })
@@ -234,13 +309,18 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                     {item.avatar}
                   </Text>
                 </View>
-                {item.isOnline && <View style={[styles.onlineBadgeCard, { borderColor: colors.surface }]} />}
+                {item.isOnline && (
+                  <View style={[styles.onlineBadgeCard, { borderColor: colors.surface }]} />
+                )}
               </View>
 
               <View style={styles.cardContent}>
                 <View style={styles.cardHeaderRow}>
                   <View style={{ flex: 1, marginRight: 8 }}>
-                    <Text style={[styles.cardTitle, { color: colors.textPrimary }]} numberOfLines={1}>
+                    <Text
+                      style={[styles.cardTitle, { color: colors.textPrimary }]}
+                      numberOfLines={1}
+                    >
                       {item.title}
                     </Text>
                     {item.username && (
@@ -249,11 +329,16 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                       </Text>
                     )}
                   </View>
-                  <Text style={[styles.cardTime, { color: colors.textSecondary }]}>{item.time}</Text>
+                  <Text style={[styles.cardTime, { color: colors.textSecondary }]}>
+                    {item.time}
+                  </Text>
                 </View>
 
                 <View style={styles.cardSubtitleRow}>
-                  <Text style={[styles.cardSubtitle, { color: colors.textSecondary }]} numberOfLines={1}>
+                  <Text
+                    style={[styles.cardSubtitle, { color: colors.textSecondary }]}
+                    numberOfLines={1}
+                  >
                     {item.lastMessage}
                   </Text>
                   {isMuted ? (
@@ -313,15 +398,39 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
         ].map((call, index) => (
           <View
             key={index}
-            style={[styles.callCard, { backgroundColor: colors.surface, borderColor: colors.cardBorder }]}
+            style={[
+              styles.callCard,
+              { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+            ]}
           >
             <View style={[styles.avatarBox, { backgroundColor: colors.cardBorder }]}>
-              <Text style={[styles.avatarLetter, { color: colors.textPrimary }]}>{call.name[0]}</Text>
+              <Text style={[styles.avatarLetter, { color: colors.textPrimary }]}>
+                {call.name[0]}
+              </Text>
             </View>
-            <View style={{ flex: 1, marginLeft: 12 }}>
-              <Text style={[styles.callName, { color: colors.textPrimary }]}>{call.name}</Text>
-              <Text style={[styles.contactHandle, { color: colors.primaryIndigo }]}>{call.username}</Text>
-              <Text style={call.isMissed ? styles.missedTime : [styles.callTime, { color: colors.textSecondary }]}>
+            <View style={{ flex: 1, marginLeft: 12, marginRight: 8, justifyContent: 'center' }}>
+              <Text
+                style={[styles.callName, { color: colors.textPrimary }]}
+                numberOfLines={1}
+                ellipsizeMode="tail"
+              >
+                {call.name}
+              </Text>
+              <Text
+                style={[styles.contactHandle, { color: colors.primaryIndigo }]}
+                numberOfLines={1}
+                ellipsizeMode="tail"
+              >
+                {call.username}
+              </Text>
+              <Text
+                style={
+                  call.isMissed
+                    ? styles.missedTime
+                    : [styles.callTime, { color: colors.textSecondary }]
+                }
+                numberOfLines={1}
+              >
                 {call.time}
               </Text>
             </View>
@@ -345,13 +454,16 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
     </View>
   );
 
-  // 👥 PEOPLE TAB (Real Phone Contacts Sync + Instagram Username Search)
+  // 👥 PEOPLE TAB (Real Phone Contacts Sync with Chat & Invite Actions)
   const renderPeopleTab = () => (
     <View style={{ flex: 1 }}>
       <View style={styles.topHeaderRow}>
         <Text style={[styles.headerTitle, { color: colors.textPrimary }]}>People</Text>
         <TouchableOpacity
-          style={[styles.circleIconBtn, { backgroundColor: colors.surface, borderColor: colors.cardBorder }]}
+          style={[
+            styles.circleIconBtn,
+            { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+          ]}
           onPress={loadContacts}
         >
           <RefreshCw size={18} color={colors.primaryIndigo} />
@@ -360,7 +472,10 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
 
       {/* Sync Banner Card */}
       <TouchableOpacity
-        style={[styles.syncBannerCard, { backgroundColor: colors.surface, borderColor: colors.cardBorder }]}
+        style={[
+          styles.syncBannerCard,
+          { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+        ]}
         activeOpacity={0.8}
         onPress={() => navigation.navigate('Contacts')}
       >
@@ -371,7 +486,7 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
           <Text style={[styles.settingTitle, { color: colors.textPrimary }]}>Phone Contacts</Text>
           <Text style={[styles.settingSubtitle, { color: colors.textSecondary }]}>
             {hasContactsPermission
-              ? `${deviceContacts.length} contacts synced from phone`
+              ? `${registeredContacts.length} on app • ${unregisteredContacts.length} to invite`
               : 'Tap to sync phone contacts'}
           </Text>
         </View>
@@ -379,7 +494,12 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
 
       {/* Search Input Bar */}
       {hasContactsPermission && (
-        <View style={[styles.peopleSearchBox, { backgroundColor: colors.surface, borderColor: colors.cardBorder }]}>
+        <View
+          style={[
+            styles.peopleSearchBox,
+            { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+          ]}
+        >
           <Search size={18} color={colors.textSecondary} style={{ marginRight: 8 }} />
           <TextInput
             style={[styles.searchInput, { color: colors.textPrimary }]}
@@ -395,14 +515,23 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
       {contactsLoading ? (
         <View style={styles.centerBox}>
           <ActivityIndicator size="large" color={colors.primaryIndigo} />
-          <Text style={[styles.loadingText, { color: colors.textSecondary }]}>Syncing contacts...</Text>
+          <Text style={[styles.loadingText, { color: colors.textSecondary }]}>
+            Syncing contacts on server...
+          </Text>
         </View>
       ) : !hasContactsPermission ? (
         <View style={styles.centerBox}>
-          <View style={[styles.permissionCircle, { backgroundColor: colors.surface, borderColor: colors.cardBorder }]}>
+          <View
+            style={[
+              styles.permissionCircle,
+              { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+            ]}
+          >
             <ShieldAlert size={36} color={colors.primaryIndigo} />
           </View>
-          <Text style={[styles.permTitle, { color: colors.textPrimary }]}>Contacts Permission Required</Text>
+          <Text style={[styles.permTitle, { color: colors.textPrimary }]}>
+            Contacts Permission Required
+          </Text>
           <Text style={[styles.permDesc, { color: colors.textSecondary }]}>
             Allow chatting system to access your device contacts so you can message your friends.
           </Text>
@@ -411,7 +540,7 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
             <Text style={styles.grantBtnText}>Allow Contacts Access</Text>
           </TouchableOpacity>
         </View>
-      ) : filteredPeople.length === 0 ? (
+      ) : peopleListItems.length === 0 ? (
         <View style={styles.centerBox}>
           <Text style={[styles.permTitle, { color: colors.textPrimary }]}>No Contacts Found</Text>
           <Text style={[styles.permDesc, { color: colors.textSecondary }]}>
@@ -422,28 +551,148 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
         </View>
       ) : (
         <FlatList
-          data={filteredPeople}
-          keyExtractor={(item) => item.id}
-          contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 6, paddingBottom: 20 }}
-          renderItem={({ item }) => (
-            <TouchableOpacity
-              style={[styles.contactItem, { backgroundColor: colors.surface, borderColor: colors.cardBorder }]}
-              activeOpacity={0.8}
-              onPress={() => handleStartChatWithContact(item.name, item.username)}
-            >
-              <View style={[styles.avatarBox, { backgroundColor: colors.cardBorder }]}>
-                <Text style={[styles.avatarLetter, { color: colors.primaryIndigo }]}>
-                  {item.name ? item.name[0].toUpperCase() : '?'}
-                </Text>
-              </View>
-              <View style={{ flex: 1, marginLeft: 12 }}>
-                <Text style={[styles.callName, { color: colors.textPrimary }]}>{item.name}</Text>
-                <Text style={[styles.contactHandle, { color: colors.primaryIndigo }]}>{item.username}</Text>
-                <Text style={[styles.callTime, { color: colors.textSecondary }]}>{item.phone}</Text>
-              </View>
-              <UserCheck size={18} color={colors.primaryIndigo} />
-            </TouchableOpacity>
-          )}
+          data={peopleListItems}
+          keyExtractor={(item, index) =>
+            item.type === 'header_registered' || item.type === 'header_unregistered'
+              ? `${item.type}_${index}`
+              : `${item.type}_${item.data.id}`
+          }
+          contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 6, paddingBottom: 24 }}
+          renderItem={({ item }) => {
+            if (item.type === 'header_registered') {
+              return (
+                <View style={styles.peopleSectionHeader}>
+                  <View
+                    style={[
+                      styles.peopleBadgePill,
+                      { backgroundColor: colors.surface, borderColor: colors.primaryIndigo },
+                    ]}
+                  >
+                    <Sparkles size={13} color={colors.primaryIndigo} />
+                    <Text style={[styles.peopleBadgeText, { color: colors.primaryIndigo }]}>
+                      Contacts on App ({item.count})
+                    </Text>
+                  </View>
+                </View>
+              );
+            }
+
+            if (item.type === 'header_unregistered') {
+              return (
+                <View style={[styles.peopleSectionHeader, { marginTop: 18 }]}>
+                  <View
+                    style={[
+                      styles.peopleBadgePill,
+                      { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+                    ]}
+                  >
+                    <Users size={13} color={colors.textSecondary} />
+                    <Text style={[styles.peopleBadgeText, { color: colors.textSecondary }]}>
+                      Invite to Chat ({item.count})
+                    </Text>
+                  </View>
+                </View>
+              );
+            }
+
+            if (item.type === 'contact_registered') {
+              const contact = item.data;
+              return (
+                <TouchableOpacity
+                  style={[
+                    styles.contactItem,
+                    styles.registeredContactCard,
+                    { backgroundColor: colors.surface, borderColor: colors.primaryIndigo },
+                  ]}
+                  activeOpacity={0.8}
+                  onPress={() => handleStartChatWithContact(contact.name, contact.username)}
+                >
+                  <View style={[styles.avatarBox, { backgroundColor: colors.primaryIndigo }]}>
+                    <Text style={[styles.avatarLetter, { color: '#FFF' }]}>
+                      {contact.name ? contact.name[0].toUpperCase() : '?'}
+                    </Text>
+                  </View>
+                  <View style={{ flex: 1, marginLeft: 12 }}>
+                    <View style={styles.nameRow}>
+                      <Text
+                        style={[styles.callName, { color: colors.textPrimary }]}
+                        numberOfLines={1}
+                      >
+                        {contact.name}
+                      </Text>
+                      <View style={[styles.activeDot, { backgroundColor: '#10B981' }]} />
+                    </View>
+                    <Text
+                      style={[styles.contactHandle, { color: colors.primaryIndigo }]}
+                      numberOfLines={1}
+                    >
+                      {contact.username || contact.about || 'Available'}
+                    </Text>
+                    <Text
+                      style={[styles.callTime, { color: colors.textSecondary }]}
+                      numberOfLines={1}
+                    >
+                      {contact.phone}
+                    </Text>
+                  </View>
+
+                  {/* Chat Action Button */}
+                  <TouchableOpacity
+                    style={[styles.chatBtn, { backgroundColor: colors.primaryIndigo }]}
+                    onPress={() => handleStartChatWithContact(contact.name, contact.username)}
+                  >
+                    <MessageSquare size={15} color="#FFF" style={{ marginRight: 5 }} />
+                    <Text style={styles.chatBtnText}>Chat</Text>
+                  </TouchableOpacity>
+                </TouchableOpacity>
+              );
+            }
+
+            if (item.type === 'contact_unregistered') {
+              const contact = item.data;
+              return (
+                <View
+                  style={[
+                    styles.contactItem,
+                    { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+                  ]}
+                >
+                  <View style={[styles.avatarBox, { backgroundColor: colors.cardBorder }]}>
+                    <Text style={[styles.avatarLetter, { color: colors.textSecondary }]}>
+                      {contact.name ? contact.name[0].toUpperCase() : '?'}
+                    </Text>
+                  </View>
+                  <View style={{ flex: 1, marginLeft: 12 }}>
+                    <Text
+                      style={[styles.callName, { color: colors.textPrimary }]}
+                      numberOfLines={1}
+                    >
+                      {contact.name}
+                    </Text>
+                    <Text
+                      style={[styles.callTime, { color: colors.textSecondary }]}
+                      numberOfLines={1}
+                    >
+                      {contact.phone}
+                    </Text>
+                  </View>
+
+                  {/* Invite Action Button */}
+                  <TouchableOpacity
+                    style={[styles.inviteBtn, { borderColor: colors.primaryIndigo }]}
+                    onPress={() => handleInviteContact(contact)}
+                  >
+                    <Share2 size={13} color={colors.primaryIndigo} style={{ marginRight: 5 }} />
+                    <Text style={[styles.inviteBtnText, { color: colors.primaryIndigo }]}>
+                      Invite
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              );
+            }
+
+            return null;
+          }}
         />
       )}
     </View>
@@ -457,10 +706,15 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
         <Text style={[styles.headerTitle, { color: colors.textPrimary }]}>Settings</Text>
       </View>
 
-      <ScrollView contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 6, paddingBottom: 24 }}>
+      <ScrollView
+        contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 6, paddingBottom: 24 }}
+      >
         {/* 👤 Instagram/WhatsApp Style Profile Card */}
         <TouchableOpacity
-          style={[styles.profileCard, { backgroundColor: colors.surface, borderColor: colors.cardBorder }]}
+          style={[
+            styles.profileCard,
+            { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+          ]}
           activeOpacity={0.85}
           onPress={() => navigation.navigate('EditProfile')}
         >
@@ -470,14 +724,23 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                 {userProfile.name ? userProfile.name[0].toUpperCase() : 'R'}
               </Text>
             </View>
-            <View style={[styles.cameraBadge, { backgroundColor: colors.primaryIndigo, borderColor: colors.surface }]}>
+            <View
+              style={[
+                styles.cameraBadge,
+                { backgroundColor: colors.primaryIndigo, borderColor: colors.surface },
+              ]}
+            >
               <Camera size={11} color="#FFF" />
             </View>
           </View>
 
           <View style={{ flex: 1, marginLeft: 14 }}>
-            <Text style={[styles.profileName, { color: colors.textPrimary }]}>{userProfile.name}</Text>
-            <Text style={[styles.profileHandle, { color: colors.primaryIndigo }]}>{userProfile.username}</Text>
+            <Text style={[styles.profileName, { color: colors.textPrimary }]}>
+              {userProfile.name}
+            </Text>
+            <Text style={[styles.profileHandle, { color: colors.primaryIndigo }]}>
+              {userProfile.username}
+            </Text>
             <Text style={[styles.profileStatus, { color: colors.textSecondary }]} numberOfLines={1}>
               {userProfile.status}
             </Text>
@@ -492,14 +755,23 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
         </TouchableOpacity>
 
         {/* Quick Appearance / Theme Card */}
-        <View style={[styles.themeCardBox, { backgroundColor: colors.surface, borderColor: colors.cardBorder }]}>
-          <Text style={[styles.themeBoxLabel, { color: colors.textSecondary }]}>SELECT APP THEME</Text>
+        <View
+          style={[
+            styles.themeCardBox,
+            { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+          ]}
+        >
+          <Text style={[styles.themeBoxLabel, { color: colors.textSecondary }]}>
+            SELECT APP THEME
+          </Text>
           <View style={styles.themeToggleRow}>
             {/* Pure Deep Black Dark Mode Option */}
             <TouchableOpacity
               style={[
                 styles.themeChoiceBtn,
-                { backgroundColor: themeMode === 'dark' ? colors.primaryIndigo : colors.cardBorder },
+                {
+                  backgroundColor: themeMode === 'dark' ? colors.primaryIndigo : colors.cardBorder,
+                },
               ]}
               onPress={() => setThemeMode('dark')}
               activeOpacity={0.8}
@@ -519,7 +791,9 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
             <TouchableOpacity
               style={[
                 styles.themeChoiceBtn,
-                { backgroundColor: themeMode === 'light' ? colors.primaryIndigo : colors.cardBorder },
+                {
+                  backgroundColor: themeMode === 'light' ? colors.primaryIndigo : colors.cardBorder,
+                },
               ]}
               onPress={() => setThemeMode('light')}
               activeOpacity={0.8}
@@ -595,7 +869,10 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
           return (
             <TouchableOpacity
               key={idx}
-              style={[styles.settingRowItem, { backgroundColor: colors.surface, borderColor: colors.cardBorder }]}
+              style={[
+                styles.settingRowItem,
+                { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+              ]}
               activeOpacity={0.8}
               onPress={() => navigation.navigate(setting.screen as any)}
             >
@@ -603,8 +880,13 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                 <IconComp size={20} color={colors.primaryIndigo} />
               </View>
               <View style={{ flex: 1, marginLeft: 14 }}>
-                <Text style={[styles.settingItemTitle, { color: colors.textPrimary }]}>{setting.title}</Text>
-                <Text style={[styles.settingItemSubtitle, { color: colors.textSecondary }]} numberOfLines={1}>
+                <Text style={[styles.settingItemTitle, { color: colors.textPrimary }]}>
+                  {setting.title}
+                </Text>
+                <Text
+                  style={[styles.settingItemSubtitle, { color: colors.textSecondary }]}
+                  numberOfLines={1}
+                >
                   {setting.subtitle}
                 </Text>
               </View>
@@ -651,7 +933,12 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
       </ScrollView>
 
       {/* Dynamic Bottom Navigation Bar */}
-      <View style={[styles.bottomBar, { backgroundColor: colors.bottomBarBg, borderTopColor: colors.cardBorder }]}>
+      <View
+        style={[
+          styles.bottomBar,
+          { backgroundColor: colors.bottomBarBg, borderTopColor: colors.cardBorder },
+        ]}
+      >
         {[
           { label: 'Chats', icon: MessageSquare },
           { label: 'Calls', icon: Phone },
@@ -982,7 +1269,72 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
   },
-  // Profile Card Styles
+  // People Tab Section & Action Styles
+  peopleSectionHeader: {
+    marginVertical: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  peopleBadgePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 16,
+    borderWidth: 1,
+  },
+  peopleBadgeText: {
+    fontSize: 12,
+    fontWeight: '700',
+    marginLeft: 6,
+  },
+  registeredContactCard: {
+    borderWidth: 1.5,
+    shadowColor: '#6366F1',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 6,
+    elevation: 3,
+  },
+  nameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  activeDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+    marginLeft: 6,
+  },
+  chatBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    shadowColor: '#6366F1',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  chatBtnText: {
+    color: '#FFF',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  inviteBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    borderWidth: 1.2,
+  },
+  inviteBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
   profileCard: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -127,7 +127,10 @@ export const NewUserProfileSetupScreen: React.FC<Props> = ({ route, navigation }
       await apiService.updateProfile(token || '', newProfile);
 
       showToast('Profile Created Successfully!', 'success', 2500);
-      navigation.replace('MainTabs');
+      navigation.reset({
+        index: 0,
+        routes: [{ name: 'MainTabs' }],
+      });
     });
   };
 
@@ -144,28 +147,56 @@ export const NewUserProfileSetupScreen: React.FC<Props> = ({ route, navigation }
         keyboardShouldPersistTaps="handled"
       >
         {/* Animated Welcome Badge */}
-        <Animated.View style={[styles.badgeWrapper, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
-          <View style={[styles.badge, { backgroundColor: colors.surface, borderColor: colors.cardBorder }]}>
+        <Animated.View
+          style={[
+            styles.badgeWrapper,
+            { opacity: fadeAnim, transform: [{ translateY: slideAnim }] },
+          ]}
+        >
+          <View
+            style={[
+              styles.badge,
+              { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+            ]}
+          >
             <Sparkles size={16} color={colors.primaryIndigo} />
             <Text style={[styles.badgeText, { color: colors.primaryIndigo }]}>New User Setup</Text>
           </View>
         </Animated.View>
 
         {/* Animated Headline without emojis */}
-        <Animated.View style={[styles.titleSection, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
-          <Text style={[styles.title, { color: colors.textPrimary }]}>Welcome! Setup Your Profile</Text>
+        <Animated.View
+          style={[
+            styles.titleSection,
+            { opacity: fadeAnim, transform: [{ translateY: slideAnim }] },
+          ]}
+        >
+          <Text style={[styles.title, { color: colors.textPrimary }]}>
+            Welcome! Setup Your Profile
+          </Text>
           <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
             Personalize your identity so your friends & contacts can find you easily.
           </Text>
         </Animated.View>
 
         {/* Animated Avatar Picker */}
-        <Animated.View style={[styles.avatarSection, { opacity: fadeAnim, transform: [{ scale: scaleAnim }] }]}>
-          <TouchableOpacity activeOpacity={0.85} onPress={handlePickAvatar} style={styles.avatarTouchable}>
+        <Animated.View
+          style={[styles.avatarSection, { opacity: fadeAnim, transform: [{ scale: scaleAnim }] }]}
+        >
+          <TouchableOpacity
+            activeOpacity={0.85}
+            onPress={handlePickAvatar}
+            style={styles.avatarTouchable}
+          >
             {avatarUri ? (
               <Image source={{ uri: avatarUri }} style={styles.avatarImage} />
             ) : (
-              <View style={[styles.avatarPlaceholder, { backgroundColor: colors.surface, borderColor: colors.cardBorder }]}>
+              <View
+                style={[
+                  styles.avatarPlaceholder,
+                  { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+                ]}
+              >
                 <User size={48} color={colors.textSecondary} />
               </View>
             )}
@@ -179,13 +210,23 @@ export const NewUserProfileSetupScreen: React.FC<Props> = ({ route, navigation }
         </Animated.View>
 
         {/* Animated Form Fields */}
-        <Animated.View style={[styles.formContainer, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
+        <Animated.View
+          style={[
+            styles.formContainer,
+            { opacity: fadeAnim, transform: [{ translateY: slideAnim }] },
+          ]}
+        >
           {/* Name Field (Required) */}
           <View style={styles.inputGroup}>
             <Text style={[styles.label, { color: colors.textPrimary }]}>
               Full Name <Text style={styles.requiredStar}>*</Text>
             </Text>
-            <View style={[styles.inputBox, { backgroundColor: colors.surface, borderColor: colors.cardBorder }]}>
+            <View
+              style={[
+                styles.inputBox,
+                { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+              ]}
+            >
               <User size={20} color={colors.primaryIndigo} style={styles.inputIcon} />
               <TextInput
                 style={[styles.input, { color: colors.textPrimary }]}
@@ -202,7 +243,12 @@ export const NewUserProfileSetupScreen: React.FC<Props> = ({ route, navigation }
             <Text style={[styles.label, { color: colors.textPrimary }]}>
               Username <Text style={styles.requiredStar}>*</Text>
             </Text>
-            <View style={[styles.inputBox, { backgroundColor: colors.surface, borderColor: colors.cardBorder }]}>
+            <View
+              style={[
+                styles.inputBox,
+                { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+              ]}
+            >
               <AtSign size={20} color={colors.primaryIndigo} style={styles.inputIcon} />
               <TextInput
                 style={[styles.input, { color: colors.textPrimary }]}
@@ -218,9 +264,15 @@ export const NewUserProfileSetupScreen: React.FC<Props> = ({ route, navigation }
           {/* Bio/Status Field (Optional) */}
           <View style={styles.inputGroup}>
             <Text style={[styles.label, { color: colors.textPrimary }]}>
-              Bio / Status <Text style={[styles.optionalTag, { color: colors.textSecondary }]}> (Optional)</Text>
+              Bio / Status{' '}
+              <Text style={[styles.optionalTag, { color: colors.textSecondary }]}> (Optional)</Text>
             </Text>
-            <View style={[styles.inputBox, { backgroundColor: colors.surface, borderColor: colors.cardBorder }]}>
+            <View
+              style={[
+                styles.inputBox,
+                { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+              ]}
+            >
               <Info size={20} color={colors.primaryIndigo} style={styles.inputIcon} />
               <TextInput
                 style={[styles.input, { color: colors.textPrimary }]}
@@ -234,7 +286,14 @@ export const NewUserProfileSetupScreen: React.FC<Props> = ({ route, navigation }
         </Animated.View>
 
         {/* Animated Submit Button */}
-        <Animated.View style={{ width: '100%', marginTop: 24, opacity: fadeAnim, transform: [{ scale: btnScale }] }}>
+        <Animated.View
+          style={{
+            width: '100%',
+            marginTop: 24,
+            opacity: fadeAnim,
+            transform: [{ scale: btnScale }],
+          }}
+        >
           <TouchableOpacity
             style={[styles.submitBtn, { backgroundColor: colors.primaryIndigo }]}
             onPress={handleCompleteSetup}

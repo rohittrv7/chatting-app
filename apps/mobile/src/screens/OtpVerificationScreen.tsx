@@ -140,18 +140,24 @@ export const OtpVerificationScreen: React.FC<Props> = ({ route, navigation }) =>
           phoneNumber,
           userProfile: verifyRes.user,
           isNewUser: verifyRes.isNewUser,
-        })
+        }),
       );
 
       showToast('Phone Number Verified!', 'success', 2000);
 
       if (verifyRes.isNewUser) {
-        navigation.replace('NewUserProfileSetup', { phoneNumber });
+        navigation.reset({
+          index: 0,
+          routes: [{ name: 'NewUserProfileSetup', params: { phoneNumber } }],
+        });
       } else {
         if (verifyRes.user) {
           updateUserProfile(verifyRes.user);
         }
-        navigation.replace('MainTabs');
+        navigation.reset({
+          index: 0,
+          routes: [{ name: 'MainTabs' }],
+        });
       }
     });
   };
@@ -180,21 +186,36 @@ export const OtpVerificationScreen: React.FC<Props> = ({ route, navigation }) =>
         <Animated.View style={[styles.header, { opacity: fadeAnim }]}>
           <TouchableOpacity
             onPress={() => navigation.goBack()}
-            style={[styles.backBtn, { backgroundColor: colors.surface, borderColor: colors.cardBorder }]}
+            style={[
+              styles.backBtn,
+              { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+            ]}
           >
             <ArrowLeft size={20} color={colors.textPrimary} />
           </TouchableOpacity>
         </Animated.View>
 
         {/* Hero Icon */}
-        <Animated.View style={[styles.iconWrapper, { opacity: fadeAnim, transform: [{ scale: scaleAnim }] }]}>
-          <View style={[styles.iconCircle, { backgroundColor: colors.surface, borderColor: colors.cardBorder }]}>
+        <Animated.View
+          style={[styles.iconWrapper, { opacity: fadeAnim, transform: [{ scale: scaleAnim }] }]}
+        >
+          <View
+            style={[
+              styles.iconCircle,
+              { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+            ]}
+          >
             <KeyRound size={42} color={colors.primaryIndigo} />
           </View>
         </Animated.View>
 
         {/* Title & Info without emojis */}
-        <Animated.View style={[styles.textSection, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
+        <Animated.View
+          style={[
+            styles.textSection,
+            { opacity: fadeAnim, transform: [{ translateY: slideAnim }] },
+          ]}
+        >
           <Text style={[styles.title, { color: colors.textPrimary }]}>Verification Code</Text>
           <Text style={[styles.infoText, { color: colors.textSecondary }]}>
             Enter 6-digit code sent via SMS to{' '}
@@ -203,7 +224,12 @@ export const OtpVerificationScreen: React.FC<Props> = ({ route, navigation }) =>
         </Animated.View>
 
         {/* 6 Individual Centered OTP Digit Boxes */}
-        <Animated.View style={[styles.otpRowContainer, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
+        <Animated.View
+          style={[
+            styles.otpRowContainer,
+            { opacity: fadeAnim, transform: [{ translateY: slideAnim }] },
+          ]}
+        >
           {otpDigits.map((digit, idx) => (
             <View
               key={idx}
@@ -236,18 +262,28 @@ export const OtpVerificationScreen: React.FC<Props> = ({ route, navigation }) =>
         <Animated.View style={[styles.resendSection, { opacity: fadeAnim }]}>
           {resendTimer > 0 ? (
             <Text style={[styles.timerText, { color: colors.textSecondary }]}>
-              Resend OTP in <Text style={{ color: colors.primaryIndigo, fontWeight: '700' }}>{resendTimer}s</Text>
+              Resend OTP in{' '}
+              <Text style={{ color: colors.primaryIndigo, fontWeight: '700' }}>{resendTimer}s</Text>
             </Text>
           ) : (
             <TouchableOpacity onPress={handleResend} style={styles.resendBtn}>
               <RefreshCw size={14} color={colors.primaryIndigo} style={{ marginRight: 6 }} />
-              <Text style={[styles.resendText, { color: colors.primaryIndigo }]}>Resend OTP Now</Text>
+              <Text style={[styles.resendText, { color: colors.primaryIndigo }]}>
+                Resend OTP Now
+              </Text>
             </TouchableOpacity>
           )}
         </Animated.View>
 
         {/* Verify Button */}
-        <Animated.View style={{ width: '100%', marginTop: 24, opacity: fadeAnim, transform: [{ scale: btnScale }] }}>
+        <Animated.View
+          style={{
+            width: '100%',
+            marginTop: 24,
+            opacity: fadeAnim,
+            transform: [{ scale: btnScale }],
+          }}
+        >
           <TouchableOpacity
             style={[styles.verifyButton, { backgroundColor: colors.primaryIndigo }]}
             onPress={() => proceedToNextScreen()}

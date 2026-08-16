@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -6,6 +6,9 @@ import {
   StyleSheet,
   SafeAreaView,
   StatusBar,
+  Animated,
+  Platform,
+  useWindowDimensions,
 } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types';
@@ -17,8 +20,10 @@ import {
   VideoOff,
   PhoneOff,
   Phone,
-  Lock,
-  BellRing,
+  ShieldCheck,
+  Volume2,
+  VolumeX,
+  ArrowLeft,
 } from 'lucide-react-native';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Call'>;
@@ -31,10 +36,55 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
     isVideo: false,
   };
 
+  const { height: screenHeight, width: screenWidth } = useWindowDimensions();
+
   const [isMuted, setIsMuted] = useState(false);
+  const [isSpeakerOn, setIsSpeakerOn] = useState(false);
   const [isCameraOff, setIsCameraOff] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const [secondsElapsed, setSecondsElapsed] = useState(0);
+
+  // Animated pulse rings for ringing/active state
+  const pulseAnim1 = useRef(new Animated.Value(1)).current;
+  const pulseAnim2 = useRef(new Animated.Value(1)).current;
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    Animated.timing(fadeAnim, {
+      toValue: 1,
+      duration: 500,
+      useNativeDriver: true,
+    }).start();
+
+    const createPulse = (anim: Animated.Value, delay: number) => {
+      return Animated.loop(
+        Animated.sequence([
+          Animated.delay(delay),
+          Animated.timing(anim, {
+            toValue: 1.35,
+            duration: 1400,
+            useNativeDriver: true,
+          }),
+          Animated.timing(anim, {
+            toValue: 1,
+            duration: 1400,
+            useNativeDriver: true,
+          }),
+        ]),
+      );
+    };
+
+    const pulse1 = createPulse(pulseAnim1, 0);
+    const pulse2 = createPulse(pulseAnim2, 700);
+
+    pulse1.start();
+    pulse2.start();
+
+    return () => {
+      pulse1.stop();
+      pulse2.stop();
+    };
+  }, []);
 
   useEffect(() => {
     let timer: any = null;
@@ -68,109 +118,207 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
   const statusText = isConnected
     ? formatDuration(secondsElapsed)
     : isCaller
-    ? 'Ringing...'
-    : 'Incoming Call...';
+      ? 'Ringing...'
+      : 'Incoming Call...';
+
+  // Responsive scaling
+  const avatarSize = screenHeight < 700 ? 84 : 100;
+  const avatarTextSize = screenHeight < 700 ? 36 : 42;
 
   return (
     <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor={AppColors.darkBg} />
+      <StatusBar barStyle="light-content" backgroundColor="#0B0E14" />
 
-      {/* Top Header info in Video mode */}
-      {isVideo && isConnected && (
-        <View style={styles.videoHeader}>
-          <Lock size={14} color={AppColors.onlineEmerald} />
-          <Text style={styles.videoHeaderText}>
-            {targetUserId} • {statusText}
-          </Text>
+      {/* Top Header with Back button & E2EE Info */}
+      <View style={styles.topHeader}>
+        <TouchableOpacity
+          style={styles.backButton}
+          onPress={() => navigation.goBack()}
+          activeOpacity={0.7}
+        >
+          <ArrowLeft size={20} color="#94A3B8" />
+        </TouchableOpacity>
+
+        <View style={styles.securityPill}>
+          <ShieldCheck size={13} color="#10B981" />
+          <Text style={styles.securityText}>End-to-End Encrypted</Text>
         </View>
-      )}
 
-      {/* Center Avatar & Status */}
-      <View style={styles.centerContainer}>
-        <View style={[styles.avatarBorder, isConnected ? styles.connectedBorder : styles.ringingBorder]}>
-          <View style={styles.avatarCircle}>
-            <Text style={styles.avatarText}>{nameInitial}</Text>
+        <View style={{ width: 36 }} />
+      </View>
+
+      {/* Center Caller Info with Animated Glowing Rings */}
+      <Animated.View style={[styles.centerContainer, { opacity: fadeAnim }]}>
+        <View style={styles.avatarSection}>
+          {/* Outer Pulse Rings */}
+          <Animated.View
+            style={[
+              styles.pulseRing,
+              {
+                width: avatarSize + 48,
+                height: avatarSize + 48,
+                borderRadius: (avatarSize + 48) / 2,
+                borderColor: isConnected ? 'rgba(16, 185, 129, 0.25)' : 'rgba(99, 102, 241, 0.25)',
+                transform: [{ scale: pulseAnim1 }],
+              },
+            ]}
+          />
+          <Animated.View
+            style={[
+              styles.pulseRing,
+              {
+                width: avatarSize + 24,
+                height: avatarSize + 24,
+                borderRadius: (avatarSize + 24) / 2,
+                borderColor: isConnected ? 'rgba(16, 185, 129, 0.4)' : 'rgba(99, 102, 241, 0.4)',
+                transform: [{ scale: pulseAnim2 }],
+              },
+            ]}
+          />
+
+          {/* Main Avatar */}
+          <View
+            style={[
+              styles.avatarCircle,
+              {
+                width: avatarSize,
+                height: avatarSize,
+                borderRadius: avatarSize / 2,
+                backgroundColor: isConnected ? '#4338CA' : '#6366F1',
+                borderColor: isConnected ? '#10B981' : '#818CF8',
+              },
+            ]}
+          >
+            <Text style={[styles.avatarText, { fontSize: avatarTextSize }]}>{nameInitial}</Text>
           </View>
         </View>
 
-        <Text style={styles.nameText}>{targetUserId}</Text>
+        <Text style={styles.nameText} numberOfLines={1} ellipsizeMode="tail">
+          {targetUserId}
+        </Text>
 
-        <View style={styles.statusRow}>
-          {isConnected ? (
-            <Lock size={16} color={AppColors.onlineEmerald} />
-          ) : (
-            <BellRing size={16} color={AppColors.accentAmber} />
-          )}
-          <Text style={[styles.statusText, isConnected ? styles.statusConnected : styles.statusRinging]}>
+        <View
+          style={[
+            styles.statusBadge,
+            {
+              backgroundColor: isConnected
+                ? 'rgba(16, 185, 129, 0.15)'
+                : 'rgba(99, 102, 241, 0.15)',
+              borderColor: isConnected ? 'rgba(16, 185, 129, 0.3)' : 'rgba(99, 102, 241, 0.3)',
+            },
+          ]}
+        >
+          <View
+            style={[styles.statusDot, { backgroundColor: isConnected ? '#10B981' : '#F59E0B' }]}
+          />
+          <Text style={[styles.statusText, { color: isConnected ? '#34D399' : '#FBBF24' }]}>
             {statusText}
           </Text>
         </View>
 
-        {!isConnected && (
-          <Text style={styles.subStatusText}>
-            {isCaller ? `Calling ${targetUserId}...` : `Incoming Call from ${targetUserId}`}
-          </Text>
-        )}
-      </View>
+        <Text style={styles.callTypeLabel}>
+          {isVideo ? 'HD Video Call' : 'Encrypted Voice Call'}
+        </Text>
+      </Animated.View>
 
-      {/* Control Buttons Bar */}
+      {/* Control Buttons Bar - Overflow-Proof & Responsive */}
       <View style={styles.bottomControls}>
         {isConnected ? (
-          // Connected Call Controls: Mute, Video, End Call
-          <View style={styles.controlsRow}>
-            <TouchableOpacity
-              style={[styles.controlBtn, isMuted && styles.controlBtnActive]}
-              onPress={() => setIsMuted(!isMuted)}
-            >
-              {isMuted ? (
-                <MicOff size={22} color="#000" />
-              ) : (
-                <Mic size={22} color="#FFF" />
-              )}
-            </TouchableOpacity>
-
-            {isVideo && (
+          // Active Connected Call Controls (Speaker, Mute, Video, End)
+          <View style={styles.connectedControlsGrid}>
+            <View style={styles.controlItem}>
               <TouchableOpacity
-                style={[styles.controlBtn, isCameraOff && styles.controlBtnActive]}
-                onPress={() => setIsCameraOff(!isCameraOff)}
+                style={[styles.controlBtn, isSpeakerOn && styles.controlBtnActive]}
+                onPress={() => setIsSpeakerOn(!isSpeakerOn)}
+                activeOpacity={0.8}
               >
-                {isCameraOff ? (
-                  <VideoOff size={22} color="#000" />
+                {isSpeakerOn ? (
+                  <Volume2 size={22} color="#000" />
                 ) : (
-                  <VideoIcon size={22} color="#FFF" />
+                  <VolumeX size={22} color="#FFF" />
                 )}
               </TouchableOpacity>
-            )}
-
-            <TouchableOpacity style={styles.endCallBtn} onPress={handleEndCall}>
-              <PhoneOff size={26} color="#FFF" />
-            </TouchableOpacity>
-          </View>
-        ) : isCaller ? (
-          // Outgoing Call Mode: SINGLE RED CANCEL BUTTON
-          <View style={{ alignItems: 'center' }}>
-            <TouchableOpacity style={styles.endCallBtnLarge} onPress={handleEndCall}>
-              <PhoneOff size={28} color="#FFF" />
-            </TouchableOpacity>
-            <Text style={styles.btnLabel}>Cancel Call</Text>
-          </View>
-        ) : (
-          // Incoming Call Mode: DECLINE (Red) & PICK UP (Green)
-          <View style={styles.controlsRowSpace}>
-            <View style={{ alignItems: 'center' }}>
-              <TouchableOpacity style={styles.endCallBtn} onPress={handleEndCall}>
-                <PhoneOff size={24} color="#FFF" />
-              </TouchableOpacity>
-              <Text style={styles.btnLabel}>Decline</Text>
+              <Text style={styles.btnLabel}>Speaker</Text>
             </View>
 
-            <View style={{ alignItems: 'center' }}>
-              <TouchableOpacity style={styles.pickUpBtn} onPress={handlePickUp}>
+            <View style={styles.controlItem}>
+              <TouchableOpacity
+                style={[styles.controlBtn, isMuted && styles.controlBtnActive]}
+                onPress={() => setIsMuted(!isMuted)}
+                activeOpacity={0.8}
+              >
+                {isMuted ? <MicOff size={22} color="#000" /> : <Mic size={22} color="#FFF" />}
+              </TouchableOpacity>
+              <Text style={styles.btnLabel}>{isMuted ? 'Unmute' : 'Mute'}</Text>
+            </View>
+
+            {isVideo && (
+              <View style={styles.controlItem}>
+                <TouchableOpacity
+                  style={[styles.controlBtn, isCameraOff && styles.controlBtnActive]}
+                  onPress={() => setIsCameraOff(!isCameraOff)}
+                  activeOpacity={0.8}
+                >
+                  {isCameraOff ? (
+                    <VideoOff size={22} color="#000" />
+                  ) : (
+                    <VideoIcon size={22} color="#FFF" />
+                  )}
+                </TouchableOpacity>
+                <Text style={styles.btnLabel}>{isCameraOff ? 'Camera Off' : 'Video'}</Text>
+              </View>
+            )}
+
+            <View style={styles.controlItem}>
+              <TouchableOpacity
+                style={styles.endCallBtn}
+                onPress={handleEndCall}
+                activeOpacity={0.85}
+              >
+                <PhoneOff size={24} color="#FFF" />
+              </TouchableOpacity>
+              <Text style={[styles.btnLabel, { color: '#EF4444' }]}>End Call</Text>
+            </View>
+          </View>
+        ) : isCaller ? (
+          // Outgoing Call Controls: Cancel Call
+          <View style={styles.singleActionRow}>
+            <View style={styles.controlItem}>
+              <TouchableOpacity
+                style={styles.endCallBtnLarge}
+                onPress={handleEndCall}
+                activeOpacity={0.85}
+              >
+                <PhoneOff size={28} color="#FFF" />
+              </TouchableOpacity>
+              <Text style={[styles.btnLabel, { color: '#EF4444', fontWeight: '700' }]}>
+                Cancel Call
+              </Text>
+            </View>
+          </View>
+        ) : (
+          // Incoming Call Controls: Decline (Red) & Accept (Green)
+          <View style={styles.incomingControlsRow}>
+            <View style={styles.controlItem}>
+              <TouchableOpacity
+                style={styles.endCallBtnLarge}
+                onPress={handleEndCall}
+                activeOpacity={0.85}
+              >
+                <PhoneOff size={26} color="#FFF" />
+              </TouchableOpacity>
+              <Text style={[styles.btnLabel, { color: '#EF4444' }]}>Decline</Text>
+            </View>
+
+            <View style={styles.controlItem}>
+              <TouchableOpacity
+                style={styles.pickUpBtnLarge}
+                onPress={handlePickUp}
+                activeOpacity={0.85}
+              >
                 <Phone size={28} color="#FFF" />
               </TouchableOpacity>
-              <Text style={[styles.btnLabel, { fontWeight: '700', color: '#FFF' }]}>
-                Pick Up
-              </Text>
+              <Text style={[styles.btnLabel, { color: '#10B981', fontWeight: '700' }]}>Accept</Text>
             </View>
           </View>
         )}
@@ -182,100 +330,138 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: AppColors.darkBg,
+    backgroundColor: '#0B0E14',
+    paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 0) + 8 : 8,
     justifyContent: 'space-between',
   },
-  videoHeader: {
+  topHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    alignSelf: 'center',
-    marginTop: 20,
-    backgroundColor: 'rgba(0, 0, 0, 0.6)',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
   },
-  videoHeaderText: {
-    color: '#FFF',
-    fontWeight: '700',
-    fontSize: 14,
-    marginLeft: 8,
+  backButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  securityPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(16, 185, 129, 0.12)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.25)',
+  },
+  securityText: {
+    color: '#10B981',
+    fontSize: 12,
+    fontWeight: '600',
+    marginLeft: 6,
   },
   centerContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
+    paddingHorizontal: 24,
   },
-  avatarBorder: {
-    padding: 6,
-    borderRadius: 66,
-    borderWidth: 4,
-  },
-  ringingBorder: {
-    borderColor: AppColors.accentAmber,
-  },
-  connectedBorder: {
-    borderColor: AppColors.onlineEmerald,
-  },
-  avatarCircle: {
-    width: 104,
-    height: 104,
-    borderRadius: 52,
-    backgroundColor: AppColors.primaryIndigo,
+  avatarSection: {
+    position: 'relative',
     justifyContent: 'center',
     alignItems: 'center',
+    marginBottom: 24,
+  },
+  pulseRing: {
+    position: 'absolute',
+    borderWidth: 2,
+  },
+  avatarCircle: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 3,
+    shadowColor: '#6366F1',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.4,
+    shadowRadius: 16,
+    elevation: 10,
   },
   avatarText: {
-    fontSize: 44,
     fontWeight: '800',
     color: '#FFF',
   },
   nameText: {
-    fontSize: 26,
+    fontSize: 24,
     fontWeight: '800',
-    color: '#FFF',
-    marginTop: 20,
+    color: '#F8FAFC',
+    textAlign: 'center',
+    marginBottom: 10,
+    maxWidth: '85%',
   },
-  statusRow: {
+  statusBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginTop: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 20,
+    borderWidth: 1,
+    marginBottom: 8,
+  },
+  statusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginRight: 8,
   },
   statusText: {
-    fontSize: 18,
-    fontWeight: '700',
-    marginLeft: 8,
-  },
-  statusRinging: {
-    color: AppColors.accentAmber,
-  },
-  statusConnected: {
-    color: '#38BDF8',
-  },
-  subStatusText: {
     fontSize: 14,
-    color: AppColors.textSecondaryDark,
-    marginTop: 12,
+    fontWeight: '700',
+  },
+  callTypeLabel: {
+    fontSize: 13,
+    color: '#64748B',
+    fontWeight: '500',
+    marginTop: 2,
   },
   bottomControls: {
-    paddingBottom: 48,
-    paddingHorizontal: 32,
+    paddingBottom: Platform.OS === 'ios' ? 36 : 28,
+    paddingHorizontal: 24,
   },
-  controlsRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-evenly',
-    alignItems: 'center',
-  },
-  controlsRowSpace: {
+  connectedControlsGrid: {
     flexDirection: 'row',
     justifyContent: 'space-around',
     alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    paddingVertical: 16,
+    paddingHorizontal: 10,
+    borderRadius: 28,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  singleActionRow: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+  },
+  incomingControlsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+  },
+  controlItem: {
+    alignItems: 'center',
   },
   controlBtn: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -283,32 +469,43 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFF',
   },
   endCallBtn: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: AppColors.missedRed,
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: '#EF4444',
     justifyContent: 'center',
     alignItems: 'center',
   },
   endCallBtnLarge: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    backgroundColor: AppColors.missedRed,
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: '#EF4444',
     justifyContent: 'center',
     alignItems: 'center',
+    shadowColor: '#EF4444',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 10,
+    elevation: 6,
   },
-  pickUpBtn: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    backgroundColor: AppColors.onlineEmerald,
+  pickUpBtnLarge: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: '#10B981',
     justifyContent: 'center',
     alignItems: 'center',
+    shadowColor: '#10B981',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 10,
+    elevation: 6,
   },
   btnLabel: {
     fontSize: 12,
-    color: AppColors.textSecondaryDark,
+    color: '#94A3B8',
     marginTop: 6,
+    fontWeight: '500',
   },
 });
