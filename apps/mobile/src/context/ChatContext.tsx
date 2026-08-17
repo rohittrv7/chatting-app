@@ -40,7 +40,7 @@ const defaultUserProfile: UserProfile = {
   name: '',
   username: '',
   status: 'Available | Let’s chat 🚀',
-  phone: '+91 98765 43210',
+  phone: '',
 };
 
 const ChatContext = createContext<ChatContextType>({

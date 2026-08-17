@@ -279,81 +279,108 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
       </View>
 
       {/* Conversation List */}
-      <FlatList
-        data={filteredConversations}
-        keyExtractor={(item) => item.id}
-        contentContainerStyle={styles.listContainer}
-        renderItem={({ item }) => {
-          const isUnread = item.unread !== '0';
-          const isMuted = item.isMuted === true;
+      {filteredConversations.length === 0 ? (
+        <View style={styles.emptyChatsContainer}>
+          <View
+            style={[
+              styles.emptyIconCircle,
+              { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+            ]}
+          >
+            <MessageSquare size={36} color={colors.primaryIndigo} />
+          </View>
+          <Text style={[styles.emptyChatsTitle, { color: colors.textPrimary }]}>
+            No Conversations Yet
+          </Text>
+          <Text style={[styles.emptyChatsDesc, { color: colors.textSecondary }]}>
+            Connect and chat securely with your contacts. Tap below to start your first
+            conversation!
+          </Text>
+          <TouchableOpacity
+            style={[styles.emptyStartChatBtn, { backgroundColor: colors.primaryIndigo }]}
+            onPress={() => navigation.navigate('Contacts')}
+          >
+            <Plus size={18} color="#FFF" style={{ marginRight: 8 }} />
+            <Text style={styles.emptyStartChatBtnText}>Start New Chat</Text>
+          </TouchableOpacity>
+        </View>
+      ) : (
+        <FlatList
+          data={filteredConversations}
+          keyExtractor={(item) => item.id}
+          contentContainerStyle={styles.listContainer}
+          renderItem={({ item }) => {
+            const isUnread = item.unread !== '0';
+            const isMuted = item.isMuted === true;
 
-          return (
-            <TouchableOpacity
-              style={[
-                styles.chatCard,
-                { backgroundColor: colors.surface, borderColor: colors.cardBorder },
-              ]}
-              activeOpacity={0.8}
-              onPress={() =>
-                navigation.navigate('Chat', { conversationId: item.id, title: item.title })
-              }
-            >
-              <View style={styles.cardAvatarWrapper}>
-                <View
-                  style={[
-                    styles.cardAvatar,
-                    { backgroundColor: item.groupBg || colors.cardBorder },
-                  ]}
-                >
-                  <Text style={[styles.avatarLetter, { color: colors.primaryIndigo }]}>
-                    {item.avatar}
-                  </Text>
+            return (
+              <TouchableOpacity
+                style={[
+                  styles.chatCard,
+                  { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+                ]}
+                activeOpacity={0.8}
+                onPress={() =>
+                  navigation.navigate('Chat', { conversationId: item.id, title: item.title })
+                }
+              >
+                <View style={styles.cardAvatarWrapper}>
+                  <View
+                    style={[
+                      styles.cardAvatar,
+                      { backgroundColor: item.groupBg || colors.cardBorder },
+                    ]}
+                  >
+                    <Text style={[styles.avatarLetter, { color: colors.primaryIndigo }]}>
+                      {item.avatar}
+                    </Text>
+                  </View>
+                  {item.isOnline && (
+                    <View style={[styles.onlineBadgeCard, { borderColor: colors.surface }]} />
+                  )}
                 </View>
-                {item.isOnline && (
-                  <View style={[styles.onlineBadgeCard, { borderColor: colors.surface }]} />
-                )}
-              </View>
 
-              <View style={styles.cardContent}>
-                <View style={styles.cardHeaderRow}>
-                  <View style={{ flex: 1, marginRight: 8 }}>
+                <View style={styles.cardContent}>
+                  <View style={styles.cardHeaderRow}>
+                    <View style={{ flex: 1, marginRight: 8 }}>
+                      <Text
+                        style={[styles.cardTitle, { color: colors.textPrimary }]}
+                        numberOfLines={1}
+                      >
+                        {item.title}
+                      </Text>
+                      {item.username && (
+                        <Text style={[styles.cardUsername, { color: colors.primaryIndigo }]}>
+                          {item.username}
+                        </Text>
+                      )}
+                    </View>
+                    <Text style={[styles.cardTime, { color: colors.textSecondary }]}>
+                      {item.time}
+                    </Text>
+                  </View>
+
+                  <View style={styles.cardSubtitleRow}>
                     <Text
-                      style={[styles.cardTitle, { color: colors.textPrimary }]}
+                      style={[styles.cardSubtitle, { color: colors.textSecondary }]}
                       numberOfLines={1}
                     >
-                      {item.title}
+                      {item.lastMessage}
                     </Text>
-                    {item.username && (
-                      <Text style={[styles.cardUsername, { color: colors.primaryIndigo }]}>
-                        {item.username}
-                      </Text>
-                    )}
+                    {isMuted ? (
+                      <BellOff size={16} color={colors.textSecondary} />
+                    ) : isUnread ? (
+                      <View style={styles.unreadBadge}>
+                        <Text style={styles.unreadText}>{item.unread}</Text>
+                      </View>
+                    ) : null}
                   </View>
-                  <Text style={[styles.cardTime, { color: colors.textSecondary }]}>
-                    {item.time}
-                  </Text>
                 </View>
-
-                <View style={styles.cardSubtitleRow}>
-                  <Text
-                    style={[styles.cardSubtitle, { color: colors.textSecondary }]}
-                    numberOfLines={1}
-                  >
-                    {item.lastMessage}
-                  </Text>
-                  {isMuted ? (
-                    <BellOff size={16} color={colors.textSecondary} />
-                  ) : isUnread ? (
-                    <View style={styles.unreadBadge}>
-                      <Text style={styles.unreadText}>{item.unread}</Text>
-                    </View>
-                  ) : null}
-                </View>
-              </View>
-            </TouchableOpacity>
-          );
-        }}
-      />
+              </TouchableOpacity>
+            );
+          }}
+        />
+      )}
     </View>
   );
 
@@ -364,93 +391,28 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
         <Text style={[styles.headerTitle, { color: colors.textPrimary }]}>Calls</Text>
       </View>
 
-      <View style={styles.filterRow}>
-        {['All', 'Missed', 'Contacts'].map((pill, idx) => (
-          <TouchableOpacity
-            key={pill}
-            style={[
-              styles.filterPill,
-              {
-                backgroundColor: idx === 0 ? colors.primaryIndigo : colors.surface,
-                borderColor: idx === 0 ? colors.primaryIndigo : colors.cardBorder,
-              },
-            ]}
-          >
-            <Text
-              style={[
-                styles.filterPillText,
-                { color: idx === 0 ? '#FFF' : colors.textSecondary },
-                idx === 0 && styles.filterPillTextActive,
-              ]}
-            >
-              {pill}
-            </Text>
-          </TouchableOpacity>
-        ))}
+      <View style={styles.emptyChatsContainer}>
+        <View
+          style={[
+            styles.emptyIconCircle,
+            { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+          ]}
+        >
+          <PhoneCall size={36} color={colors.primaryIndigo} />
+        </View>
+        <Text style={[styles.emptyChatsTitle, { color: colors.textPrimary }]}>No Recent Calls</Text>
+        <Text style={[styles.emptyChatsDesc, { color: colors.textSecondary }]}>
+          Make crystal-clear, end-to-end encrypted audio and video calls directly with your
+          contacts.
+        </Text>
+        <TouchableOpacity
+          style={[styles.emptyStartChatBtn, { backgroundColor: colors.primaryIndigo }]}
+          onPress={() => navigation.navigate('Contacts')}
+        >
+          <Phone size={18} color="#FFF" style={{ marginRight: 8 }} />
+          <Text style={styles.emptyStartChatBtnText}>Start a Call</Text>
+        </TouchableOpacity>
       </View>
-
-      <ScrollView contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 10 }}>
-        {[
-          { name: 'Alex Morgan', username: '@alex_morgan', time: '↗ 9:30 AM', isMissed: false },
-          { name: 'Sara Johnson', username: '@sara_j', time: '❌ Yesterday', isMissed: true },
-          { name: 'Michael Smith', username: '@michael_s', time: '↗ Tuesday', isMissed: false },
-          { name: 'Emily Davis', username: '@emily_d', time: '↗ Monday', isMissed: false },
-        ].map((call, index) => (
-          <View
-            key={index}
-            style={[
-              styles.callCard,
-              { backgroundColor: colors.surface, borderColor: colors.cardBorder },
-            ]}
-          >
-            <View style={[styles.avatarBox, { backgroundColor: colors.cardBorder }]}>
-              <Text style={[styles.avatarLetter, { color: colors.textPrimary }]}>
-                {call.name[0]}
-              </Text>
-            </View>
-            <View style={{ flex: 1, marginLeft: 12, marginRight: 8, justifyContent: 'center' }}>
-              <Text
-                style={[styles.callName, { color: colors.textPrimary }]}
-                numberOfLines={1}
-                ellipsizeMode="tail"
-              >
-                {call.name}
-              </Text>
-              <Text
-                style={[styles.contactHandle, { color: colors.primaryIndigo }]}
-                numberOfLines={1}
-                ellipsizeMode="tail"
-              >
-                {call.username}
-              </Text>
-              <Text
-                style={
-                  call.isMissed
-                    ? styles.missedTime
-                    : [styles.callTime, { color: colors.textSecondary }]
-                }
-                numberOfLines={1}
-              >
-                {call.time}
-              </Text>
-            </View>
-            <TouchableOpacity
-              style={styles.callIconBtn}
-              activeOpacity={0.7}
-              onPress={() =>
-                navigation.navigate('Call', {
-                  callId: `call_${index}`,
-                  targetUserId: call.name,
-                  isCaller: true,
-                  isVideo: false,
-                })
-              }
-            >
-              <Phone size={18} color={colors.primaryIndigo} />
-            </TouchableOpacity>
-          </View>
-        ))}
-      </ScrollView>
     </View>
   );
 
@@ -1496,5 +1458,51 @@ const styles = StyleSheet.create({
   },
   navIndicatorActive: {
     width: 16,
+  },
+  emptyChatsContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 36,
+    paddingBottom: 40,
+  },
+  emptyIconCircle: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 20,
+    borderWidth: 1,
+  },
+  emptyChatsTitle: {
+    fontSize: 20,
+    fontWeight: '800',
+    marginBottom: 10,
+    textAlign: 'center',
+  },
+  emptyChatsDesc: {
+    fontSize: 14,
+    textAlign: 'center',
+    lineHeight: 22,
+    marginBottom: 26,
+  },
+  emptyStartChatBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+    paddingVertical: 14,
+    borderRadius: 24,
+    shadowColor: '#6366F1',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  emptyStartChatBtnText: {
+    color: '#FFF',
+    fontSize: 15,
+    fontWeight: '700',
   },
 });

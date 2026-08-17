@@ -19,7 +19,10 @@ import { useTheme } from '../context/ThemeContext';
 import Svg, { Rect, G } from 'react-native-svg';
 import * as ImagePicker from 'expo-image-picker';
 import { CameraView } from 'expo-camera';
-import { ensureCameraPermission, ensureMediaLibraryPermission } from '../services/permissionsService';
+import {
+  ensureCameraPermission,
+  ensureMediaLibraryPermission,
+} from '../services/permissionsService';
 import {
   ArrowLeft,
   Share2,
@@ -77,7 +80,7 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
         setIsSavedQr(true);
         Alert.alert(
           'Saved to Gallery 🎉',
-          `Your personal QR Code for ${userProfile.username} has been saved to your device photos gallery successfully!`
+          `Your personal QR Code for ${userProfile.username} has been saved to your device photos gallery successfully!`,
         );
         setTimeout(() => setIsSavedQr(false), 3000);
       }, 800);
@@ -159,14 +162,11 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
         quality: 0.8,
       });
 
-      if (!result.canceled) {
-        handleSimulateScan({
-          name: 'Alex Morgan',
-          username: '@alex_morgan',
-          status: 'Coding & Connecting 🚀 | Available for chats',
-          avatar: 'A',
-          phone: '+1 (555) 019-2834',
-        });
+      if (!result.canceled && result.assets && result.assets[0]) {
+        Alert.alert(
+          'QR Image Selected',
+          'Align your camera with the QR code on screen or ask your contact for their direct @username.',
+        );
       }
     } catch (e) {
       console.warn('Error picking image:', e);
@@ -192,7 +192,12 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
       </View>
 
       {/* Tabs Selector Bar */}
-      <View style={[styles.tabsRow, { backgroundColor: colors.surface, borderColor: colors.cardBorder }]}>
+      <View
+        style={[
+          styles.tabsRow,
+          { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+        ]}
+      >
         <TouchableOpacity
           style={[
             styles.tabBtn,
@@ -241,11 +246,17 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
             {/* User Info Header */}
             <View style={styles.userInfoRow}>
               <View style={[styles.avatarCircle, { backgroundColor: colors.primaryIndigo }]}>
-                <Text style={styles.avatarLetter}>{userProfile.name ? userProfile.name[0].toUpperCase() : 'R'}</Text>
+                <Text style={styles.avatarLetter}>
+                  {userProfile.name ? userProfile.name[0].toUpperCase() : 'R'}
+                </Text>
               </View>
               <View style={{ marginLeft: 12 }}>
-                <Text style={[styles.userName, { color: colors.textPrimary }]}>{userProfile.name}</Text>
-                <Text style={[styles.userHandle, { color: colors.primaryIndigo }]}>{userProfile.username}</Text>
+                <Text style={[styles.userName, { color: colors.textPrimary }]}>
+                  {userProfile.name}
+                </Text>
+                <Text style={[styles.userHandle, { color: colors.primaryIndigo }]}>
+                  {userProfile.username}
+                </Text>
               </View>
             </View>
 
@@ -310,18 +321,24 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
             </View>
 
             <Text style={[styles.qrDescNote, { color: colors.textSecondary }]}>
-              Your QR code is private. If you share it with someone, they can scan it with their camera to message you.
+              Your QR code is private. If you share it with someone, they can scan it with their
+              camera to message you.
             </Text>
           </View>
 
           {/* Action Buttons */}
           <View style={styles.actionsRow}>
             <TouchableOpacity
-              style={[styles.actionCardBtn, { backgroundColor: colors.surface, borderColor: colors.cardBorder }]}
+              style={[
+                styles.actionCardBtn,
+                { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+              ]}
               onPress={handleShareQr}
             >
               <Share2 size={18} color={colors.primaryIndigo} />
-              <Text style={[styles.actionCardText, { color: colors.textPrimary }]}>Share QR Code</Text>
+              <Text style={[styles.actionCardText, { color: colors.textPrimary }]}>
+                Share QR Code
+              </Text>
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -345,7 +362,9 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
               ) : (
                 <>
                   <Download size={18} color={colors.primaryIndigo} />
-                  <Text style={[styles.actionCardText, { color: colors.textPrimary }]}>Save to Gallery</Text>
+                  <Text style={[styles.actionCardText, { color: colors.textPrimary }]}>
+                    Save to Gallery
+                  </Text>
                 </>
               )}
             </TouchableOpacity>
@@ -357,26 +376,44 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
           {checkingPermission ? (
             <View style={styles.centerContainer}>
               <ActivityIndicator size="large" color={colors.primaryIndigo} />
-              <Text style={[styles.loadingText, { color: colors.textSecondary }]}>Checking camera permissions...</Text>
+              <Text style={[styles.loadingText, { color: colors.textSecondary }]}>
+                Checking camera permissions...
+              </Text>
             </View>
           ) : !hasCameraPermission ? (
             /* 🚫 Camera Permission Denied State */
             <View style={styles.centerContainer}>
-              <View style={[styles.permIconCircle, { backgroundColor: colors.surface, borderColor: colors.cardBorder }]}>
+              <View
+                style={[
+                  styles.permIconCircle,
+                  { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+                ]}
+              >
                 <Camera size={36} color={colors.primaryIndigo} />
               </View>
-              <Text style={[styles.permTitleText, { color: colors.textPrimary }]}>Camera Access Required</Text>
-              <Text style={[styles.permDescText, { color: colors.textSecondary }]}>
-                To scan QR codes and connect with friends, chatting system needs permission to use your camera.
+              <Text style={[styles.permTitleText, { color: colors.textPrimary }]}>
+                Camera Access Required
               </Text>
-              <TouchableOpacity style={[styles.grantCameraBtn, { backgroundColor: colors.primaryIndigo }]} onPress={checkCameraAccess}>
+              <Text style={[styles.permDescText, { color: colors.textSecondary }]}>
+                To scan QR codes and connect with friends, chatting system needs permission to use
+                your camera.
+              </Text>
+              <TouchableOpacity
+                style={[styles.grantCameraBtn, { backgroundColor: colors.primaryIndigo }]}
+                onPress={checkCameraAccess}
+              >
                 <Camera size={18} color="#FFF" style={{ marginRight: 8 }} />
                 <Text style={styles.grantCameraBtnText}>Grant Camera Permission</Text>
               </TouchableOpacity>
             </View>
           ) : scannedResult ? (
             /* 📋 Scanned Profile Result Card with Message Option */
-            <View style={[styles.scannedProfileCard, { backgroundColor: colors.surface, borderColor: colors.cardBorder }]}>
+            <View
+              style={[
+                styles.scannedProfileCard,
+                { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+              ]}
+            >
               <View style={styles.scannedBadgeRow}>
                 <ShieldCheck size={18} color="#22C55E" style={{ marginRight: 6 }} />
                 <Text style={styles.scannedBadgeText}>Verified User Code</Text>
@@ -386,10 +423,18 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
                 <Text style={styles.scannedAvatarLetter}>{scannedResult.avatar}</Text>
               </View>
 
-              <Text style={[styles.scannedName, { color: colors.textPrimary }]}>{scannedResult.name}</Text>
-              <Text style={[styles.scannedHandle, { color: colors.primaryIndigo }]}>{scannedResult.username}</Text>
-              <Text style={[styles.scannedStatus, { color: colors.textSecondary }]}>{scannedResult.status}</Text>
-              <Text style={[styles.scannedPhone, { color: colors.textSecondary }]}>{scannedResult.phone}</Text>
+              <Text style={[styles.scannedName, { color: colors.textPrimary }]}>
+                {scannedResult.name}
+              </Text>
+              <Text style={[styles.scannedHandle, { color: colors.primaryIndigo }]}>
+                {scannedResult.username}
+              </Text>
+              <Text style={[styles.scannedStatus, { color: colors.textSecondary }]}>
+                {scannedResult.status}
+              </Text>
+              <Text style={[styles.scannedPhone, { color: colors.textSecondary }]}>
+                {scannedResult.phone}
+              </Text>
 
               {/* Start Chat Button */}
               <TouchableOpacity
@@ -406,7 +451,9 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
                 onPress={() => setScannedResult(null)}
               >
                 <RotateCcw size={16} color={colors.textPrimary} style={{ marginRight: 6 }} />
-                <Text style={[styles.rescanBtnText, { color: colors.textPrimary }]}>Scan Another Code</Text>
+                <Text style={[styles.rescanBtnText, { color: colors.textPrimary }]}>
+                  Scan Another Code
+                </Text>
               </TouchableOpacity>
             </View>
           ) : (
@@ -416,19 +463,7 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
                 Align chatting system QR code inside frame to scan automatically
               </Text>
 
-              <TouchableOpacity
-                style={[styles.viewfinderFrame, { borderColor: colors.primaryIndigo }]}
-                activeOpacity={0.9}
-                onPress={() =>
-                  handleSimulateScan({
-                    name: 'Alex Morgan',
-                    username: '@alex_morgan',
-                    status: 'Coding & Connecting 🚀 | Available for chats',
-                    avatar: 'A',
-                    phone: '+1 (555) 019-2834',
-                  })
-                }
-              >
+              <View style={[styles.viewfinderFrame, { borderColor: colors.primaryIndigo }]}>
                 <CameraView
                   style={StyleSheet.absoluteFillObject}
                   facing="back"
@@ -441,41 +476,34 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
                 <View style={[styles.cornerBR, { borderColor: colors.primaryIndigo }]} />
 
                 <View style={[styles.laserLine, { backgroundColor: colors.primaryIndigo }]} />
-              </TouchableOpacity>
+              </View>
 
               {/* Control Buttons Bar */}
               <View style={styles.scannerControlsRow}>
                 <TouchableOpacity
-                  style={[styles.controlCircleBtn, { backgroundColor: colors.surface, borderColor: colors.cardBorder }]}
+                  style={[
+                    styles.controlCircleBtn,
+                    { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+                  ]}
                   onPress={() => setFlashOn(!flashOn)}
                 >
-                  {flashOn ? <Zap size={22} color="#F59E0B" /> : <ZapOff size={22} color={colors.textSecondary} />}
+                  {flashOn ? (
+                    <Zap size={22} color="#F59E0B" />
+                  ) : (
+                    <ZapOff size={22} color={colors.textSecondary} />
+                  )}
                 </TouchableOpacity>
 
                 <TouchableOpacity
-                  style={[styles.controlCircleBtn, { backgroundColor: colors.surface, borderColor: colors.cardBorder }]}
+                  style={[
+                    styles.controlCircleBtn,
+                    { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+                  ]}
                   onPress={handlePickQrImage}
                 >
                   <ImageIcon size={22} color={colors.primaryIndigo} />
                 </TouchableOpacity>
               </View>
-
-              {/* Quick Scan Demo Action */}
-              <TouchableOpacity
-                style={[styles.simulateScanBtn, { backgroundColor: colors.primaryIndigo }]}
-                onPress={() =>
-                  handleSimulateScan({
-                    name: 'Alex Morgan',
-                    username: '@alex_morgan',
-                    status: 'Coding & Connecting 🚀 | Available for chats',
-                    avatar: 'A',
-                    phone: '+1 (555) 019-2834',
-                  })
-                }
-              >
-                <Scan size={18} color="#FFF" style={{ marginRight: 8 }} />
-                <Text style={styles.simulateScanBtnText}>Scan QR Code Now (@alex_morgan)</Text>
-              </TouchableOpacity>
             </>
           )}
         </View>
