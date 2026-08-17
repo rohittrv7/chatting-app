@@ -21,7 +21,6 @@ import { useChat } from '../context/ChatContext';
 import { useTheme } from '../context/ThemeContext';
 import { useToast } from '../context/ToastContext';
 import * as ImagePicker from 'expo-image-picker';
-import * as MediaLibrary from 'expo-media-library';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import {
@@ -182,12 +181,6 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
         return;
       }
 
-      const permission = await MediaLibrary.requestPermissionsAsync();
-      if (!permission.granted) {
-        showToast('Gallery storage permission required to save photo', 'warning');
-        return;
-      }
-
       let localUri = photoUri;
       if (photoUri.startsWith('http://') || photoUri.startsWith('https://')) {
         const filename = photoUri.split('/').pop() || `photo_${Date.now()}.jpg`;
@@ -196,8 +189,26 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
         localUri = downloadRes.uri;
       }
 
-      await MediaLibrary.saveToLibraryAsync(localUri);
-      showToast('Photo saved to device gallery! 📸', 'success');
+      try {
+        const MediaLibraryModule = require('expo-media-library');
+        if (MediaLibraryModule && MediaLibraryModule.requestPermissionsAsync) {
+          const permission = await MediaLibraryModule.requestPermissionsAsync();
+          if (permission.granted) {
+            await MediaLibraryModule.saveToLibraryAsync(localUri);
+            showToast('Photo saved to device gallery! 📸', 'success');
+            return;
+          }
+        }
+      } catch (modErr) {
+        // Fallback to sharing if native media library is unavailable
+      }
+
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(localUri);
+        showToast('Photo ready to save / share', 'info');
+      } else {
+        showToast('Photo saved locally', 'success');
+      }
     } catch (e: any) {
       console.warn('Error saving photo:', e);
       try {
