@@ -41,16 +41,8 @@ jobs:
         with:
           node-version: 20.x
 
-      - name: Setup EAS CLI
-        uses: expo/expo-github-action@v8
-        with:
-          eas-version: latest
-          token: ${{ secrets.EXPO_TOKEN }}
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v3
-        with:
-          version: 9
+      - name: Setup EAS CLI & pnpm
+        run: npm install -g pnpm@9 eas-cli
 
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
