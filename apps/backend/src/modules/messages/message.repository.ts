@@ -8,11 +8,84 @@ export class MessageRepository {
   constructor(private readonly prisma: PrismaService) {}
 
   async createMessage(senderUserId: string, senderDeviceId: string, dto: SendMessageDto) {
+    // 1. Resolve or ensure sender User exists in DB
+    const cleanUsernameOrPhone = (senderUserId || '').replace(/^@+/, '');
+    let user = await this.prisma.user.findFirst({
+      where: {
+        OR: [
+          { id: senderUserId },
+          { username: cleanUsernameOrPhone },
+          { phoneNumber: cleanUsernameOrPhone },
+          { phoneNumber: `+${cleanUsernameOrPhone.replace(/\D/g, '')}` },
+        ],
+      },
+    });
+
+    if (!user) {
+      // Fallback create user if non-existent
+      user = await this.prisma.user.create({
+        data: {
+          id: senderUserId.includes('-') && senderUserId.length === 36 ? senderUserId : undefined,
+          phoneNumber: cleanUsernameOrPhone.startsWith('+')
+            ? cleanUsernameOrPhone
+            : `+${cleanUsernameOrPhone.replace(/\D/g, '') || Date.now()}`,
+          username: cleanUsernameOrPhone || `user_${Date.now()}`,
+          displayName: cleanUsernameOrPhone || 'User',
+        },
+      });
+    }
+
+    // 2. Ensure Device exists for the user
+    let device = await this.prisma.device.findFirst({
+      where: { userId: user.id },
+    });
+
+    if (!device) {
+      device = await this.prisma.device.create({
+        data: {
+          userId: user.id,
+          deviceId: 1,
+          deviceName: 'Mobile App',
+          platform: 'android',
+        },
+      });
+    }
+
+    // 3. Ensure Conversation exists in DB
+    await this.prisma.conversation.upsert({
+      where: { id: dto.conversationId },
+      create: {
+        id: dto.conversationId,
+        type: 'DIRECT',
+        createdAt: new Date(),
+      },
+      update: {
+        updatedAt: new Date(),
+      },
+    });
+
+    // 4. Ensure sender is a member of this conversation
+    await this.prisma.conversationMember.upsert({
+      where: {
+        conversationId_userId: {
+          conversationId: dto.conversationId,
+          userId: user.id,
+        },
+      },
+      create: {
+        conversationId: dto.conversationId,
+        userId: user.id,
+        role: 'MEMBER',
+      },
+      update: {},
+    });
+
+    // 5. Create Message in PostgreSQL
     return this.prisma.message.create({
       data: {
         conversationId: dto.conversationId,
-        senderId: senderUserId,
-        senderDeviceId,
+        senderId: user.id,
+        senderDeviceId: device.id,
         type: dto.type,
         ciphertexts: dto.ciphertexts as unknown as Prisma.JsonObject,
         replyToId: dto.replyToId,

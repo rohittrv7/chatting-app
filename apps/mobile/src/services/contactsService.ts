@@ -60,24 +60,39 @@ export const fetchDeviceContacts = async (): Promise<{
     });
 
     if (data && data.length > 0) {
-      const formatted: DeviceContact[] = data
-        .filter((c) => c.name && c.name.trim().length > 0)
-        .map((c) => {
-          let primaryPhone = '';
-          if (c.phoneNumbers && c.phoneNumbers.length > 0) {
-            primaryPhone = c.phoneNumbers[0].number || c.phoneNumbers[0].digits || '';
-          }
-          const cleanName = (c.name || 'contact').toLowerCase().replace(/[^a-z0-9]/g, '_');
-          return {
-            id: c.id || Math.random().toString(),
-            name: c.name || 'Unknown Contact',
-            username: `@${cleanName}`,
-            phone: primaryPhone || '',
-            emails: c.emails ? (c.emails.map((e) => e.email).filter(Boolean) as string[]) : [],
-            isRegistered: false,
-          };
-        })
-        .filter((c) => c.phone.trim().length > 0);
+      const seenPhones = new Set<string>();
+      const formatted: DeviceContact[] = [];
+
+      for (const c of data) {
+        if (!c.name || !c.name.trim()) continue;
+        let primaryPhone = '';
+        if (c.phoneNumbers && c.phoneNumbers.length > 0) {
+          primaryPhone = (c.phoneNumbers[0].number || c.phoneNumbers[0].digits || '').trim();
+        }
+        if (!primaryPhone) continue;
+
+        const digits = primaryPhone.replace(/\D/g, '');
+        if (digits.length < 7) continue;
+
+        const normalizedPhone = primaryPhone.startsWith('+')
+          ? `+${digits}`
+          : digits.length === 10
+            ? `+91${digits}`
+            : `+${digits}`;
+        if (seenPhones.has(normalizedPhone) || seenPhones.has(digits)) continue;
+        seenPhones.add(normalizedPhone);
+        seenPhones.add(digits);
+
+        const cleanName = (c.name || 'contact').toLowerCase().replace(/[^a-z0-9]/g, '_');
+        formatted.push({
+          id: c.id || Math.random().toString(),
+          name: c.name.trim(),
+          username: `@${cleanName}`,
+          phone: normalizedPhone,
+          emails: c.emails ? (c.emails.map((e) => e.email).filter(Boolean) as string[]) : [],
+          isRegistered: false,
+        });
+      }
 
       return { granted: true, contacts: formatted };
     }
@@ -128,6 +143,8 @@ export const syncContactsWithServer = async (
 
   const registeredList: DeviceContact[] = [];
   const unregisteredList: DeviceContact[] = [];
+  const seenRegisteredUserIds = new Set<string>();
+  const seenUnregisteredPhones = new Set<string>();
 
   for (const contact of contacts) {
     const digits = contact.phone.replace(/\D/g, '');
@@ -138,21 +155,33 @@ export const syncContactsWithServer = async (
       (digits.length === 10 ? registeredPhoneMap.get(`+91${digits}`) : null);
 
     if (matchedUser) {
-      const regContact: DeviceContact = {
-        ...contact,
-        isRegistered: true,
-        userId: matchedUser.id,
-        name: matchedUser.displayName || contact.name,
-        username: matchedUser.username ? `@${matchedUser.username}` : contact.username,
-        avatarUrl: matchedUser.avatarUrl || undefined,
-        about: matchedUser.about || 'Available | Ready to connect',
-      };
-      registeredList.push(regContact);
+      if (!seenRegisteredUserIds.has(matchedUser.id)) {
+        seenRegisteredUserIds.add(matchedUser.id);
+        const cleanUserHandle = matchedUser.username
+          ? `@${matchedUser.username.replace(/^@+/, '')}`
+          : contact.username
+            ? `@${contact.username.replace(/^@+/, '')}`
+            : `@user_${digits.slice(-4)}`;
+
+        const regContact: DeviceContact = {
+          ...contact,
+          isRegistered: true,
+          userId: matchedUser.id,
+          name: matchedUser.displayName || contact.name,
+          username: cleanUserHandle,
+          avatarUrl: matchedUser.avatarUrl || undefined,
+          about: matchedUser.about || 'Available | Ready to connect',
+        };
+        registeredList.push(regContact);
+      }
     } else {
-      unregisteredList.push({
-        ...contact,
-        isRegistered: false,
-      });
+      if (digits.length >= 7 && !seenUnregisteredPhones.has(digits)) {
+        seenUnregisteredPhones.add(digits);
+        unregisteredList.push({
+          ...contact,
+          isRegistered: false,
+        });
+      }
     }
   }
 

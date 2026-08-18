@@ -1,5 +1,15 @@
 import React from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, SafeAreaView, StatusBar, ScrollView, Alert } from 'react-native';
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  StyleSheet,
+  SafeAreaView,
+  StatusBar,
+  ScrollView,
+  Alert,
+  Platform,
+} from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useDispatch } from 'react-redux';
 import { RootStackParamList } from '../types';
@@ -40,14 +50,24 @@ export const AccountSettingsScreen: React.FC<Props> = ({ navigation }) => {
         backgroundColor={colors.bg}
       />
       <View style={[styles.header, { backgroundColor: colors.bg }]}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
+        <TouchableOpacity
+          onPress={() => navigation.goBack()}
+          style={styles.backBtn}
+          activeOpacity={0.7}
+        >
           <ArrowLeft size={22} color={colors.textPrimary} />
         </TouchableOpacity>
         <Text style={[styles.title, { color: colors.textPrimary }]}>Account Settings</Text>
       </View>
-      <ScrollView contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 10 }}>
+      <ScrollView
+        contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 10, paddingBottom: 30 }}
+      >
         {[
-          { label: 'Security Notifications', icon: ShieldCheck, desc: 'Get notified when security keys change' },
+          {
+            label: 'Security Notifications',
+            icon: ShieldCheck,
+            desc: 'Get notified when security keys change',
+          },
           { label: 'Two-Step Verification', icon: KeyRound, desc: 'Add PIN for extra security' },
           { label: 'Change Phone Number', icon: Smartphone, desc: 'Migrate your account details' },
           { label: 'Request Account Info', icon: User, desc: 'Download account data report' },
@@ -76,7 +96,11 @@ export const AccountSettingsScreen: React.FC<Props> = ({ navigation }) => {
         <TouchableOpacity
           style={[
             styles.card,
-            { backgroundColor: colors.surface, borderColor: 'rgba(239, 68, 68, 0.3)', marginTop: 10 },
+            {
+              backgroundColor: colors.surface,
+              borderColor: 'rgba(239, 68, 68, 0.3)',
+              marginTop: 10,
+            },
           ]}
           onPress={handleLogout}
         >
@@ -96,7 +120,10 @@ export const AccountSettingsScreen: React.FC<Props> = ({ navigation }) => {
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
+  container: {
+    flex: 1,
+    paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 0) + 4 : 0,
+  },
   header: {
     flexDirection: 'row',
     alignItems: 'center',

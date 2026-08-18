@@ -14,6 +14,7 @@ import {
   ScrollView,
   Dimensions,
   Platform,
+  KeyboardAvoidingView,
 } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList, ChatMessage } from '../types';
@@ -443,92 +444,99 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
         <Text style={[styles.dateText, { color: colors.textSecondary }]}>Today</Text>
       </View>
 
-      {/* Message List */}
-      <FlatList
-        data={roomMessages}
-        keyExtractor={(item) => item.id}
-        renderItem={({ item }) => renderBubble(item)}
-        contentContainerStyle={styles.messageList}
-      />
-
-      {/* Emoji Picker Bar */}
-      {showEmojiPicker && (
-        <View
-          style={[
-            styles.emojiPickerContainer,
-            { backgroundColor: colors.surface, borderColor: colors.cardBorder },
-          ]}
-        >
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ paddingHorizontal: 10, paddingVertical: 8 }}
-          >
-            {EMOJI_LIST.map((emoji, index) => (
-              <TouchableOpacity
-                key={index}
-                style={styles.emojiItem}
-                onPress={() => handleEmojiSelect(emoji)}
-              >
-                <Text style={styles.emojiText}>{emoji}</Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-        </View>
-      )}
-
-      {/* Bottom Input Bar */}
-      <View
-        style={[
-          styles.inputBarContainer,
-          { backgroundColor: colors.surface, borderTopColor: colors.cardBorder },
-        ]}
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
       >
-        <TouchableOpacity
-          style={[styles.plusBtn, { backgroundColor: colors.cardBorder }]}
-          onPress={handlePickImage}
-        >
-          <Plus size={20} color={colors.primaryIndigo} />
-        </TouchableOpacity>
+        {/* Message List */}
+        <FlatList
+          data={roomMessages}
+          keyExtractor={(item) => item.id}
+          renderItem={({ item }) => renderBubble(item)}
+          contentContainerStyle={styles.messageList}
+          keyboardShouldPersistTaps="handled"
+        />
 
+        {/* Emoji Picker Bar */}
+        {showEmojiPicker && (
+          <View
+            style={[
+              styles.emojiPickerContainer,
+              { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+            ]}
+          >
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={{ paddingHorizontal: 10, paddingVertical: 8 }}
+            >
+              {EMOJI_LIST.map((emoji, index) => (
+                <TouchableOpacity
+                  key={index}
+                  style={styles.emojiItem}
+                  onPress={() => handleEmojiSelect(emoji)}
+                >
+                  <Text style={styles.emojiText}>{emoji}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        )}
+
+        {/* Bottom Input Bar */}
         <View
           style={[
-            styles.inputFieldWrapper,
-            { backgroundColor: colors.inputBg, borderColor: colors.cardBorder },
+            styles.inputBarContainer,
+            { backgroundColor: colors.surface, borderTopColor: colors.cardBorder },
           ]}
         >
-          <TextInput
-            style={[styles.textInput, { color: colors.textPrimary }]}
-            placeholder="Type a message..."
-            placeholderTextColor={colors.textSecondary}
-            value={inputText}
-            onChangeText={setInputText}
-            returnKeyType="send"
-            onSubmitEditing={handleSendMessage}
-            blurOnSubmit={false}
-          />
           <TouchableOpacity
-            style={{ padding: 4, marginRight: 6 }}
-            onPress={() => setShowEmojiPicker(!showEmojiPicker)}
+            style={[styles.plusBtn, { backgroundColor: colors.cardBorder }]}
+            onPress={handlePickImage}
           >
-            <Smile
-              size={20}
-              color={showEmojiPicker ? colors.primaryIndigo : colors.textSecondary}
-            />
+            <Plus size={20} color={colors.primaryIndigo} />
           </TouchableOpacity>
-          <TouchableOpacity style={{ padding: 4 }}>
-            <Mic size={20} color={colors.textSecondary} />
+
+          <View
+            style={[
+              styles.inputFieldWrapper,
+              { backgroundColor: colors.inputBg, borderColor: colors.cardBorder },
+            ]}
+          >
+            <TextInput
+              style={[styles.textInput, { color: colors.textPrimary }]}
+              placeholder="Type a message..."
+              placeholderTextColor={colors.textSecondary}
+              value={inputText}
+              onChangeText={setInputText}
+              returnKeyType="send"
+              onSubmitEditing={handleSendMessage}
+              blurOnSubmit={false}
+            />
+            <TouchableOpacity
+              style={{ padding: 4, marginRight: 6 }}
+              onPress={() => setShowEmojiPicker(!showEmojiPicker)}
+            >
+              <Smile
+                size={20}
+                color={showEmojiPicker ? colors.primaryIndigo : colors.textSecondary}
+              />
+            </TouchableOpacity>
+            <TouchableOpacity style={{ padding: 4 }}>
+              <Mic size={20} color={colors.textSecondary} />
+            </TouchableOpacity>
+          </View>
+
+          {/* Send Button */}
+          <TouchableOpacity
+            style={[styles.sendBtn, { backgroundColor: colors.primaryIndigo }]}
+            onPress={handleSendMessage}
+          >
+            <Send size={18} color="#FFF" style={{ marginLeft: 2 }} />
           </TouchableOpacity>
         </View>
-
-        {/* Send Button */}
-        <TouchableOpacity
-          style={[styles.sendBtn, { backgroundColor: colors.primaryIndigo }]}
-          onPress={handleSendMessage}
-        >
-          <Send size={18} color="#FFF" style={{ marginLeft: 2 }} />
-        </TouchableOpacity>
-      </View>
+      </KeyboardAvoidingView>
 
       {/* 🖼️ Multi-Media Photo Sending Preview Modal */}
       <Modal visible={pendingMediaList.length > 0} animationType="slide" transparent={false}>

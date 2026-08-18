@@ -2,10 +2,11 @@
   "expo": {
     "name": "WhatsApp Connect",
     "slug": "whatsapp-connect",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
+    "jsEngine": "hermes",
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
@@ -19,7 +20,8 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#6366F1"
       },
-      "package": "com.anonymous.whatsappconnect"
+      "package": "com.anonymous.whatsappconnect",
+      "versionCode": 2
     },
     "web": {
       "favicon": "./assets/favicon.png"

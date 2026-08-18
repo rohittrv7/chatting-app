@@ -1,9 +1,27 @@
 import React from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, SafeAreaView, StatusBar, ScrollView } from 'react-native';
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  StyleSheet,
+  SafeAreaView,
+  StatusBar,
+  ScrollView,
+  Platform,
+} from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types';
 import { useTheme } from '../context/ThemeContext';
-import { ArrowLeft, Image as ImageIcon, Database, SunMoon, HardDriveUpload, Check, Moon, Sun } from 'lucide-react-native';
+import {
+  ArrowLeft,
+  Image as ImageIcon,
+  Database,
+  SunMoon,
+  HardDriveUpload,
+  Check,
+  Moon,
+  Sun,
+} from 'lucide-react-native';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'ChatSettings'>;
 
@@ -17,7 +35,11 @@ export const ChatSettingsScreen: React.FC<Props> = ({ navigation }) => {
         backgroundColor={colors.bg}
       />
       <View style={[styles.header, { backgroundColor: colors.bg }]}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
+        <TouchableOpacity
+          onPress={() => navigation.goBack()}
+          style={styles.backBtn}
+          activeOpacity={0.7}
+        >
           <ArrowLeft size={22} color={colors.textPrimary} />
         </TouchableOpacity>
         <Text style={[styles.title, { color: colors.textPrimary }]}>Chat & Appearance</Text>
@@ -31,7 +53,10 @@ export const ChatSettingsScreen: React.FC<Props> = ({ navigation }) => {
         <TouchableOpacity
           style={[
             styles.themeOptionCard,
-            { backgroundColor: colors.surface, borderColor: themeMode === 'dark' ? colors.primaryIndigo : colors.cardBorder },
+            {
+              backgroundColor: colors.surface,
+              borderColor: themeMode === 'dark' ? colors.primaryIndigo : colors.cardBorder,
+            },
             themeMode === 'dark' && styles.selectedBorder,
           ]}
           activeOpacity={0.8}
@@ -41,9 +66,7 @@ export const ChatSettingsScreen: React.FC<Props> = ({ navigation }) => {
             <Moon size={22} color="#6366F1" />
           </View>
           <View style={{ flex: 1, marginLeft: 12 }}>
-            <Text style={[styles.cardTitle, { color: colors.textPrimary }]}>
-              Dark Mode
-            </Text>
+            <Text style={[styles.cardTitle, { color: colors.textPrimary }]}>Dark Mode</Text>
             <Text style={[styles.cardDesc, { color: colors.textSecondary }]}>
               OLED battery saver
             </Text>
@@ -59,7 +82,10 @@ export const ChatSettingsScreen: React.FC<Props> = ({ navigation }) => {
         <TouchableOpacity
           style={[
             styles.themeOptionCard,
-            { backgroundColor: colors.surface, borderColor: themeMode === 'light' ? colors.primaryIndigo : colors.cardBorder },
+            {
+              backgroundColor: colors.surface,
+              borderColor: themeMode === 'light' ? colors.primaryIndigo : colors.cardBorder,
+            },
             themeMode === 'light' && styles.selectedBorder,
           ]}
           activeOpacity={0.8}
@@ -69,12 +95,8 @@ export const ChatSettingsScreen: React.FC<Props> = ({ navigation }) => {
             <Sun size={22} color="#6366F1" />
           </View>
           <View style={{ flex: 1, marginLeft: 12 }}>
-            <Text style={[styles.cardTitle, { color: colors.textPrimary }]}>
-              Light Mode
-            </Text>
-            <Text style={[styles.cardDesc, { color: colors.textSecondary }]}>
-              High contrast
-            </Text>
+            <Text style={[styles.cardTitle, { color: colors.textPrimary }]}>Light Mode</Text>
+            <Text style={[styles.cardDesc, { color: colors.textSecondary }]}>High contrast</Text>
           </View>
           {themeMode === 'light' && (
             <View style={[styles.checkCircle, { backgroundColor: colors.primaryIndigo }]}>
@@ -83,10 +105,16 @@ export const ChatSettingsScreen: React.FC<Props> = ({ navigation }) => {
           )}
         </TouchableOpacity>
 
-        <Text style={[styles.sectionHeader, { color: colors.textSecondary, marginTop: 24 }]}>OTHER SETTINGS</Text>
+        <Text style={[styles.sectionHeader, { color: colors.textSecondary, marginTop: 24 }]}>
+          OTHER SETTINGS
+        </Text>
 
         {[
-          { label: 'Chat Wallpaper', desc: 'Custom background tint & wall pattern', icon: ImageIcon },
+          {
+            label: 'Chat Wallpaper',
+            desc: 'Custom background tint & wall pattern',
+            icon: ImageIcon,
+          },
           { label: 'Chat Backup', desc: 'Back up chats to cloud storage', icon: HardDriveUpload },
           { label: 'Media Auto-Download', desc: 'Wi-Fi & Cellular data settings', icon: Database },
         ].map((item, idx) => {
@@ -115,7 +143,10 @@ export const ChatSettingsScreen: React.FC<Props> = ({ navigation }) => {
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
+  container: {
+    flex: 1,
+    paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 0) + 4 : 0,
+  },
   header: {
     flexDirection: 'row',
     alignItems: 'center',

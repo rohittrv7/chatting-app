@@ -72,7 +72,7 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
 
   const handleTabPress = (idx: number) => {
     setSelectedBottomNav(idx);
-    horizontalScrollRef.current?.scrollTo({ x: idx * screenWidth, animated: true });
+    horizontalScrollRef.current?.scrollTo({ x: idx * screenWidth, animated: false });
   };
   const [selectedFilter, setSelectedFilter] = useState<string>('All'); // 'All', 'Unread'
   const [isSearching, setIsSearching] = useState<boolean>(false);
@@ -92,8 +92,27 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
 
     if (result.granted && result.contacts.length > 0) {
       const syncRes = await syncContactsWithServer(result.contacts, token || undefined);
-      setRegisteredContacts(syncRes.registered);
-      setUnregisteredContacts(syncRes.unregistered);
+      const myDigits = (userProfile.phone || '').replace(/\D/g, '');
+      const myUsername = (userProfile.username || '').toLowerCase().replace(/^@+/, '');
+
+      const isMe = (c: DeviceContact) => {
+        const cDigits = (c.phone || '').replace(/\D/g, '');
+        const cUsername = (c.username || '').toLowerCase().replace(/^@+/, '');
+        if (
+          myDigits &&
+          cDigits &&
+          (myDigits === cDigits || myDigits.endsWith(cDigits) || cDigits.endsWith(myDigits))
+        ) {
+          return true;
+        }
+        if (myUsername && cUsername && myUsername === cUsername) {
+          return true;
+        }
+        return false;
+      };
+
+      setRegisteredContacts(syncRes.registered.filter((c) => !isMe(c)));
+      setUnregisteredContacts(syncRes.unregistered.filter((c) => !isMe(c)));
     } else {
       setRegisteredContacts([]);
       setUnregisteredContacts([]);
@@ -104,7 +123,7 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
   useEffect(() => {
     requestAllAppPermissions();
     loadContacts();
-  }, [token]);
+  }, [token, userProfile.phone]);
 
   useEffect(() => {
     const onBackPress = () => {
@@ -127,7 +146,6 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
   };
 
   const handleStartChatWithContact = (contactName: string, username?: string) => {
-    addConversation(contactName, username);
     navigation.navigate('Chat', { conversationId: `conv_${Date.now()}`, title: contactName });
   };
 

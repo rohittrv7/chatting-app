@@ -11,6 +11,7 @@ import {
   ScrollView,
   ActivityIndicator,
   Platform,
+  BackHandler,
 } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types';
@@ -51,6 +52,15 @@ interface ScannedUser {
 export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
   const { userProfile, addConversation } = useChat();
   const { themeMode, colors } = useTheme();
+
+  useEffect(() => {
+    const onBack = () => {
+      navigation.goBack();
+      return true;
+    };
+    const sub = BackHandler.addEventListener('hardwareBackPress', onBack);
+    return () => sub.remove();
+  }, [navigation]);
 
   const [activeTab, setActiveTab] = useState<'myCode' | 'scanCode'>('myCode');
   const [flashOn, setFlashOn] = useState(false);

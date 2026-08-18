@@ -1,5 +1,15 @@
-import React from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, SafeAreaView, StatusBar, ScrollView } from 'react-native';
+import React, { useEffect } from 'react';
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  StyleSheet,
+  SafeAreaView,
+  StatusBar,
+  ScrollView,
+  Platform,
+  BackHandler,
+} from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types';
 import { useTheme } from '../context/ThemeContext';
@@ -10,6 +20,15 @@ type Props = NativeStackScreenProps<RootStackParamList, 'CallSettings'>;
 export const CallSettingsScreen: React.FC<Props> = ({ navigation }) => {
   const { themeMode, colors } = useTheme();
 
+  useEffect(() => {
+    const onBack = () => {
+      navigation.goBack();
+      return true;
+    };
+    const sub = BackHandler.addEventListener('hardwareBackPress', onBack);
+    return () => sub.remove();
+  }, [navigation]);
+
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
       <StatusBar
@@ -17,15 +36,26 @@ export const CallSettingsScreen: React.FC<Props> = ({ navigation }) => {
         backgroundColor={colors.bg}
       />
       <View style={[styles.header, { backgroundColor: colors.bg }]}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
+        <TouchableOpacity
+          onPress={() => navigation.goBack()}
+          style={styles.backBtn}
+          activeOpacity={0.7}
+          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+        >
           <ArrowLeft size={22} color={colors.textPrimary} />
         </TouchableOpacity>
         <Text style={[styles.title, { color: colors.textPrimary }]}>Call Settings</Text>
       </View>
-      <ScrollView contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 10 }}>
+      <ScrollView
+        contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 10, paddingBottom: 30 }}
+      >
         {[
           { label: 'Ringtone & Vibration', desc: 'Default call ringtone', icon: Volume2 },
-          { label: 'Silence Unknown Callers', desc: 'Auto silence numbers not in contacts', icon: PhoneCall },
+          {
+            label: 'Silence Unknown Callers',
+            desc: 'Auto silence numbers not in contacts',
+            icon: PhoneCall,
+          },
           { label: 'Low Data Usage for Calls', desc: 'Reduce network bandwidth', icon: Wifi },
           { label: 'WebRTC Encryption', desc: 'End-to-end P2P call security', icon: Shield },
         ].map((item, idx) => {
@@ -54,7 +84,10 @@ export const CallSettingsScreen: React.FC<Props> = ({ navigation }) => {
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
+  container: {
+    flex: 1,
+    paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 0) + 4 : 0,
+  },
   header: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -1,5 +1,14 @@
 import React from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, SafeAreaView, StatusBar, ScrollView } from 'react-native';
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  StyleSheet,
+  SafeAreaView,
+  StatusBar,
+  ScrollView,
+  Platform,
+} from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types';
 import { useTheme } from '../context/ThemeContext';
@@ -17,12 +26,18 @@ export const PrivacySettingsScreen: React.FC<Props> = ({ navigation }) => {
         backgroundColor={colors.bg}
       />
       <View style={[styles.header, { backgroundColor: colors.bg }]}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
+        <TouchableOpacity
+          onPress={() => navigation.goBack()}
+          style={styles.backBtn}
+          activeOpacity={0.7}
+        >
           <ArrowLeft size={22} color={colors.textPrimary} />
         </TouchableOpacity>
         <Text style={[styles.title, { color: colors.textPrimary }]}>Privacy Settings</Text>
       </View>
-      <ScrollView contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 10 }}>
+      <ScrollView
+        contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 10, paddingBottom: 30 }}
+      >
         {[
           { label: 'Last Seen & Online', val: 'Everyone', icon: Clock },
           { label: 'Profile Photo', val: 'My Contacts', icon: Eye },
@@ -37,6 +52,7 @@ export const PrivacySettingsScreen: React.FC<Props> = ({ navigation }) => {
                 styles.card,
                 { backgroundColor: colors.surface, borderColor: colors.cardBorder },
               ]}
+              activeOpacity={0.8}
             >
               <View style={[styles.iconBox, { backgroundColor: colors.cardBorder }]}>
                 <Icon size={20} color={colors.primaryIndigo} />
@@ -54,7 +70,10 @@ export const PrivacySettingsScreen: React.FC<Props> = ({ navigation }) => {
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
+  container: {
+    flex: 1,
+    paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 0) + 4 : 0,
+  },
   header: {
     flexDirection: 'row',
     alignItems: 'center',

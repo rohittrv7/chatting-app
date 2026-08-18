@@ -61,6 +61,11 @@ export const chatSlice = createSlice({
         state.messagesMap[conversationId].push(message);
       }
 
+      // Keep only the most recent 50 messages per room to optimize storage and memory
+      if (state.messagesMap[conversationId].length > 50) {
+        state.messagesMap[conversationId] = state.messagesMap[conversationId].slice(-50);
+      }
+
       // Update lastMessage in conversations
       const conv = state.conversations.find(
         (c) => c.id === conversationId || c.title === conversationId,

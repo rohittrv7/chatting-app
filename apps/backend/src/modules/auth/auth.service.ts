@@ -32,6 +32,19 @@ function generateOtpCode(): string {
   return String(code);
 }
 
+function normalizePhoneNumber(raw: string): string {
+  if (!raw) return '';
+  const trimmed = raw.trim();
+  const digits = trimmed.replace(/\D/g, '');
+  if (trimmed.startsWith('+')) {
+    return `+${digits}`;
+  }
+  if (digits.length === 10) {
+    return `+91${digits}`;
+  }
+  return digits ? `+${digits}` : '';
+}
+
 @Injectable()
 export class AuthService {
   constructor(
@@ -46,10 +59,11 @@ export class AuthService {
   // OTP Request  (Requirement 1.1)
   // ──────────────────────────────────────────────────────────────────────────
   async requestOtp(dto: RequestOtpDto): Promise<{ message: string; mockOtp?: string }> {
+    const normalizedPhone = normalizePhoneNumber(dto.phoneNumber);
     const code = generateOtpCode();
 
     // Store in Redis hash otp:{phoneNumber} with 10-min TTL
-    await this.otpRedis.storeOtp(dto.phoneNumber, code);
+    await this.otpRedis.storeOtp(normalizedPhone, code);
 
     // In production this would dispatch an SMS; in dev we expose it in the response
     const isDev = this.configService.get<string>('NODE_ENV', 'development') !== 'production';
@@ -63,9 +77,7 @@ export class AuthService {
   // ──────────────────────────────────────────────────────────────────────────
   // OTP Verification  (Requirements 1.2, 1.3, 1.4)
   // ──────────────────────────────────────────────────────────────────────────
-  async verifyOtp(
-    dto: VerifyOtpDto,
-  ): Promise<{
+  async verifyOtp(dto: VerifyOtpDto): Promise<{
     accessToken: string;
     refreshToken: string;
     user: unknown;
@@ -287,7 +299,11 @@ export class AuthService {
     userId: string,
     dto: { name?: string; username?: string; status?: string; avatarUrl?: string },
   ) {
-    const user = await this.authRepository.updateUserProfile(userId, dto);
+    const cleanUsername = dto.username ? dto.username.replace(/^@+/, '').trim() : undefined;
+    const user = await this.authRepository.updateUserProfile(userId, {
+      ...dto,
+      username: cleanUsername,
+    });
     return {
       success: true,
       message: 'Profile updated successfully',
@@ -314,7 +330,7 @@ export class AuthService {
       if (digitsOnly.length < 7) continue;
 
       // Check with plus
-      const formattedWithPlus = raw.startsWith('+') ? `+${digitsOnly}` : `+${digitsOnly}`;
+      const formattedWithPlus = `+${digitsOnly}`;
       cleanNumbersSet.add(formattedWithPlus);
       phoneMap.set(formattedWithPlus, raw);
 
@@ -334,22 +350,31 @@ export class AuthService {
     );
 
     const registeredPhoneSet = new Set<string>();
-    const registered = registeredUsers.map((u) => {
+    const seenUserIds = new Set<string>();
+    const registered: any[] = [];
+
+    for (const u of registeredUsers) {
+      if (seenUserIds.has(u.id)) continue;
+      seenUserIds.add(u.id);
+
       registeredPhoneSet.add(u.phoneNumber);
       const digits = u.phoneNumber.replace(/\D/g, '');
       registeredPhoneSet.add(digits);
       registeredPhoneSet.add(`+${digits}`);
+      if (digits.length === 10) {
+        registeredPhoneSet.add(`+91${digits}`);
+      }
 
-      return {
+      registered.push({
         id: u.id,
         phoneNumber: u.phoneNumber,
         displayName: u.displayName,
-        username: u.username,
+        username: u.username ? `@${u.username.replace(/^@+/, '')}` : null,
         avatarUrl: u.avatarUrl,
         about: u.about,
         isRegistered: true,
-      };
-    });
+      });
+    }
 
     const unregisteredSet = new Set<string>();
     for (const raw of rawPhoneNumbers) {

@@ -11,6 +11,7 @@ import {
   Image,
   Platform,
   Animated,
+  KeyboardAvoidingView,
 } from 'react-native';
 import { useDispatch, useSelector } from 'react-redux';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -112,12 +113,13 @@ export const NewUserProfileSetupScreen: React.FC<Props> = ({ route, navigation }
         useNativeDriver: true,
       }),
     ]).start(async () => {
-      const formattedUsername = username.startsWith('@') ? username.trim() : `@${username.trim()}`;
+      const cleanUsername = username.trim().replace(/^@+/, '');
+      const formattedUsername = `@${cleanUsername}`;
 
       const newProfile = {
         name: name.trim(),
         username: formattedUsername,
-        status: status.trim() || 'Available',
+        status: status.trim() || 'Available | Ready to connect',
         phone: phoneNumber,
         avatarUrl: avatarUri || undefined,
       };
@@ -141,169 +143,179 @@ export const NewUserProfileSetupScreen: React.FC<Props> = ({ route, navigation }
         backgroundColor={colors.bg}
       />
 
-      <ScrollView
-        contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        {/* Animated Welcome Badge */}
-        <Animated.View
-          style={[
-            styles.badgeWrapper,
-            { opacity: fadeAnim, transform: [{ translateY: slideAnim }] },
-          ]}
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
         >
-          <View
+          {/* Animated Welcome Badge */}
+          <Animated.View
             style={[
-              styles.badge,
-              { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+              styles.badgeWrapper,
+              { opacity: fadeAnim, transform: [{ translateY: slideAnim }] },
             ]}
           >
-            <Sparkles size={16} color={colors.primaryIndigo} />
-            <Text style={[styles.badgeText, { color: colors.primaryIndigo }]}>New User Setup</Text>
-          </View>
-        </Animated.View>
+            <View
+              style={[
+                styles.badge,
+                { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+              ]}
+            >
+              <Sparkles size={16} color={colors.primaryIndigo} />
+              <Text style={[styles.badgeText, { color: colors.primaryIndigo }]}>
+                New User Setup
+              </Text>
+            </View>
+          </Animated.View>
 
-        {/* Animated Headline without emojis */}
-        <Animated.View
-          style={[
-            styles.titleSection,
-            { opacity: fadeAnim, transform: [{ translateY: slideAnim }] },
-          ]}
-        >
-          <Text style={[styles.title, { color: colors.textPrimary }]}>
-            Welcome! Setup Your Profile
-          </Text>
-          <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
-            Personalize your identity so your friends & contacts can find you easily.
-          </Text>
-        </Animated.View>
-
-        {/* Animated Avatar Picker */}
-        <Animated.View
-          style={[styles.avatarSection, { opacity: fadeAnim, transform: [{ scale: scaleAnim }] }]}
-        >
-          <TouchableOpacity
-            activeOpacity={0.85}
-            onPress={handlePickAvatar}
-            style={styles.avatarTouchable}
+          {/* Animated Headline without emojis */}
+          <Animated.View
+            style={[
+              styles.titleSection,
+              { opacity: fadeAnim, transform: [{ translateY: slideAnim }] },
+            ]}
           >
-            {avatarUri ? (
-              <Image source={{ uri: avatarUri }} style={styles.avatarImage} />
-            ) : (
+            <Text style={[styles.title, { color: colors.textPrimary }]}>
+              Welcome! Setup Your Profile
+            </Text>
+            <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
+              Personalize your identity so your friends & contacts can find you easily.
+            </Text>
+          </Animated.View>
+
+          {/* Animated Avatar Picker */}
+          <Animated.View
+            style={[styles.avatarSection, { opacity: fadeAnim, transform: [{ scale: scaleAnim }] }]}
+          >
+            <TouchableOpacity
+              activeOpacity={0.85}
+              onPress={handlePickAvatar}
+              style={styles.avatarTouchable}
+            >
+              {avatarUri ? (
+                <Image source={{ uri: avatarUri }} style={styles.avatarImage} />
+              ) : (
+                <View
+                  style={[
+                    styles.avatarPlaceholder,
+                    { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+                  ]}
+                >
+                  <User size={48} color={colors.textSecondary} />
+                </View>
+              )}
+              <View style={[styles.cameraBadge, { backgroundColor: colors.primaryIndigo }]}>
+                <Camera size={18} color="#FFF" />
+              </View>
+            </TouchableOpacity>
+            <Text style={[styles.photoLabel, { color: colors.textSecondary }]}>
+              {avatarUri ? 'Tap to change photo' : 'Add Profile Photo (Optional)'}
+            </Text>
+          </Animated.View>
+
+          {/* Animated Form Fields */}
+          <Animated.View
+            style={[
+              styles.formContainer,
+              { opacity: fadeAnim, transform: [{ translateY: slideAnim }] },
+            ]}
+          >
+            {/* Name Field (Required) */}
+            <View style={styles.inputGroup}>
+              <Text style={[styles.label, { color: colors.textPrimary }]}>
+                Full Name <Text style={styles.requiredStar}>*</Text>
+              </Text>
               <View
                 style={[
-                  styles.avatarPlaceholder,
+                  styles.inputBox,
                   { backgroundColor: colors.surface, borderColor: colors.cardBorder },
                 ]}
               >
-                <User size={48} color={colors.textSecondary} />
+                <User size={20} color={colors.primaryIndigo} style={styles.inputIcon} />
+                <TextInput
+                  style={[styles.input, { color: colors.textPrimary }]}
+                  placeholder="Enter your name (e.g. Rohit Sharma)"
+                  placeholderTextColor={colors.textSecondary}
+                  value={name}
+                  onChangeText={setName}
+                />
               </View>
-            )}
-            <View style={[styles.cameraBadge, { backgroundColor: colors.primaryIndigo }]}>
-              <Camera size={18} color="#FFF" />
             </View>
-          </TouchableOpacity>
-          <Text style={[styles.photoLabel, { color: colors.textSecondary }]}>
-            {avatarUri ? 'Tap to change photo' : 'Add Profile Photo (Optional)'}
-          </Text>
-        </Animated.View>
 
-        {/* Animated Form Fields */}
-        <Animated.View
-          style={[
-            styles.formContainer,
-            { opacity: fadeAnim, transform: [{ translateY: slideAnim }] },
-          ]}
-        >
-          {/* Name Field (Required) */}
-          <View style={styles.inputGroup}>
-            <Text style={[styles.label, { color: colors.textPrimary }]}>
-              Full Name <Text style={styles.requiredStar}>*</Text>
-            </Text>
-            <View
-              style={[
-                styles.inputBox,
-                { backgroundColor: colors.surface, borderColor: colors.cardBorder },
-              ]}
-            >
-              <User size={20} color={colors.primaryIndigo} style={styles.inputIcon} />
-              <TextInput
-                style={[styles.input, { color: colors.textPrimary }]}
-                placeholder="Enter your name (e.g. Rohit Sharma)"
-                placeholderTextColor={colors.textSecondary}
-                value={name}
-                onChangeText={setName}
-              />
+            {/* Username Field (Required) */}
+            <View style={styles.inputGroup}>
+              <Text style={[styles.label, { color: colors.textPrimary }]}>
+                Username <Text style={styles.requiredStar}>*</Text>
+              </Text>
+              <View
+                style={[
+                  styles.inputBox,
+                  { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+                ]}
+              >
+                <AtSign size={20} color={colors.primaryIndigo} style={styles.inputIcon} />
+                <TextInput
+                  style={[styles.input, { color: colors.textPrimary }]}
+                  placeholder="Choose @username (e.g. rohit_dev)"
+                  placeholderTextColor={colors.textSecondary}
+                  autoCapitalize="none"
+                  value={username}
+                  onChangeText={setUsername}
+                />
+              </View>
             </View>
-          </View>
 
-          {/* Username Field (Required) */}
-          <View style={styles.inputGroup}>
-            <Text style={[styles.label, { color: colors.textPrimary }]}>
-              Username <Text style={styles.requiredStar}>*</Text>
-            </Text>
-            <View
-              style={[
-                styles.inputBox,
-                { backgroundColor: colors.surface, borderColor: colors.cardBorder },
-              ]}
-            >
-              <AtSign size={20} color={colors.primaryIndigo} style={styles.inputIcon} />
-              <TextInput
-                style={[styles.input, { color: colors.textPrimary }]}
-                placeholder="Choose @username (e.g. rohit_dev)"
-                placeholderTextColor={colors.textSecondary}
-                autoCapitalize="none"
-                value={username}
-                onChangeText={setUsername}
-              />
+            {/* Bio/Status Field (Optional) */}
+            <View style={styles.inputGroup}>
+              <Text style={[styles.label, { color: colors.textPrimary }]}>
+                Bio / Status{' '}
+                <Text style={[styles.optionalTag, { color: colors.textSecondary }]}>
+                  {' '}
+                  (Optional)
+                </Text>
+              </Text>
+              <View
+                style={[
+                  styles.inputBox,
+                  { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+                ]}
+              >
+                <Info size={20} color={colors.primaryIndigo} style={styles.inputIcon} />
+                <TextInput
+                  style={[styles.input, { color: colors.textPrimary }]}
+                  placeholder="Tell something about yourself"
+                  placeholderTextColor={colors.textSecondary}
+                  value={status}
+                  onChangeText={setStatus}
+                />
+              </View>
             </View>
-          </View>
+          </Animated.View>
 
-          {/* Bio/Status Field (Optional) */}
-          <View style={styles.inputGroup}>
-            <Text style={[styles.label, { color: colors.textPrimary }]}>
-              Bio / Status{' '}
-              <Text style={[styles.optionalTag, { color: colors.textSecondary }]}> (Optional)</Text>
-            </Text>
-            <View
-              style={[
-                styles.inputBox,
-                { backgroundColor: colors.surface, borderColor: colors.cardBorder },
-              ]}
-            >
-              <Info size={20} color={colors.primaryIndigo} style={styles.inputIcon} />
-              <TextInput
-                style={[styles.input, { color: colors.textPrimary }]}
-                placeholder="Tell something about yourself"
-                placeholderTextColor={colors.textSecondary}
-                value={status}
-                onChangeText={setStatus}
-              />
-            </View>
-          </View>
-        </Animated.View>
-
-        {/* Animated Submit Button */}
-        <Animated.View
-          style={{
-            width: '100%',
-            marginTop: 24,
-            opacity: fadeAnim,
-            transform: [{ scale: btnScale }],
-          }}
-        >
-          <TouchableOpacity
-            style={[styles.submitBtn, { backgroundColor: colors.primaryIndigo }]}
-            onPress={handleCompleteSetup}
-            activeOpacity={0.85}
+          {/* Animated Submit Button */}
+          <Animated.View
+            style={{
+              width: '100%',
+              marginTop: 24,
+              opacity: fadeAnim,
+              transform: [{ scale: btnScale }],
+            }}
           >
-            <Text style={styles.submitBtnText}>Get Started Now</Text>
-            <ArrowRight size={20} color="#FFF" style={{ marginLeft: 8 }} />
-          </TouchableOpacity>
-        </Animated.View>
-      </ScrollView>
+            <TouchableOpacity
+              style={[styles.submitBtn, { backgroundColor: colors.primaryIndigo }]}
+              onPress={handleCompleteSetup}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.submitBtnText}>Get Started Now</Text>
+              <ArrowRight size={20} color="#FFF" style={{ marginLeft: 8 }} />
+            </TouchableOpacity>
+          </Animated.View>
+        </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 };

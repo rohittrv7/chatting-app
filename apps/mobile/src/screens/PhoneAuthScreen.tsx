@@ -10,6 +10,7 @@ import {
   ScrollView,
   Platform,
   Animated,
+  KeyboardAvoidingView,
 } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types';
@@ -21,7 +22,7 @@ import { Phone, ArrowRight, ShieldCheck, MessageSquare, Sparkles } from 'lucide-
 type Props = NativeStackScreenProps<RootStackParamList, 'PhoneAuth'>;
 
 export const PhoneAuthScreen: React.FC<Props> = ({ navigation }) => {
-  const [phoneNumber, setPhoneNumber] = useState('+91 98765 43210');
+  const [phoneNumber, setPhoneNumber] = useState('');
   const { themeMode, colors } = useTheme();
   const { showToast } = useToast();
 
@@ -52,13 +53,23 @@ export const PhoneAuthScreen: React.FC<Props> = ({ navigation }) => {
   }, []);
 
   const handleSendOtp = async () => {
-    const rawNumber = phoneNumber.trim();
-    if (!rawNumber || rawNumber.length < 8) {
-      showToast('Please enter a valid phone number with country code.', 'error');
+    const rawNumber = phoneNumber.trim().replace(/[\s-]/g, '');
+    const cleanDigits = rawNumber.replace(/\D/g, '');
+    if (!rawNumber || cleanDigits.length < 8) {
+      showToast(
+        'Please enter a valid phone number with country code (e.g. +91 98765 43210).',
+        'error',
+      );
       return;
     }
 
-    const res = await apiService.requestOtp(rawNumber);
+    const normalizedNumber = rawNumber.startsWith('+')
+      ? rawNumber
+      : cleanDigits.length === 10
+        ? `+91${cleanDigits}`
+        : `+${cleanDigits}`;
+
+    const res = await apiService.requestOtp(normalizedNumber);
     showToast(`Verification OTP Sent: ${res.mockOtp}`, 'info', 5000);
 
     Animated.sequence([
@@ -74,7 +85,7 @@ export const PhoneAuthScreen: React.FC<Props> = ({ navigation }) => {
       }),
     ]).start(() => {
       navigation.navigate('OtpVerification', {
-        phoneNumber: rawNumber,
+        phoneNumber: normalizedNumber,
         generatedOtp: res.mockOtp,
       });
     });
@@ -87,74 +98,123 @@ export const PhoneAuthScreen: React.FC<Props> = ({ navigation }) => {
         backgroundColor={colors.bg}
       />
 
-      <ScrollView
-        contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        {/* Animated Hero Logo */}
-        <Animated.View style={[styles.heroLogoWrapper, { opacity: fadeAnim, transform: [{ scale: scaleAnim }] }]}>
-          <View style={[styles.heroLogoCircle, { backgroundColor: colors.surface, borderColor: colors.cardBorder }]}>
-            <MessageSquare size={44} color={colors.primaryIndigo} />
-          </View>
-        </Animated.View>
-
-        {/* Animated Badge */}
-        <Animated.View style={[styles.badgeWrapper, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
-          <View style={[styles.badge, { backgroundColor: colors.surface, borderColor: colors.cardBorder }]}>
-            <Sparkles size={14} color={colors.primaryIndigo} />
-            <Text style={[styles.badgeText, { color: colors.primaryIndigo }]}>Fast & Secure Login</Text>
-          </View>
-        </Animated.View>
-
-        {/* Animated Title & Subtitle without emojis */}
-        <Animated.View style={[styles.textSection, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
-          <Text style={[styles.title, { color: colors.textPrimary }]}>
-            Connect & Chat{'\n'}With Loved Ones
-          </Text>
-          <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
-            Enter your phone number to receive a 6-digit OTP verification code.
-          </Text>
-        </Animated.View>
-
-        {/* Phone Input Box */}
-        <Animated.View style={[styles.inputSection, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
-          <Text style={[styles.inputLabel, { color: colors.textPrimary }]}>Phone Number</Text>
-          <View style={[styles.inputContainer, { backgroundColor: colors.surface, borderColor: colors.cardBorder }]}>
-            <Phone size={20} color={colors.primaryIndigo} style={styles.phoneIcon} />
-            <TextInput
-              style={[styles.input, { color: colors.textPrimary }]}
-              placeholder="+91 98765 43210"
-              placeholderTextColor={colors.textSecondary}
-              keyboardType="phone-pad"
-              value={phoneNumber}
-              onChangeText={setPhoneNumber}
-            />
-          </View>
-        </Animated.View>
-
-        {/* Animated Send OTP Button */}
-        <Animated.View style={{ width: '100%', marginTop: 24, opacity: fadeAnim, transform: [{ scale: btnScale }] }}>
-          <TouchableOpacity
-            style={[styles.phoneButton, { backgroundColor: colors.primaryIndigo }]}
-            onPress={handleSendOtp}
-            activeOpacity={0.85}
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+        >
+          {/* Animated Hero Logo */}
+          <Animated.View
+            style={[
+              styles.heroLogoWrapper,
+              { opacity: fadeAnim, transform: [{ scale: scaleAnim }] },
+            ]}
           >
-            <Text style={styles.phoneButtonText}>Send OTP Code</Text>
-            <View style={styles.iconCircleWhite}>
-              <ArrowRight size={18} color={colors.primaryIndigo} />
+            <View
+              style={[
+                styles.heroLogoCircle,
+                { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+              ]}
+            >
+              <MessageSquare size={44} color={colors.primaryIndigo} />
             </View>
-          </TouchableOpacity>
-        </Animated.View>
+          </Animated.View>
 
-        {/* Footer Security Guarantee */}
-        <Animated.View style={[styles.footerInfo, { opacity: fadeAnim }]}>
-          <ShieldCheck size={16} color={colors.textSecondary} style={{ marginRight: 6 }} />
-          <Text style={[styles.footerText, { color: colors.textSecondary }]}>
-            End-to-End Encrypted & Private
-          </Text>
-        </Animated.View>
-      </ScrollView>
+          {/* Animated Badge */}
+          <Animated.View
+            style={[
+              styles.badgeWrapper,
+              { opacity: fadeAnim, transform: [{ translateY: slideAnim }] },
+            ]}
+          >
+            <View
+              style={[
+                styles.badge,
+                { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+              ]}
+            >
+              <Sparkles size={14} color={colors.primaryIndigo} />
+              <Text style={[styles.badgeText, { color: colors.primaryIndigo }]}>
+                Fast & Secure Login
+              </Text>
+            </View>
+          </Animated.View>
+
+          {/* Animated Title & Subtitle without emojis */}
+          <Animated.View
+            style={[
+              styles.textSection,
+              { opacity: fadeAnim, transform: [{ translateY: slideAnim }] },
+            ]}
+          >
+            <Text style={[styles.title, { color: colors.textPrimary }]}>
+              Connect & Chat{'\n'}With Loved Ones
+            </Text>
+            <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
+              Enter your phone number to receive a 6-digit OTP verification code.
+            </Text>
+          </Animated.View>
+
+          {/* Phone Input Box */}
+          <Animated.View
+            style={[
+              styles.inputSection,
+              { opacity: fadeAnim, transform: [{ translateY: slideAnim }] },
+            ]}
+          >
+            <Text style={[styles.inputLabel, { color: colors.textPrimary }]}>Phone Number</Text>
+            <View
+              style={[
+                styles.inputContainer,
+                { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+              ]}
+            >
+              <Phone size={20} color={colors.primaryIndigo} style={styles.phoneIcon} />
+              <TextInput
+                style={[styles.input, { color: colors.textPrimary }]}
+                placeholder="+91 98765 43210"
+                placeholderTextColor={colors.textSecondary}
+                keyboardType="phone-pad"
+                value={phoneNumber}
+                onChangeText={setPhoneNumber}
+              />
+            </View>
+          </Animated.View>
+
+          {/* Animated Send OTP Button */}
+          <Animated.View
+            style={{
+              width: '100%',
+              marginTop: 24,
+              opacity: fadeAnim,
+              transform: [{ scale: btnScale }],
+            }}
+          >
+            <TouchableOpacity
+              style={[styles.phoneButton, { backgroundColor: colors.primaryIndigo }]}
+              onPress={handleSendOtp}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.phoneButtonText}>Send OTP Code</Text>
+              <View style={styles.iconCircleWhite}>
+                <ArrowRight size={18} color={colors.primaryIndigo} />
+              </View>
+            </TouchableOpacity>
+          </Animated.View>
+
+          {/* Footer Security Guarantee */}
+          <Animated.View style={[styles.footerInfo, { opacity: fadeAnim }]}>
+            <ShieldCheck size={16} color={colors.textSecondary} style={{ marginRight: 6 }} />
+            <Text style={[styles.footerText, { color: colors.textSecondary }]}>
+              End-to-End Encrypted & Private
+            </Text>
+          </Animated.View>
+        </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 };

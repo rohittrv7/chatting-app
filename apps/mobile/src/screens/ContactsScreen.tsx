@@ -11,6 +11,7 @@ import {
   ActivityIndicator,
   Platform,
   Image,
+  BackHandler,
 } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types';
@@ -41,7 +42,7 @@ import {
 type Props = NativeStackScreenProps<RootStackParamList, 'Contacts'>;
 
 export const ContactsScreen: React.FC<Props> = ({ navigation }) => {
-  const { addConversation } = useChat();
+  const { userProfile } = useChat();
   const { themeMode, colors } = useTheme();
   const { showToast } = useToast();
   const token = useSelector((state: RootState) => state.auth.token);
@@ -52,6 +53,15 @@ export const ContactsScreen: React.FC<Props> = ({ navigation }) => {
   const [hasPermission, setHasPermission] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
 
+  useEffect(() => {
+    const onBack = () => {
+      navigation.goBack();
+      return true;
+    };
+    const sub = BackHandler.addEventListener('hardwareBackPress', onBack);
+    return () => sub.remove();
+  }, [navigation]);
+
   const loadContacts = async () => {
     setIsLoading(true);
     const result = await fetchDeviceContacts();
@@ -59,8 +69,27 @@ export const ContactsScreen: React.FC<Props> = ({ navigation }) => {
 
     if (result.granted && result.contacts.length > 0) {
       const syncRes = await syncContactsWithServer(result.contacts, token || undefined);
-      setRegisteredContacts(syncRes.registered);
-      setUnregisteredContacts(syncRes.unregistered);
+      const myDigits = (userProfile.phone || '').replace(/\D/g, '');
+      const myUsername = (userProfile.username || '').toLowerCase().replace(/^@+/, '');
+
+      const isMe = (c: DeviceContact) => {
+        const cDigits = (c.phone || '').replace(/\D/g, '');
+        const cUsername = (c.username || '').toLowerCase().replace(/^@+/, '');
+        if (
+          myDigits &&
+          cDigits &&
+          (myDigits === cDigits || myDigits.endsWith(cDigits) || cDigits.endsWith(myDigits))
+        ) {
+          return true;
+        }
+        if (myUsername && cUsername && myUsername === cUsername) {
+          return true;
+        }
+        return false;
+      };
+
+      setRegisteredContacts(syncRes.registered.filter((c) => !isMe(c)));
+      setUnregisteredContacts(syncRes.unregistered.filter((c) => !isMe(c)));
     } else {
       setRegisteredContacts([]);
       setUnregisteredContacts([]);
@@ -70,10 +99,9 @@ export const ContactsScreen: React.FC<Props> = ({ navigation }) => {
 
   useEffect(() => {
     loadContacts();
-  }, [token]);
+  }, [token, userProfile.phone]);
 
   const handleStartChat = (contact: DeviceContact) => {
-    addConversation(contact.name, contact.username);
     navigation.navigate('Chat', {
       conversationId: `conv_${contact.userId || Date.now()}`,
       title: contact.name,
