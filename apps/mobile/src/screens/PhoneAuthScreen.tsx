@@ -53,23 +53,15 @@ export const PhoneAuthScreen: React.FC<Props> = ({ navigation }) => {
   }, []);
 
   const handleSendOtp = async () => {
-    const rawNumber = phoneNumber.trim().replace(/[\s-]/g, '');
-    const cleanDigits = rawNumber.replace(/\D/g, '');
-    if (!rawNumber || cleanDigits.length < 8) {
-      showToast(
-        'Please enter a valid phone number with country code (e.g. +91 98765 43210).',
-        'error',
-      );
+    const cleanDigits = phoneNumber.trim().replace(/\D/g, '');
+    const clean10 = cleanDigits.length >= 10 ? cleanDigits.slice(-10) : cleanDigits;
+
+    if (clean10.length < 10) {
+      showToast('Please enter a valid 10-digit mobile number.', 'error');
       return;
     }
 
-    const normalizedNumber = rawNumber.startsWith('+')
-      ? rawNumber
-      : cleanDigits.length === 10
-        ? `+91${cleanDigits}`
-        : `+${cleanDigits}`;
-
-    const res = await apiService.requestOtp(normalizedNumber);
+    const res = await apiService.requestOtp(clean10);
     showToast(`Verification OTP Sent: ${res.mockOtp}`, 'info', 5000);
 
     Animated.sequence([
@@ -85,7 +77,7 @@ export const PhoneAuthScreen: React.FC<Props> = ({ navigation }) => {
       }),
     ]).start(() => {
       navigation.navigate('OtpVerification', {
-        phoneNumber: normalizedNumber,
+        phoneNumber: clean10,
         generatedOtp: res.mockOtp,
       });
     });
@@ -139,12 +131,12 @@ export const PhoneAuthScreen: React.FC<Props> = ({ navigation }) => {
             >
               <Sparkles size={14} color={colors.primaryIndigo} />
               <Text style={[styles.badgeText, { color: colors.primaryIndigo }]}>
-                Fast & Secure Login
+                Next-Gen Secure Chat
               </Text>
             </View>
           </Animated.View>
 
-          {/* Animated Title & Subtitle without emojis */}
+          {/* Headline and Subtitle */}
           <Animated.View
             style={[
               styles.textSection,
@@ -155,7 +147,7 @@ export const PhoneAuthScreen: React.FC<Props> = ({ navigation }) => {
               Connect & Chat{'\n'}With Loved Ones
             </Text>
             <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
-              Enter your phone number to receive a 6-digit OTP verification code.
+              Enter your 10-digit mobile number to receive an OTP code.
             </Text>
           </Animated.View>
 
@@ -166,7 +158,9 @@ export const PhoneAuthScreen: React.FC<Props> = ({ navigation }) => {
               { opacity: fadeAnim, transform: [{ translateY: slideAnim }] },
             ]}
           >
-            <Text style={[styles.inputLabel, { color: colors.textPrimary }]}>Phone Number</Text>
+            <Text style={[styles.inputLabel, { color: colors.textPrimary }]}>
+              Mobile Number (10 digits)
+            </Text>
             <View
               style={[
                 styles.inputContainer,
@@ -176,9 +170,10 @@ export const PhoneAuthScreen: React.FC<Props> = ({ navigation }) => {
               <Phone size={20} color={colors.primaryIndigo} style={styles.phoneIcon} />
               <TextInput
                 style={[styles.input, { color: colors.textPrimary }]}
-                placeholder="+91 98765 43210"
+                placeholder="e.g. 7970321084"
                 placeholderTextColor={colors.textSecondary}
                 keyboardType="phone-pad"
+                maxLength={14}
                 value={phoneNumber}
                 onChangeText={setPhoneNumber}
               />
@@ -227,8 +222,8 @@ const styles = StyleSheet.create({
   scrollContent: {
     flexGrow: 1,
     paddingHorizontal: 24,
-    paddingVertical: 20,
-    justifyContent: 'center',
+    paddingTop: 30,
+    paddingBottom: Platform.OS === 'android' ? 140 : 60,
     alignItems: 'center',
     maxWidth: 500,
     alignSelf: 'center',

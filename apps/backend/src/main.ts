@@ -85,7 +85,7 @@ async function bootstrap() {
   SwaggerModule.setup('docs/api', app, document);
 
   const port = process.env.PORT ?? 3000;
-  await app.listen(port);
+  await app.listen(port, '0.0.0.0');
 
   // Print rich colorful dashboard banner and live infrastructure connectivity status
   const diagnosticsService = app.get(SystemDiagnosticsService);

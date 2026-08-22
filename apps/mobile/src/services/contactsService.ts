@@ -41,13 +41,31 @@ export const getContactsPermissionStatus = async (): Promise<Contacts.Permission
   }
 };
 
+let cachedDeviceContacts: DeviceContact[] | null = null;
+let cachedSyncResult: {
+  registered: DeviceContact[];
+  unregistered: DeviceContact[];
+  allSorted: DeviceContact[];
+} | null = null;
+
+export const invalidateContactsCache = () => {
+  cachedDeviceContacts = null;
+  cachedSyncResult = null;
+};
+
 /**
- * Fetch contacts list from the user's device.
+ * Fetch contacts list from the user's device (Cached in memory).
  */
-export const fetchDeviceContacts = async (): Promise<{
+export const fetchDeviceContacts = async (
+  forceRefresh = false,
+): Promise<{
   granted: boolean;
   contacts: DeviceContact[];
 }> => {
+  if (!forceRefresh && cachedDeviceContacts && cachedDeviceContacts.length > 0) {
+    return { granted: true, contacts: cachedDeviceContacts };
+  }
+
   try {
     const { status } = await Contacts.requestPermissionsAsync();
     if (status !== 'granted') {
@@ -74,14 +92,9 @@ export const fetchDeviceContacts = async (): Promise<{
         const digits = primaryPhone.replace(/\D/g, '');
         if (digits.length < 7) continue;
 
-        const normalizedPhone = primaryPhone.startsWith('+')
-          ? `+${digits}`
-          : digits.length === 10
-            ? `+91${digits}`
-            : `+${digits}`;
-        if (seenPhones.has(normalizedPhone) || seenPhones.has(digits)) continue;
+        const normalizedPhone = digits.length >= 10 ? digits.slice(-10) : digits;
+        if (seenPhones.has(normalizedPhone)) continue;
         seenPhones.add(normalizedPhone);
-        seenPhones.add(digits);
 
         const cleanName = (c.name || 'contact').toLowerCase().replace(/[^a-z0-9]/g, '_');
         formatted.push({
@@ -94,6 +107,7 @@ export const fetchDeviceContacts = async (): Promise<{
         });
       }
 
+      cachedDeviceContacts = formatted;
       return { granted: true, contacts: formatted };
     }
     return { granted: true, contacts: [] };
@@ -106,15 +120,20 @@ export const fetchDeviceContacts = async (): Promise<{
 /**
  * Sync phone contacts with server to discover registered app users.
  * Returns contacts sorted with Registered App Users on TOP!
+ * Cached in memory to prevent repeated network calls.
  */
 export const syncContactsWithServer = async (
   contacts: DeviceContact[],
   token?: string,
+  forceRefresh = false,
 ): Promise<{
   registered: DeviceContact[];
   unregistered: DeviceContact[];
   allSorted: DeviceContact[];
 }> => {
+  if (!forceRefresh && cachedSyncResult && cachedSyncResult.allSorted.length > 0) {
+    return cachedSyncResult;
+  }
   if (!contacts || contacts.length === 0) {
     return { registered: [], unregistered: [], allSorted: [] };
   }
@@ -127,18 +146,24 @@ export const syncContactsWithServer = async (
     };
   }
 
-  const phoneNumbers = contacts.map((c) => c.phone).filter((p) => p && p.trim().length > 5);
+  const phoneNumbers = contacts
+    .map((c) => {
+      const d = (c.phone || '').replace(/\D/g, '');
+      return d.length >= 10 ? d.slice(-10) : d;
+    })
+    .filter((p) => p && p.trim().length >= 7);
+
   const syncResult = await apiService.syncContacts(token, phoneNumbers);
 
   const registeredPhoneMap = new Map<string, any>();
   for (const regUser of syncResult.registered) {
-    const rawDigits = regUser.phoneNumber.replace(/\D/g, '');
+    const rawDigits = (regUser.phoneNumber || '').replace(/\D/g, '');
+    const clean10 = rawDigits.length >= 10 ? rawDigits.slice(-10) : rawDigits;
+    if (clean10) {
+      registeredPhoneMap.set(clean10, regUser);
+    }
     registeredPhoneMap.set(regUser.phoneNumber, regUser);
     registeredPhoneMap.set(rawDigits, regUser);
-    registeredPhoneMap.set(`+${rawDigits}`, regUser);
-    if (rawDigits.length === 10) {
-      registeredPhoneMap.set(`+91${rawDigits}`, regUser);
-    }
   }
 
   const registeredList: DeviceContact[] = [];
@@ -147,12 +172,13 @@ export const syncContactsWithServer = async (
   const seenUnregisteredPhones = new Set<string>();
 
   for (const contact of contacts) {
-    const digits = contact.phone.replace(/\D/g, '');
+    const digits = (contact.phone || '').replace(/\D/g, '');
+    const clean10 = digits.length >= 10 ? digits.slice(-10) : digits;
+
     const matchedUser =
+      (clean10 ? registeredPhoneMap.get(clean10) : null) ||
       registeredPhoneMap.get(contact.phone) ||
-      registeredPhoneMap.get(digits) ||
-      registeredPhoneMap.get(`+${digits}`) ||
-      (digits.length === 10 ? registeredPhoneMap.get(`+91${digits}`) : null);
+      registeredPhoneMap.get(digits);
 
     if (matchedUser) {
       if (!seenRegisteredUserIds.has(matchedUser.id)) {
@@ -161,10 +187,11 @@ export const syncContactsWithServer = async (
           ? `@${matchedUser.username.replace(/^@+/, '')}`
           : contact.username
             ? `@${contact.username.replace(/^@+/, '')}`
-            : `@user_${digits.slice(-4)}`;
+            : `@user_${clean10.slice(-4)}`;
 
         const regContact: DeviceContact = {
           ...contact,
+          phone: clean10 || contact.phone,
           isRegistered: true,
           userId: matchedUser.id,
           name: matchedUser.displayName || contact.name,
@@ -175,10 +202,11 @@ export const syncContactsWithServer = async (
         registeredList.push(regContact);
       }
     } else {
-      if (digits.length >= 7 && !seenUnregisteredPhones.has(digits)) {
-        seenUnregisteredPhones.add(digits);
+      if (clean10 && !seenUnregisteredPhones.has(clean10)) {
+        seenUnregisteredPhones.add(clean10);
         unregisteredList.push({
           ...contact,
+          phone: clean10,
           isRegistered: false,
         });
       }
@@ -189,11 +217,14 @@ export const syncContactsWithServer = async (
   registeredList.sort((a, b) => a.name.localeCompare(b.name));
   unregisteredList.sort((a, b) => a.name.localeCompare(b.name));
 
-  return {
+  const result = {
     registered: registeredList,
     unregistered: unregisteredList,
     allSorted: [...registeredList, ...unregisteredList],
   };
+
+  cachedSyncResult = result;
+  return result;
 };
 
 /**

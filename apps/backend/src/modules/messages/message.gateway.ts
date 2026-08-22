@@ -39,9 +39,12 @@ export class MessageGateway implements OnGatewayConnection, OnGatewayDisconnect 
     const deviceId = (client.handshake.query['deviceId'] as string) || '1';
 
     if (userId) {
+      const cleanUserId = userId.replace(/^@+/, '');
       const roomName = `user_${userId}_device_${deviceId}`;
       client.join(roomName);
       client.join(`user_${userId}`);
+      client.join(`user_${cleanUserId}`);
+      client.join(`user_@${cleanUserId}`);
       this.logger.log(`Client connected: ${client.id} -> User: ${userId}`);
     }
   }

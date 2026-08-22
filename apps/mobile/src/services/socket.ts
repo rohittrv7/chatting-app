@@ -1,6 +1,13 @@
+import { Platform } from 'react-native';
 import { io, Socket } from 'socket.io-client';
+import { devInspector } from './devInspectorService';
 
-const SOCKET_URL = process.env.EXPO_PUBLIC_SOCKET_URL || 'https://chatting-app-rme6.onrender.com';
+// 💻 LOCAL DEVELOPMENT SOCKET URL (Active Host Wi-Fi IP)
+export const LOCAL_IP = '10.36.162.14';
+export const LOCAL_SOCKET_URL =
+  Platform.OS === 'web' ? 'http://localhost:3000' : `http://${LOCAL_IP}:3000`;
+
+export const SOCKET_URL = process.env.EXPO_PUBLIC_SOCKET_URL || LOCAL_SOCKET_URL;
 
 export interface SocketMessagePayload {
   serverMessageId?: string;
@@ -26,6 +33,23 @@ export interface SocketReceiptPayload {
 class RealtimeSocketService {
   private socket: Socket | null = null;
   private currentUserId: string = '';
+  private callbacks?: {
+    onMessageReceived?: (payload: SocketMessagePayload) => void;
+    onMessageAck?: (ack: {
+      clientMessageId: string;
+      serverMessageId: string;
+      status: any;
+    }) => void;
+    onReceiptUpdate?: (receipt: SocketReceiptPayload) => void;
+  };
+
+  public isConnected(): boolean {
+    return Boolean(this.socket && this.socket.connected);
+  }
+
+  public getSocketId(): string | null {
+    return this.socket?.id || null;
+  }
 
   public connect(
     userId?: string,
@@ -39,14 +63,32 @@ class RealtimeSocketService {
       onReceiptUpdate?: (receipt: SocketReceiptPayload) => void;
     },
   ) {
-    this.currentUserId = userId || this.currentUserId || `user_${Date.now()}`;
+    if (callbacks) {
+      this.callbacks = callbacks;
+    }
 
-    if (this.socket && this.socket.connected) return;
+    const newUserId = userId || this.currentUserId || `user_${Date.now()}`;
+    const userChanged = this.currentUserId && this.currentUserId !== newUserId;
+    this.currentUserId = newUserId;
+
+    if (this.socket && this.socket.connected && !userChanged) {
+      return;
+    }
+
+    if (this.socket) {
+      this.socket.disconnect();
+      this.socket.removeAllListeners();
+      this.socket = null;
+    }
 
     try {
       this.socket = io(SOCKET_URL, {
         transports: ['websocket'],
         autoConnect: true,
+        reconnection: true,
+        reconnectionAttempts: Infinity,
+        reconnectionDelay: 1000,
+        reconnectionDelayMax: 5000,
         query: {
           userId: this.currentUserId,
           deviceId: '1',
@@ -54,7 +96,10 @@ class RealtimeSocketService {
       });
 
       this.socket.on('connect', () => {
-        console.log('Connected to WebSocket Realtime Gateway with userId:', this.currentUserId);
+        devInspector.logSocket('connect', 'incoming', {
+          socketId: this.socket?.id,
+          userId: this.currentUserId,
+        });
       });
 
       // 📩 Incoming Message Handlers
@@ -66,11 +111,18 @@ class RealtimeSocketService {
           const serverMsgId =
             data.serverMessageId?.toString() || data.id?.toString() || `msg_${Date.now()}`;
 
+          devInspector.logSocket('message:receive', 'incoming', {
+            serverMsgId,
+            convId,
+            sender,
+            text,
+          });
+
           // Send DELIVERED receipt back to server immediately
           this.sendReceipt(serverMsgId, convId, 'DELIVERED');
 
-          if (callbacks?.onMessageReceived) {
-            callbacks.onMessageReceived({
+          if (this.callbacks?.onMessageReceived) {
+            this.callbacks.onMessageReceived({
               serverMessageId: serverMsgId,
               conversationId: convId,
               senderName: sender,
@@ -84,53 +136,67 @@ class RealtimeSocketService {
         }
       };
 
+      this.socket.off('v1.message.receive');
+      this.socket.off('message:receive');
       this.socket.on('v1.message.receive', handleReceive);
       this.socket.on('message:receive', handleReceive);
 
       // ✅ Single Tick ✓ (SERVER_RECEIVED Ack)
       const handleAck = (ack: any) => {
-        if (ack && callbacks?.onMessageAck) {
-          callbacks.onMessageAck({
-            clientMessageId: ack.clientMessageId,
-            serverMessageId: ack.serverMessageId,
-            status: ack.status || 'SERVER_RECEIVED',
-          });
+        if (ack) {
+          devInspector.logSocket('message:ack', 'incoming', ack);
+          if (this.callbacks?.onMessageAck) {
+            this.callbacks.onMessageAck({
+              clientMessageId: ack.clientMessageId,
+              serverMessageId: ack.serverMessageId,
+              status: ack.status || 'SERVER_RECEIVED',
+            });
+          }
         }
       };
+      this.socket.off('v1.message.ack');
+      this.socket.off('message:ack');
       this.socket.on('v1.message.ack', handleAck);
       this.socket.on('message:ack', handleAck);
 
       // 👁️ Double Tick (DELIVERED) & Violet Tick (READ) Receipts
       const handleReceipt = (receipt: any) => {
-        if (receipt && callbacks?.onReceiptUpdate) {
-          callbacks.onReceiptUpdate({
-            messageId: receipt.messageId,
-            clientMessageId: receipt.clientMessageId,
-            conversationId: receipt.conversationId,
-            userId: receipt.userId,
-            status: receipt.status || 'READ',
-          });
+        if (receipt) {
+          devInspector.logSocket('message:receipt', 'incoming', receipt);
+          if (this.callbacks?.onReceiptUpdate) {
+            this.callbacks.onReceiptUpdate({
+              messageId: receipt.messageId,
+              clientMessageId: receipt.clientMessageId,
+              conversationId: receipt.conversationId,
+              userId: receipt.userId,
+              status: receipt.status || 'READ',
+            });
+          }
         }
       };
+      this.socket.off('v1.message.receipt');
+      this.socket.off('message:receipt');
       this.socket.on('v1.message.receipt', handleReceipt);
       this.socket.on('message:receipt', handleReceipt);
 
-      this.socket.on('disconnect', () => {
-        console.log('Disconnected from Realtime Socket Gateway');
+      this.socket.on('disconnect', (reason) => {
+        devInspector.logSocket('disconnect', 'incoming', { reason });
       });
-    } catch (e) {
-      console.warn('Realtime Socket connection error:', e);
+    } catch (e: any) {
+      devInspector.logSocket('error', 'incoming', { error: e?.message });
     }
   }
 
   public openChat(conversationId: string) {
     if (this.socket && this.socket.connected) {
+      devInspector.logSocket('chat:open', 'outgoing', { conversationId });
       this.socket.emit('chat:open', { conversationId });
     }
   }
 
   public closeChat(conversationId: string) {
     if (this.socket && this.socket.connected) {
+      devInspector.logSocket('chat:close', 'outgoing', { conversationId });
       this.socket.emit('chat:close', { conversationId });
     }
   }
@@ -149,7 +215,7 @@ class RealtimeSocketService {
         senderId: this.currentUserId,
         timestamp: new Date().toISOString(),
       };
-      this.socket.emit('v1.message.send', socketPayload);
+      devInspector.logSocket('message:send', 'outgoing', socketPayload);
       this.socket.emit('message:send', socketPayload);
     }
   }
@@ -161,7 +227,7 @@ class RealtimeSocketService {
         conversationId,
         status,
       };
-      this.socket.emit('v1.message.receipt', payload);
+      devInspector.logSocket('message:receipt', 'outgoing', payload);
       this.socket.emit('message:receipt', payload);
     }
   }

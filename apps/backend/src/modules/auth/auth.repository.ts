@@ -7,8 +7,21 @@ export class AuthRepository {
   constructor(private readonly prisma: PrismaService) {}
 
   async findUserByPhoneNumber(phoneNumber: string): Promise<User | null> {
-    return this.prisma.user.findUnique({
-      where: { phoneNumber },
+    const clean10 = (phoneNumber || '').replace(/\D/g, '').slice(-10);
+    return this.prisma.user.findFirst({
+      where: {
+        OR: [
+          ...(clean10
+            ? [
+                { phoneNumber: clean10 },
+                { phoneNumber: `+91${clean10}` },
+                { phoneNumber: `+${clean10}` },
+                { phoneNumber: `91${clean10}` },
+              ]
+            : []),
+          { phoneNumber },
+        ],
+      },
     });
   }
 
@@ -171,9 +184,22 @@ export class AuthRepository {
   ): Promise<User[]> {
     if (!phoneNumbers || phoneNumbers.length === 0) return [];
 
+    const variations = new Set<string>();
+    for (const raw of phoneNumbers) {
+      if (!raw) continue;
+      const clean10 = raw.replace(/\D/g, '').slice(-10);
+      if (clean10) {
+        variations.add(clean10);
+        variations.add(`+91${clean10}`);
+        variations.add(`+${clean10}`);
+        variations.add(`91${clean10}`);
+      }
+      variations.add(raw);
+    }
+
     return this.prisma.user.findMany({
       where: {
-        phoneNumber: { in: phoneNumbers },
+        phoneNumber: { in: Array.from(variations) },
         ...(excludeUserId ? { id: { not: excludeUserId } } : {}),
       },
       select: {
@@ -188,4 +214,32 @@ export class AuthRepository {
       },
     }) as unknown as Promise<User[]>;
   }
+
+  async searchUsers(currentUserId: string, query: string) {
+    const cleanQuery = query.trim().replace(/^@+/, '');
+    if (!cleanQuery) return [];
+
+    return this.prisma.user.findMany({
+      where: {
+        AND: [
+          { id: { not: currentUserId } },
+          {
+            OR: [
+              { username: { contains: cleanQuery, mode: 'insensitive' } },
+              { displayName: { contains: cleanQuery, mode: 'insensitive' } },
+            ],
+          },
+        ],
+      },
+      select: {
+        id: true,
+        displayName: true,
+        username: true,
+        avatarUrl: true,
+        about: true,
+      },
+      take: 25,
+    });
+  }
 }
+

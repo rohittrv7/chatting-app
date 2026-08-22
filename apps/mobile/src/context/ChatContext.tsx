@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
 import { RootState } from '../store';
 import {
@@ -27,8 +27,10 @@ interface ChatContextType {
     isMe?: boolean,
     imagePath?: string,
     receiverId?: string,
+    contactTitle?: string,
+    contactUsername?: string,
   ) => void;
-  addConversation: (title: string, username?: string) => void;
+  addConversation: (title: string, username?: string, customId?: string) => void;
   updateLastMessage: (conversationId: string, text: string) => void;
   toggleStarMessage: (conversationId: string, messageId: string) => boolean;
   markConversationRead: (conversationId: string) => void;
@@ -83,7 +85,20 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         try {
           const parsed = JSON.parse(data);
           if (Array.isArray(parsed) && parsed.length > 0) {
-            dispatch(setConversations(parsed));
+            const sanitized = parsed.map((conv) => {
+              const isTimestampTitle =
+                /^\d{10,}$/.test(conv.title) || conv.title.startsWith('1787');
+              if (isTimestampTitle) {
+                return {
+                  ...conv,
+                  title: conv.username ? conv.username.replace(/^@+/, '') : 'Priya Sharma',
+                  username: conv.username || '@priya_s',
+                  avatar: 'P',
+                };
+              }
+              return conv;
+            });
+            dispatch(setConversations(sanitized));
           }
         } catch (e) {}
       }
@@ -105,11 +120,32 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     });
   }, []);
 
+  const conversationsRef = useRef(conversations);
+  conversationsRef.current = conversations;
+  const activeConversationIdRef = useRef(activeConversationId);
+  activeConversationIdRef.current = activeConversationId;
+  const userProfileRef = useRef(userProfile);
+  userProfileRef.current = userProfile;
+
   useEffect(() => {
     const currentUserId = userProfile.username || userProfile.phone || 'me_user';
+    if (!currentUserId || currentUserId === 'me_user') return;
 
     socketService.connect(currentUserId, {
       onMessageReceived: (payload) => {
+        // Prevent echo if message was sent by current user
+        const myUsername = (userProfileRef.current.username || '').toLowerCase().replace(/^@+/, '');
+        const myPhone = (userProfileRef.current.phone || '').replace(/\D/g, '');
+        const sender = (payload.senderId || payload.senderName || '').toLowerCase().replace(/^@+/, '');
+        const senderDigits = (payload.senderId || '').replace(/\D/g, '');
+
+        if (
+          (myUsername && sender && myUsername === sender) ||
+          (myPhone && senderDigits && (myPhone === senderDigits || myPhone.endsWith(senderDigits) || senderDigits.endsWith(myPhone)))
+        ) {
+          return;
+        }
+
         const now = new Date();
         const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
 
@@ -126,8 +162,29 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
         dispatch(appendMessage({ conversationId: payload.conversationId, message: incomingMsg }));
 
+        // Ensure conversation exists in main chat list with updated lastMessage and sender title
+        const existingConv = conversationsRef.current.find(
+          (c) => c.id === payload.conversationId || c.title === payload.senderName
+        );
+        if (existingConv) {
+          updateLastMessage(payload.conversationId, payload.text || '📷 Photo');
+        } else {
+          dispatch(
+            addConvRedux({
+              id: payload.conversationId,
+              title: payload.senderName || 'Friend',
+              username: payload.senderId ? `@${payload.senderId.replace(/^@+/, '')}` : undefined,
+              lastMessage: payload.text || '📷 Photo',
+              time: timeStr,
+              unread: '1',
+              avatar: '',
+              isOnline: true,
+            })
+          );
+        }
+
         // If user is currently looking at this active conversation, send READ receipt (Violet Tick)
-        if (activeConversationId === payload.conversationId) {
+        if (activeConversationIdRef.current === payload.conversationId) {
           socketService.sendReceipt(incomingMsg.id, payload.conversationId, 'READ');
         }
       },
@@ -155,11 +212,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         );
       },
     });
-
-    return () => {
-      socketService.disconnect();
-    };
-  }, [userProfile.username, userProfile.phone, activeConversationId]);
+  }, [userProfile.username, userProfile.phone]);
 
   const updateUserProfile = (profile: Partial<UserProfile>) => {
     setUserProfile((prev) => {
@@ -175,6 +228,8 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     isMe: boolean = true,
     imagePath?: string,
     receiverId?: string,
+    contactTitle?: string,
+    contactUsername?: string,
   ) => {
     const now = new Date();
     const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
@@ -192,6 +247,34 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
 
     dispatch(appendMessage({ conversationId, message: newMsg }));
+
+    // Automatically create/update conversation in the main conversation list
+    const existingConv = conversations.find(
+      (c) =>
+        c.id === conversationId ||
+        (contactTitle && c.title.toLowerCase() === contactTitle.toLowerCase()),
+    );
+    if (existingConv) {
+      updateLastMessage(existingConv.id, text || (imagePath ? '📷 Photo' : ''));
+    } else {
+      const convTitle =
+        contactTitle ||
+        (conversationId.startsWith('conv_')
+          ? conversationId.replace(/^conv_/, '')
+          : conversationId);
+      dispatch(
+        addConvRedux({
+          id: conversationId,
+          title: convTitle,
+          username: contactUsername || (receiverId ? `@${receiverId.replace(/^@+/, '')}` : undefined),
+          lastMessage: text || (imagePath ? '📷 Photo' : ''),
+          time: timeStr,
+          unread: '0',
+          avatar: convTitle ? convTitle[0].toUpperCase() : 'C',
+          isOnline: true,
+        })
+      );
+    }
 
     if (isMe) {
       socketService.sendMessage({
@@ -227,16 +310,28 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const addConversation = (title: string, username?: string) => {
+  const addConversation = (title: string, username?: string, customId?: string) => {
+    const convId =
+      customId ||
+      `conv_${(username ? username.replace(/^@+/, '') : title.toLowerCase()).replace(/[^a-z0-9]/g, '_')}`;
+    const existing = conversations.find(
+      (c) =>
+        c.id === convId ||
+        c.title.toLowerCase() === title.toLowerCase() ||
+        (username && c.username?.toLowerCase() === username.toLowerCase()),
+    );
+    if (existing) return;
+
     const generatedUsername = username || `@${title.toLowerCase().replace(/\s+/g, '_')}`;
     const newConv: ConversationItem = {
-      id: `conv_${Date.now()}`,
+      id: convId,
       title,
       username: generatedUsername,
       lastMessage: 'Tap to start end-to-end encrypted chat',
       time: 'Just now',
       unread: '0',
       avatar: title ? title[0].toUpperCase() : 'C',
+      isOnline: true,
     };
     dispatch(addConvRedux(newConv));
   };

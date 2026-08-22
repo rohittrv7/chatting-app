@@ -10,13 +10,21 @@ export class MessageRepository {
   async createMessage(senderUserId: string, senderDeviceId: string, dto: SendMessageDto) {
     // 1. Resolve or ensure sender User exists in DB
     const cleanUsernameOrPhone = (senderUserId || '').replace(/^@+/, '');
+    const clean10 = cleanUsernameOrPhone.replace(/\D/g, '').slice(-10);
     let user = await this.prisma.user.findFirst({
       where: {
         OR: [
           { id: senderUserId },
           { username: cleanUsernameOrPhone },
+          ...(clean10
+            ? [
+                { phoneNumber: clean10 },
+                { phoneNumber: `+91${clean10}` },
+                { phoneNumber: `+${clean10}` },
+                { phoneNumber: `91${clean10}` },
+              ]
+            : []),
           { phoneNumber: cleanUsernameOrPhone },
-          { phoneNumber: `+${cleanUsernameOrPhone.replace(/\D/g, '')}` },
         ],
       },
     });
@@ -26,9 +34,7 @@ export class MessageRepository {
       user = await this.prisma.user.create({
         data: {
           id: senderUserId.includes('-') && senderUserId.length === 36 ? senderUserId : undefined,
-          phoneNumber: cleanUsernameOrPhone.startsWith('+')
-            ? cleanUsernameOrPhone
-            : `+${cleanUsernameOrPhone.replace(/\D/g, '') || Date.now()}`,
+          phoneNumber: clean10 || cleanUsernameOrPhone || `user_${Date.now()}`,
           username: cleanUsernameOrPhone || `user_${Date.now()}`,
           displayName: cleanUsernameOrPhone || 'User',
         },

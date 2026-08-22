@@ -24,15 +24,6 @@ export const StorageSettingsScreen: React.FC<Props> = ({ navigation }) => {
   const { showToast } = useToast();
   const [storageUsage, setStorageUsage] = useState('12.4 MB');
 
-  useEffect(() => {
-    const onBack = () => {
-      navigation.goBack();
-      return true;
-    };
-    const sub = BackHandler.addEventListener('hardwareBackPress', onBack);
-    return () => sub.remove();
-  }, [navigation]);
-
   const handleClearCache = () => {
     Alert.alert(
       'Clear Cache',

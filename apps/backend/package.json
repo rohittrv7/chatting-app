@@ -1,6 +1,6 @@
 {
   "name": "@chat/backend",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "private": true,
   "scripts": {
     "build": "prisma generate && (prisma db push --accept-data-loss || true) && nest build",

@@ -4,6 +4,7 @@ import { UserProfile } from '../types';
 
 export interface AuthState {
   token: string | null;
+  refreshToken: string | null;
   phoneNumber: string | null;
   userProfile: UserProfile | null;
   isNewUser: boolean;
@@ -13,6 +14,7 @@ export interface AuthState {
 
 const initialState: AuthState = {
   token: null,
+  refreshToken: null,
   phoneNumber: null,
   userProfile: null,
   isNewUser: false,
@@ -22,6 +24,7 @@ const initialState: AuthState = {
 
 export const AUTH_STORAGE_KEYS = {
   TOKEN: '@whatsapp_connect_token',
+  REFRESH_TOKEN: '@whatsapp_connect_refresh_token',
   USER_PROFILE: '@whatsapp_connect_user_profile',
   PHONE_NUMBER: '@whatsapp_connect_phone',
   IS_NEW_USER: '@whatsapp_connect_is_new_user',
@@ -38,12 +41,14 @@ const authSlice = createSlice({
       state,
       action: PayloadAction<{
         token: string;
+        refreshToken?: string;
         phoneNumber: string;
         userProfile: UserProfile | null;
         isNewUser: boolean;
-      }>
+      }>,
     ) => {
       state.token = action.payload.token;
+      state.refreshToken = action.payload.refreshToken || null;
       state.phoneNumber = action.payload.phoneNumber;
       state.userProfile = action.payload.userProfile;
       state.isNewUser = action.payload.isNewUser;
@@ -51,11 +56,28 @@ const authSlice = createSlice({
       state.isLoading = false;
 
       safeStorage.setItem(AUTH_STORAGE_KEYS.TOKEN, action.payload.token);
+      if (action.payload.refreshToken) {
+        safeStorage.setItem(AUTH_STORAGE_KEYS.REFRESH_TOKEN, action.payload.refreshToken);
+      }
       safeStorage.setItem(AUTH_STORAGE_KEYS.PHONE_NUMBER, action.payload.phoneNumber);
       safeStorage.setItem(AUTH_STORAGE_KEYS.IS_NEW_USER, JSON.stringify(action.payload.isNewUser));
       if (action.payload.userProfile) {
         safeStorage.setItem(AUTH_STORAGE_KEYS.USER_PROFILE, JSON.stringify(action.payload.userProfile));
       }
+    },
+    tokensRefreshed: (
+      state,
+      action: PayloadAction<{
+        token: string;
+        refreshToken: string;
+      }>,
+    ) => {
+      state.token = action.payload.token;
+      state.refreshToken = action.payload.refreshToken;
+      state.isAuthenticated = true;
+
+      safeStorage.setItem(AUTH_STORAGE_KEYS.TOKEN, action.payload.token);
+      safeStorage.setItem(AUTH_STORAGE_KEYS.REFRESH_TOKEN, action.payload.refreshToken);
     },
     profileUpdatedSuccess: (state, action: PayloadAction<UserProfile>) => {
       state.userProfile = action.payload;
@@ -69,12 +91,14 @@ const authSlice = createSlice({
       state,
       action: PayloadAction<{
         token: string;
+        refreshToken?: string | null;
         phoneNumber: string;
         userProfile: UserProfile | null;
         isNewUser: boolean;
-      }>
+      }>,
     ) => {
       state.token = action.payload.token;
+      state.refreshToken = action.payload.refreshToken || null;
       state.phoneNumber = action.payload.phoneNumber;
       state.userProfile = action.payload.userProfile;
       state.isNewUser = action.payload.isNewUser;
@@ -83,6 +107,7 @@ const authSlice = createSlice({
     },
     logout: (state) => {
       state.token = null;
+      state.refreshToken = null;
       state.phoneNumber = null;
       state.userProfile = null;
       state.isNewUser = false;
@@ -90,6 +115,7 @@ const authSlice = createSlice({
       state.isLoading = false;
 
       safeStorage.removeItem(AUTH_STORAGE_KEYS.TOKEN);
+      safeStorage.removeItem(AUTH_STORAGE_KEYS.REFRESH_TOKEN);
       safeStorage.removeItem(AUTH_STORAGE_KEYS.USER_PROFILE);
       safeStorage.removeItem(AUTH_STORAGE_KEYS.PHONE_NUMBER);
       safeStorage.removeItem(AUTH_STORAGE_KEYS.IS_NEW_USER);
@@ -97,6 +123,13 @@ const authSlice = createSlice({
   },
 });
 
-export const { setLoading, otpVerifiedSuccess, profileUpdatedSuccess, restoreSession, logout } =
-  authSlice.actions;
+export const {
+  setLoading,
+  otpVerifiedSuccess,
+  tokensRefreshed,
+  profileUpdatedSuccess,
+  restoreSession,
+  logout,
+} = authSlice.actions;
+
 export default authSlice.reducer;

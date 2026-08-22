@@ -1,4 +1,4 @@
-import { Controller, Post, Get, Delete, Body, Param } from '@nestjs/common';
+import { Controller, Post, Get, Delete, Body, Param, Query } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { AuthService } from './auth.service';
 import { RequestOtpDto, VerifyOtpDto, RefreshTokenDto } from '@chat/shared-contracts';
@@ -64,4 +64,15 @@ export class AuthController {
   ) {
     return this.authService.syncContacts(user.userId, dto.phoneNumbers || []);
   }
+
+  @Get('users/search')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Search registered users across the platform by username or name' })
+  async searchUsers(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query('q') query: string,
+  ) {
+    return this.authService.searchUsers(user.userId, query || '');
+  }
 }
+

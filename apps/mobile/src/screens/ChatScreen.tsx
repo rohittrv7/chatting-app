@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -15,6 +15,7 @@ import {
   Dimensions,
   Platform,
   KeyboardAvoidingView,
+  Keyboard,
 } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList, ChatMessage } from '../types';
@@ -24,6 +25,7 @@ import { useToast } from '../context/ToastContext';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
+import { devInspector } from '../services/devInspectorService';
 import {
   ArrowLeft,
   Phone,
@@ -41,6 +43,10 @@ import {
   Download,
   Share2,
   ZoomIn,
+  ShieldCheck,
+  User,
+  Trash2,
+  Bell,
 } from 'lucide-react-native';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Chat'>;
@@ -87,30 +93,60 @@ interface PendingMedia {
 
 export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
   const { conversationId, title } = route.params;
-  const { messagesMap, addMessage, toggleStarMessage, openChatRoom, closeChatRoom } = useChat();
+  const { conversations, messagesMap, addMessage, toggleStarMessage, openChatRoom, closeChatRoom } =
+    useChat();
   const { themeMode, colors } = useTheme();
   const { showToast } = useToast();
+
+  const currentConv = conversations.find(
+    (c) => c.id === conversationId || c.title.toLowerCase() === title.toLowerCase(),
+  );
+  const resolvedUsername =
+    currentConv?.username || `@${title.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
 
   const [inputText, setInputText] = useState('');
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [pendingMediaList, setPendingMediaList] = useState<PendingMedia[]>([]);
   const [mediaCaption, setMediaCaption] = useState('');
   const [selectedPhotoMsg, setSelectedPhotoMsg] = useState<ChatMessage | null>(null);
+  const [showUserProfileModal, setShowUserProfileModal] = useState(false);
+
+  const flatListRef = useRef<FlatList>(null);
 
   useEffect(() => {
+    devInspector.logUi('ChatScreen', 'mount', `Chat with ${title} (${conversationId})`);
     openChatRoom(conversationId);
     return () => {
+      devInspector.logUi('ChatScreen', 'unmount', `Chat with ${title}`);
       closeChatRoom(conversationId);
     };
   }, [conversationId]);
 
   const roomMessages = messagesMap[conversationId] || [];
 
+  useEffect(() => {
+    const showSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      () => {
+        setTimeout(() => {
+          flatListRef.current?.scrollToEnd({ animated: true });
+        }, 100);
+      },
+    );
+    return () => showSub.remove();
+  }, []);
+
+  useEffect(() => {
+    setTimeout(() => {
+      flatListRef.current?.scrollToEnd({ animated: true });
+    }, 150);
+  }, [roomMessages.length]);
+
   const handleSendMessage = () => {
     const text = inputText.trim();
     if (!text) return;
 
-    addMessage(conversationId, text, true);
+    addMessage(conversationId, text, true, undefined, undefined, title);
     setInputText('');
     setShowEmojiPicker(false);
   };
@@ -148,7 +184,7 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
 
     pendingMediaList.forEach((media, idx) => {
       const captionToUse = idx === 0 ? mediaCaption.trim() : '';
-      addMessage(conversationId, captionToUse, true, media.uri);
+      addMessage(conversationId, captionToUse, true, media.uri, undefined, title);
     });
 
     setPendingMediaList([]);
@@ -390,20 +426,30 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
           <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
             <ArrowLeft size={22} color={colors.textPrimary} />
           </TouchableOpacity>
-          <View style={styles.avatarWrapper}>
-            <View style={[styles.avatar, { backgroundColor: colors.cardBorder }]}>
-              <Text style={[styles.avatarLetter, { color: colors.primaryIndigo }]}>
-                {title ? title[0].toUpperCase() : 'C'}
+
+          {/* 👤 Clickable Avatar & Name to Open Profile */}
+          <TouchableOpacity
+            style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}
+            onPress={() => setShowUserProfileModal(true)}
+            activeOpacity={0.7}
+          >
+            <View style={styles.avatarWrapper}>
+              <View style={[styles.avatar, { backgroundColor: colors.cardBorder }]}>
+                <Text style={[styles.avatarLetter, { color: colors.primaryIndigo }]}>
+                  {title ? title[0].toUpperCase() : 'C'}
+                </Text>
+              </View>
+              <View style={[styles.onlineDot, { borderColor: colors.surface }]} />
+            </View>
+            <View style={{ marginLeft: 10, flex: 1 }}>
+              <Text style={[styles.headerTitle, { color: colors.textPrimary }]} numberOfLines={1}>
+                {title}
+              </Text>
+              <Text style={[styles.headerSubtitle, { color: colors.textSecondary }]}>
+                {resolvedUsername} • Online
               </Text>
             </View>
-            <View style={[styles.onlineDot, { borderColor: colors.surface }]} />
-          </View>
-          <View style={{ marginLeft: 10, flex: 1 }}>
-            <Text style={[styles.headerTitle, { color: colors.textPrimary }]} numberOfLines={1}>
-              {title}
-            </Text>
-            <Text style={[styles.headerSubtitle, { color: colors.textSecondary }]}>Online</Text>
-          </View>
+          </TouchableOpacity>
         </View>
 
         <View style={styles.headerActions}>
@@ -433,7 +479,10 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
           >
             <Video size={22} color={colors.primaryIndigo} />
           </TouchableOpacity>
-          <TouchableOpacity style={styles.actionBtn}>
+          <TouchableOpacity
+            style={styles.actionBtn}
+            onPress={() => setShowUserProfileModal(true)}
+          >
             <MoreVertical size={20} color={colors.textPrimary} />
           </TouchableOpacity>
         </View>
@@ -446,11 +495,12 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
 
       <KeyboardAvoidingView
         style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
       >
         {/* Message List */}
         <FlatList
+          ref={flatListRef}
           data={roomMessages}
           keyExtractor={(item) => item.id}
           renderItem={({ item }) => renderBubble(item)}
@@ -523,17 +573,11 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
                 color={showEmojiPicker ? colors.primaryIndigo : colors.textSecondary}
               />
             </TouchableOpacity>
-            <TouchableOpacity style={{ padding: 4 }}>
-              <Mic size={20} color={colors.textSecondary} />
-            </TouchableOpacity>
           </View>
 
           {/* Send Button */}
-          <TouchableOpacity
-            style={[styles.sendBtn, { backgroundColor: colors.primaryIndigo }]}
-            onPress={handleSendMessage}
-          >
-            <Send size={18} color="#FFF" style={{ marginLeft: 2 }} />
+          <TouchableOpacity style={styles.sendBtn} onPress={handleSendMessage}>
+            <Send size={18} color="#FFF" />
           </TouchableOpacity>
         </View>
       </KeyboardAvoidingView>
@@ -623,17 +667,16 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
         </SafeAreaView>
       </Modal>
 
-      {/* 🔍 Full-Screen High-Resolution Photo Viewer Modal with Star & Download */}
+      {/* 🖼️ Full Screen Photo Viewer Modal */}
       <Modal
         visible={!!selectedPhotoMsg}
-        transparent={false}
+        transparent={true}
         animationType="fade"
         onRequestClose={() => setSelectedPhotoMsg(null)}
       >
         <SafeAreaView style={styles.photoViewerContainer}>
           <StatusBar barStyle="light-content" backgroundColor="#000000" />
-
-          {/* Photo Viewer Top Header */}
+          {/* Top Bar with Back and Actions */}
           <View style={styles.photoViewerHeader}>
             <TouchableOpacity
               style={styles.viewerHeaderBtn}
@@ -649,20 +692,7 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
               <Text style={styles.viewerTimeText}>{selectedPhotoMsg?.time || 'Today'}</Text>
             </View>
 
-            {/* Action icons: Star, Download, Share */}
             <View style={styles.viewerHeaderActions}>
-              <TouchableOpacity
-                style={styles.viewerActionBtn}
-                onPress={() => handleToggleStar(selectedPhotoMsg?.id)}
-                activeOpacity={0.7}
-              >
-                <Star
-                  size={22}
-                  color={selectedPhotoMsg?.isStarred ? '#FBBF24' : '#FFF'}
-                  fill={selectedPhotoMsg?.isStarred ? '#FBBF24' : 'none'}
-                />
-              </TouchableOpacity>
-
               <TouchableOpacity
                 style={styles.viewerActionBtn}
                 onPress={() => handleDownloadPhoto(selectedPhotoMsg?.imagePath)}
@@ -670,7 +700,6 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
               >
                 <Download size={22} color="#FFF" />
               </TouchableOpacity>
-
               <TouchableOpacity
                 style={styles.viewerActionBtn}
                 onPress={() => handleSharePhoto(selectedPhotoMsg?.imagePath)}
@@ -681,7 +710,7 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
             </View>
           </View>
 
-          {/* Photo Viewer Center Body */}
+          {/* Full Screen Image */}
           <View style={styles.photoViewerBody}>
             {selectedPhotoMsg?.imagePath && (
               <Image
@@ -691,13 +720,147 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
               />
             )}
           </View>
-
-          {/* Photo Caption Footer if exists */}
           {selectedPhotoMsg?.text ? (
             <View style={styles.photoViewerFooter}>
               <Text style={styles.photoViewerCaption}>{selectedPhotoMsg.text}</Text>
             </View>
           ) : null}
+        </SafeAreaView>
+      </Modal>
+
+      {/* 👤 User Profile Info Modal (Opened on DP/Name click) */}
+      <Modal
+        visible={showUserProfileModal}
+        animationType="slide"
+        transparent={false}
+        onRequestClose={() => setShowUserProfileModal(false)}
+      >
+        <SafeAreaView style={[styles.profileModalContainer, { backgroundColor: colors.bg }]}>
+          <StatusBar
+            barStyle={themeMode === 'dark' ? 'light-content' : 'dark-content'}
+            backgroundColor={colors.surface}
+          />
+          {/* Profile Header */}
+          <View
+            style={[
+              styles.profileModalHeader,
+              { backgroundColor: colors.surface, borderBottomColor: colors.cardBorder },
+            ]}
+          >
+            <TouchableOpacity
+              onPress={() => setShowUserProfileModal(false)}
+              style={styles.profileCloseBtn}
+              hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}
+              activeOpacity={0.7}
+            >
+              <ArrowLeft size={24} color={colors.textPrimary} />
+            </TouchableOpacity>
+            <Text style={[styles.profileModalTitle, { color: colors.textPrimary }]}>
+              Contact Info
+            </Text>
+            <View style={{ width: 32 }} />
+          </View>
+
+          <ScrollView
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={styles.profileModalContent}
+          >
+            {/* Big Avatar */}
+            <View style={styles.profileHeroSection}>
+              <View style={[styles.profileBigAvatar, { backgroundColor: colors.cardBorder }]}>
+                <Text style={[styles.profileBigAvatarLetter, { color: colors.primaryIndigo }]}>
+                  {title ? title[0].toUpperCase() : 'U'}
+                </Text>
+              </View>
+              <Text style={[styles.profileHeroName, { color: colors.textPrimary }]}>{title}</Text>
+              <Text style={[styles.profileHeroStatus, { color: colors.primaryIndigo }]}>
+                {resolvedUsername}
+              </Text>
+            </View>
+
+            {/* Quick Action Buttons */}
+            <View style={styles.profileActionsRow}>
+              <TouchableOpacity
+                style={[
+                  styles.profileActionBox,
+                  { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+                ]}
+                onPress={() => {
+                  setShowUserProfileModal(false);
+                  navigation.navigate('Call', {
+                    callId: `call_${Date.now()}`,
+                    targetUserId: title,
+                    isCaller: true,
+                    isVideo: false,
+                  });
+                }}
+              >
+                <Phone size={22} color={colors.primaryIndigo} />
+                <Text style={[styles.profileActionText, { color: colors.textPrimary }]}>Audio</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.profileActionBox,
+                  { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+                ]}
+                onPress={() => {
+                  setShowUserProfileModal(false);
+                  navigation.navigate('Call', {
+                    callId: `call_${Date.now()}`,
+                    targetUserId: title,
+                    isCaller: true,
+                    isVideo: true,
+                  });
+                }}
+              >
+                <Video size={22} color={colors.primaryIndigo} />
+                <Text style={[styles.profileActionText, { color: colors.textPrimary }]}>Video</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Info Card: About & Platform Handle */}
+            <View
+              style={[
+                styles.profileCard,
+                { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+              ]}
+            >
+              <Text style={[styles.profileCardHeader, { color: colors.primaryIndigo }]}>
+                About & Username
+              </Text>
+              <Text style={[styles.profileAboutText, { color: colors.textPrimary }]}>
+                Hey there! I am using WhatsApp Connect.
+              </Text>
+              <View style={[styles.profileDivider, { backgroundColor: colors.cardBorder }]} />
+              <Text style={[styles.profilePhoneLabel, { color: colors.textSecondary }]}>
+                Platform Handle
+              </Text>
+              <Text style={[styles.profilePhoneValue, { color: colors.primaryIndigo }]}>
+                {resolvedUsername}
+              </Text>
+            </View>
+
+            {/* Encryption & Security Card */}
+            <View
+              style={[
+                styles.profileCard,
+                { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+              ]}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <ShieldCheck size={24} color="#10B981" />
+                <View style={{ marginLeft: 12, flex: 1 }}>
+                  <Text style={[styles.profileSecurityTitle, { color: colors.textPrimary }]}>
+                    Encryption Verified
+                  </Text>
+                  <Text style={[styles.profileSecurityDesc, { color: colors.textSecondary }]}>
+                    Messages and calls are end-to-end encrypted. No one outside of this chat can read or listen to them.
+                  </Text>
+                </View>
+              </View>
+            </View>
+          </ScrollView>
         </SafeAreaView>
       </Modal>
     </SafeAreaView>
@@ -1030,5 +1193,117 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 15,
     textAlign: 'center',
+  },
+  // 👤 User Profile Info Modal Styles
+  profileModalContainer: {
+    flex: 1,
+  },
+  profileModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+  },
+  profileCloseBtn: {
+    padding: 6,
+  },
+  profileModalTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  profileModalContent: {
+    paddingHorizontal: 20,
+    paddingVertical: 24,
+    alignItems: 'center',
+  },
+  profileHeroSection: {
+    alignItems: 'center',
+    marginBottom: 24,
+  },
+  profileBigAvatar: {
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 14,
+    shadowColor: '#6366F1',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.25,
+    shadowRadius: 12,
+    elevation: 6,
+  },
+  profileBigAvatarLetter: {
+    fontSize: 40,
+    fontWeight: '800',
+  },
+  profileHeroName: {
+    fontSize: 22,
+    fontWeight: '800',
+    marginBottom: 4,
+  },
+  profileHeroStatus: {
+    fontSize: 14,
+  },
+  profileActionsRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 16,
+    width: '100%',
+    marginBottom: 24,
+  },
+  profileActionBox: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+  },
+  profileActionText: {
+    fontSize: 13,
+    fontWeight: '700',
+    marginTop: 6,
+  },
+  profileCard: {
+    width: '100%',
+    padding: 16,
+    borderRadius: 18,
+    borderWidth: 1,
+    marginBottom: 16,
+  },
+  profileCardHeader: {
+    fontSize: 13,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: 8,
+  },
+  profileAboutText: {
+    fontSize: 15,
+    lineHeight: 22,
+  },
+  profileDivider: {
+    height: 1,
+    marginVertical: 12,
+  },
+  profilePhoneLabel: {
+    fontSize: 12,
+    marginBottom: 4,
+  },
+  profilePhoneValue: {
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  profileSecurityTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    marginBottom: 4,
+  },
+  profileSecurityDesc: {
+    fontSize: 13,
+    lineHeight: 18,
   },
 });

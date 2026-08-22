@@ -56,7 +56,6 @@ const REDIS_CLIENT_PROVIDER = {
     AuthGateway,
     OtpRedisService,
     JwtStrategy,
-    PrismaService,
   ],
   exports: [AuthService, AuthRepository, JwtModule, PassportModule],
 })

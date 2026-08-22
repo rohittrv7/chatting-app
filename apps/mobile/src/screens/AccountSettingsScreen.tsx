@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
@@ -7,7 +7,6 @@ import {
   SafeAreaView,
   StatusBar,
   ScrollView,
-  Alert,
   Platform,
 } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -17,6 +16,7 @@ import { useTheme } from '../context/ThemeContext';
 import { useToast } from '../context/ToastContext';
 import { logout } from '../store/authSlice';
 import { ArrowLeft, User, ShieldCheck, KeyRound, Smartphone, LogOut } from 'lucide-react-native';
+import { LogoutConfirmModal } from '../components/LogoutConfirmModal';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'AccountSettings'>;
 
@@ -24,23 +24,16 @@ export const AccountSettingsScreen: React.FC<Props> = ({ navigation }) => {
   const { themeMode, colors } = useTheme();
   const { showToast } = useToast();
   const dispatch = useDispatch();
+  const [showLogoutModal, setShowLogoutModal] = useState<boolean>(false);
 
-  const handleLogout = () => {
-    Alert.alert('Log Out', 'Are you sure you want to log out of your account?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Log Out',
-        style: 'destructive',
-        onPress: () => {
-          dispatch(logout());
-          showToast('Logged out successfully', 'info');
-          navigation.reset({
-            index: 0,
-            routes: [{ name: 'PhoneAuth' }],
-          });
-        },
-      },
-    ]);
+  const handleConfirmLogout = () => {
+    setShowLogoutModal(false);
+    dispatch(logout());
+    showToast('Logged out successfully', 'info');
+    navigation.reset({
+      index: 0,
+      routes: [{ name: 'PhoneAuth' }],
+    });
   };
 
   return (
@@ -54,6 +47,7 @@ export const AccountSettingsScreen: React.FC<Props> = ({ navigation }) => {
           onPress={() => navigation.goBack()}
           style={styles.backBtn}
           activeOpacity={0.7}
+          hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
         >
           <ArrowLeft size={22} color={colors.textPrimary} />
         </TouchableOpacity>
@@ -102,7 +96,8 @@ export const AccountSettingsScreen: React.FC<Props> = ({ navigation }) => {
               marginTop: 10,
             },
           ]}
-          onPress={handleLogout}
+          onPress={() => setShowLogoutModal(true)}
+          activeOpacity={0.8}
         >
           <View style={[styles.iconBox, { backgroundColor: 'rgba(239, 68, 68, 0.12)' }]}>
             <LogOut size={20} color="#EF4444" />
@@ -115,6 +110,12 @@ export const AccountSettingsScreen: React.FC<Props> = ({ navigation }) => {
           </View>
         </TouchableOpacity>
       </ScrollView>
+
+      <LogoutConfirmModal
+        visible={showLogoutModal}
+        onCancel={() => setShowLogoutModal(false)}
+        onConfirm={handleConfirmLogout}
+      />
     </SafeAreaView>
   );
 };

@@ -20,15 +20,6 @@ type Props = NativeStackScreenProps<RootStackParamList, 'HelpSettings'>;
 export const HelpSettingsScreen: React.FC<Props> = ({ navigation }) => {
   const { themeMode, colors } = useTheme();
 
-  useEffect(() => {
-    const onBack = () => {
-      navigation.goBack();
-      return true;
-    };
-    const sub = BackHandler.addEventListener('hardwareBackPress', onBack);
-    return () => sub.remove();
-  }, [navigation]);
-
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
       <StatusBar
@@ -57,7 +48,7 @@ export const HelpSettingsScreen: React.FC<Props> = ({ navigation }) => {
             desc: 'Read end-to-end privacy policies',
             icon: FileText,
           },
-          { label: 'App Info', desc: 'v1.0.1 (Build 2026.08.18)', icon: Info },
+          { label: 'App Info', desc: 'v1.0.2 (Build 2026.08.18)', icon: Info },
         ].map((item, idx) => {
           const Icon = item.icon;
           return (

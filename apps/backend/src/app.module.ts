@@ -14,10 +14,10 @@ import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 import { HttpLoggerMiddleware } from './common/middleware/http-logger.middleware';
 import { SystemDiagnosticsService } from './common/services/system-diagnostics.service';
 import { ObservabilityModule } from './modules/observability/observability.module';
+import { PrismaModule } from './database/prisma.module';
 import { AppController } from './app.controller';
 import { HealthController } from './modules/health/health.controller';
 import { MetricsController } from './modules/metrics/metrics.controller';
-import { PrismaService } from './database/prisma.service';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { LastActiveInterceptor } from './common/interceptors/last-active.interceptor';
 
@@ -30,6 +30,7 @@ import { LastActiveInterceptor } from './common/interceptors/last-active.interce
     // ObservabilityModule is @Global() — exports OtelService and PrometheusInterceptor
     // to the entire application without additional imports.
     ObservabilityModule,
+    PrismaModule,
     AuthModule,
     KeyModule,
     ConversationModule,
@@ -41,7 +42,6 @@ import { LastActiveInterceptor } from './common/interceptors/last-active.interce
   ],
   controllers: [AppController, HealthController, MetricsController],
   providers: [
-    PrismaService,
     SystemDiagnosticsService,
     // Global JWT guard — requires @Public() to bypass authentication
     { provide: APP_GUARD, useClass: JwtAuthGuard },

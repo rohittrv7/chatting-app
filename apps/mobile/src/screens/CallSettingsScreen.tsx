@@ -20,15 +20,6 @@ type Props = NativeStackScreenProps<RootStackParamList, 'CallSettings'>;
 export const CallSettingsScreen: React.FC<Props> = ({ navigation }) => {
   const { themeMode, colors } = useTheme();
 
-  useEffect(() => {
-    const onBack = () => {
-      navigation.goBack();
-      return true;
-    };
-    const sub = BackHandler.addEventListener('hardwareBackPress', onBack);
-    return () => sub.remove();
-  }, [navigation]);
-
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
       <StatusBar

@@ -5,13 +5,17 @@ import { PrismaClient } from '@prisma/client';
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(PrismaService.name);
+  private static hasLoggedSuccess = false;
 
   async onModuleInit(): Promise<void> {
     try {
       await this.$connect();
-      console.log(
-        '\x1b[92m✔ [Database]\x1b[0m \x1b[1m\x1b[97mPostgreSQL connected successfully via Prisma\x1b[0m',
-      );
+      if (!PrismaService.hasLoggedSuccess) {
+        console.log(
+          '\x1b[92m✔ [Database]\x1b[0m \x1b[1m\x1b[97mPostgreSQL connected successfully via Prisma\x1b[0m',
+        );
+        PrismaService.hasLoggedSuccess = true;
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn(

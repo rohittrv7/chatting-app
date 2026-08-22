@@ -27,7 +27,6 @@ const REDIS_CLIENT_PROVIDER = {
     MessageGateway,
     MessageRepository,
     MessageRedisService,
-    PrismaService,
   ],
   exports: [MessageService, MessageGateway, MessageRepository, MessageRedisService],
 })

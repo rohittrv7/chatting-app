@@ -326,8 +326,10 @@ const styles = StyleSheet.create({
     paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight || 0 : 0,
   },
   scrollContent: {
+    flexGrow: 1,
     paddingHorizontal: 24,
-    paddingVertical: 20,
+    paddingTop: 16,
+    paddingBottom: Platform.OS === 'android' ? 180 : 60,
     alignItems: 'center',
     maxWidth: 520,
     alignSelf: 'center',

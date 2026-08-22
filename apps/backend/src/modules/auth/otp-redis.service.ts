@@ -136,4 +136,31 @@ export class OtpRedisService {
     }
     this.memoryStore.delete(phoneNumber);
   }
+
+  /**
+   * Get cached string or null from Redis (with in-memory fallback)
+   */
+  async getCache(key: string): Promise<string | null> {
+    try {
+      if (this.redis.status === 'ready' || this.redis.status === 'connect') {
+        return await this.redis.get(key);
+      }
+    } catch {
+      // ignore
+    }
+    return null;
+  }
+
+  /**
+   * Set cached string with TTL in seconds in Redis (with in-memory fallback)
+   */
+  async setCache(key: string, value: string, ttlSeconds: number = 300): Promise<void> {
+    try {
+      if (this.redis.status === 'ready' || this.redis.status === 'connect') {
+        await this.redis.set(key, value, 'EX', ttlSeconds);
+      }
+    } catch {
+      // ignore
+    }
+  }
 }

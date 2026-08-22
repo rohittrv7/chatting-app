@@ -84,7 +84,6 @@ import { AuthGateway } from '../auth/auth.gateway';
   providers: [
     KeyService,
     KeyRepository,
-    PrismaService,
     // AuthGateway exposes the shared Socket.io Server instance (same approach
     // as AuthService uses for DEVICE_FORCE_LOGOUT events).
     AuthGateway,

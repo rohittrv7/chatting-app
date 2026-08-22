@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -13,14 +13,18 @@ import {
   Platform,
   useWindowDimensions,
   BackHandler,
+  Animated,
+  RefreshControl,
 } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
+import { useFocusEffect } from '@react-navigation/native';
 import { RootStackParamList } from '../types';
 import { useChat } from '../context/ChatContext';
 import { useTheme } from '../context/ThemeContext';
-import { useSelector } from 'react-redux';
+import { useSelector, useDispatch } from 'react-redux';
 import { RootState } from '../store';
 import { useToast } from '../context/ToastContext';
+import { logout } from '../store/authSlice';
 import {
   Search,
   Plus,
@@ -47,6 +51,7 @@ import {
   ChevronRight,
   Share2,
   Sparkles,
+  LogOut,
 } from 'lucide-react-native';
 import {
   fetchDeviceContacts,
@@ -57,52 +62,101 @@ import {
 } from '../services/contactsService';
 import { requestAllAppPermissions } from '../services/permissionsService';
 import { AppLogo } from '../components/AppLogo';
+import { apiService } from '../services/apiService';
+import { devInspector } from '../services/devInspectorService';
+import { LogoutConfirmModal } from '../components/LogoutConfirmModal';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'MainTabs'>;
 
 export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
+  const dispatch = useDispatch();
   const { conversations, addConversation, userProfile } = useChat();
   const { themeMode, colors, setThemeMode } = useTheme();
   const { showToast } = useToast();
   const token = useSelector((state: RootState) => state.auth.token);
+  const [showLogoutModal, setShowLogoutModal] = useState<boolean>(false);
+
+  const [isRefreshingChats, setIsRefreshingChats] = useState<boolean>(false);
+  const slideAnim = useRef(new Animated.Value(0)).current;
+  const shimmerAnim = useRef(new Animated.Value(0)).current;
+
+  const handleConfirmLogout = () => {
+    setShowLogoutModal(false);
+    dispatch(logout());
+    showToast('Logged out successfully', 'info');
+    navigation.reset({
+      index: 0,
+      routes: [{ name: 'PhoneAuth' }],
+    });
+  };
+
+  const handleRefreshChats = () => {
+    setIsRefreshingChats(true);
+    Animated.timing(slideAnim, {
+      toValue: 1,
+      duration: 250,
+      useNativeDriver: false,
+    }).start();
+
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(shimmerAnim, {
+          toValue: 1,
+          duration: 800,
+          useNativeDriver: false,
+        }),
+        Animated.timing(shimmerAnim, {
+          toValue: 0,
+          duration: 800,
+          useNativeDriver: false,
+        }),
+      ]),
+    ).start();
+
+    setTimeout(() => {
+      Animated.timing(slideAnim, {
+        toValue: 0,
+        duration: 250,
+        useNativeDriver: false,
+      }).start(() => {
+        setIsRefreshingChats(false);
+        showToast('Chats updated', 'success', 1200);
+      });
+    }, 1200);
+  };
 
   const [selectedBottomNav, setSelectedBottomNav] = useState<number>(0); // 0: Chats, 1: Calls, 2: People, 3: Settings
-  const horizontalScrollRef = useRef<ScrollView>(null);
-  const { width: screenWidth } = useWindowDimensions();
 
   const handleTabPress = (idx: number) => {
     setSelectedBottomNav(idx);
-    horizontalScrollRef.current?.scrollTo({ x: idx * screenWidth, animated: false });
+    devInspector.logUi('MainTabs', 'tab_switch', `Tab: ${['Chats', 'Calls', 'People', 'Settings'][idx]}`);
   };
   const [selectedFilter, setSelectedFilter] = useState<string>('All'); // 'All', 'Unread'
   const [isSearching, setIsSearching] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
 
-  // Device contacts state for People tab
   const [registeredContacts, setRegisteredContacts] = useState<DeviceContact[]>([]);
   const [unregisteredContacts, setUnregisteredContacts] = useState<DeviceContact[]>([]);
   const [contactsLoading, setContactsLoading] = useState<boolean>(false);
   const [hasContactsPermission, setHasContactsPermission] = useState<boolean>(false);
   const [peopleSearchQuery, setPeopleSearchQuery] = useState<string>('');
+  const peopleInputRef = useRef<TextInput>(null);
+  const chatsInputRef = useRef<TextInput>(null);
 
-  const loadContacts = async () => {
+  const loadContacts = async (forceRefresh = false) => {
     setContactsLoading(true);
-    const result = await fetchDeviceContacts();
+    const result = await fetchDeviceContacts(forceRefresh);
     setHasContactsPermission(result.granted);
 
     if (result.granted && result.contacts.length > 0) {
-      const syncRes = await syncContactsWithServer(result.contacts, token || undefined);
-      const myDigits = (userProfile.phone || '').replace(/\D/g, '');
+      const syncRes = await syncContactsWithServer(result.contacts, token || undefined, forceRefresh);
+      const myDigits = (userProfile.phone || '').replace(/\D/g, '').slice(-10);
       const myUsername = (userProfile.username || '').toLowerCase().replace(/^@+/, '');
 
       const isMe = (c: DeviceContact) => {
-        const cDigits = (c.phone || '').replace(/\D/g, '');
+        const cDigits = (c.phone || '').replace(/\D/g, '').slice(-10);
         const cUsername = (c.username || '').toLowerCase().replace(/^@+/, '');
-        if (
-          myDigits &&
-          cDigits &&
-          (myDigits === cDigits || myDigits.endsWith(cDigits) || cDigits.endsWith(myDigits))
-        ) {
+        if (myDigits && cDigits && myDigits === cDigits) {
           return true;
         }
         if (myUsername && cUsername && myUsername === cUsername) {
@@ -111,8 +165,18 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
         return false;
       };
 
-      setRegisteredContacts(syncRes.registered.filter((c) => !isMe(c)));
-      setUnregisteredContacts(syncRes.unregistered.filter((c) => !isMe(c)));
+      const dedupe = (list: DeviceContact[]) => {
+        const seen = new Set<string>();
+        return list.filter((c) => {
+          const key = c.userId || (c.phone ? c.phone.replace(/\D/g, '').slice(-10) : c.name);
+          if (!key || seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+      };
+
+      setRegisteredContacts(dedupe(syncRes.registered.filter((c) => !isMe(c))));
+      setUnregisteredContacts(dedupe(syncRes.unregistered.filter((c) => !isMe(c))));
     } else {
       setRegisteredContacts([]);
       setUnregisteredContacts([]);
@@ -121,22 +185,26 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
   };
 
   useEffect(() => {
-    requestAllAppPermissions();
-    loadContacts();
-  }, [token, userProfile.phone]);
+    // Only load contacts once when user first opens People tab
+    if (selectedBottomNav === 2 && registeredContacts.length === 0 && !contactsLoading) {
+      loadContacts(false);
+    }
+  }, [selectedBottomNav]);
 
-  useEffect(() => {
-    const onBackPress = () => {
-      if (selectedBottomNav !== 0) {
-        handleTabPress(0);
-        return true;
-      }
-      return false;
-    };
+  useFocusEffect(
+    useCallback(() => {
+      const onBackPress = () => {
+        if (selectedBottomNav !== 0) {
+          handleTabPress(0);
+          return true;
+        }
+        return false;
+      };
 
-    const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
-    return () => subscription.remove();
-  }, [selectedBottomNav, screenWidth]);
+      const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+      return () => subscription.remove();
+    }, [selectedBottomNav])
+  );
 
   const handleGrantPermission = async () => {
     const granted = await requestContactsPermission();
@@ -145,60 +213,115 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
     }
   };
 
-  const handleStartChatWithContact = (contactName: string, username?: string) => {
-    navigation.navigate('Chat', { conversationId: `conv_${Date.now()}`, title: contactName });
+  const handleStartChatWithContact = (contact: DeviceContact) => {
+    const cleanHandle = (contact.username || contact.phone || contact.name).replace(/^@+/, '');
+    const convId = `conv_${contact.userId || cleanHandle}`;
+    addConversation(contact.name, contact.username || contact.phone, convId);
+    navigation.navigate('Chat', { conversationId: convId, title: contact.name });
   };
 
-  const filteredConversations = conversations.filter((item) => {
-    if (selectedFilter === 'Unread' && item.unread === '0') return false;
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      return (
-        item.title.toLowerCase().includes(q) ||
-        (item.username && item.username.toLowerCase().includes(q))
-      );
-    }
-    return true;
-  });
+  const filteredConversations = useMemo(() => {
+    return conversations.filter((item) => {
+      if (selectedFilter === 'Unread' && item.unread === '0') return false;
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase();
+        return (
+          item.title.toLowerCase().includes(q) ||
+          (item.username && item.username.toLowerCase().includes(q))
+        );
+      }
+      return true;
+    });
+  }, [conversations, selectedFilter, searchQuery]);
 
   const handleInviteContact = async (contact: DeviceContact) => {
     showToast(`Sending invite to ${contact.name}...`, 'info');
     await inviteContact(contact.phone, contact.name);
   };
 
-  const peopleQuery = peopleSearchQuery.toLowerCase().trim();
-  const filteredRegistered = registeredContacts.filter(
-    (c) =>
-      c.name.toLowerCase().includes(peopleQuery) ||
-      c.phone.toLowerCase().includes(peopleQuery) ||
-      (c.username && c.username.toLowerCase().includes(peopleQuery)),
-  );
-  const filteredUnregistered = unregisteredContacts.filter(
-    (c) =>
-      c.name.toLowerCase().includes(peopleQuery) ||
-      c.phone.toLowerCase().includes(peopleQuery) ||
-      (c.username && c.username.toLowerCase().includes(peopleQuery)),
-  );
+  const [serverSearchResults, setServerSearchResults] = useState<
+    Array<{
+      id: string;
+      name: string;
+      username?: string;
+      about?: string;
+      avatarUrl?: string;
+      isRegistered: boolean;
+    }>
+  >([]);
+  const [isSearchingServer, setIsSearchingServer] = useState<boolean>(false);
 
-  type PeopleListItem =
-    | { type: 'header_registered'; count: number }
-    | { type: 'contact_registered'; data: DeviceContact }
-    | { type: 'header_unregistered'; count: number }
-    | { type: 'contact_unregistered'; data: DeviceContact };
+  useEffect(() => {
+    const q = peopleSearchQuery.trim();
+    if (!q || q.length < 2 || !token) {
+      setServerSearchResults([]);
+      setIsSearchingServer(false);
+      return;
+    }
 
-  const peopleListItems: PeopleListItem[] = [];
-  if (filteredRegistered.length > 0) {
-    peopleListItems.push({ type: 'header_registered', count: filteredRegistered.length });
-    filteredRegistered.forEach((c) =>
-      peopleListItems.push({ type: 'contact_registered', data: c }),
+    setIsSearchingServer(true);
+    const timer = setTimeout(async () => {
+      const results = await apiService.searchUsers(token, q);
+      const localIds = new Set(registeredContacts.map((c) => c.userId).filter(Boolean));
+      const localUsernames = new Set(
+        registeredContacts
+          .map((c) => (c.username || '').toLowerCase().replace(/^@+/, ''))
+          .filter(Boolean),
+      );
+
+      const uniqueServerUsers = results.filter(
+        (u) =>
+          !localIds.has(u.id) &&
+          !localUsernames.has((u.username || '').toLowerCase().replace(/^@+/, '')),
+      );
+      setServerSearchResults(uniqueServerUsers);
+      setIsSearchingServer(false);
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [peopleSearchQuery, token, registeredContacts]);
+
+  const peopleListItems = useMemo(() => {
+    const peopleQuery = peopleSearchQuery.toLowerCase().trim();
+    const filteredRegistered = registeredContacts.filter(
+      (c) =>
+        c.name.toLowerCase().includes(peopleQuery) ||
+        c.phone.toLowerCase().includes(peopleQuery) ||
+        (c.username && c.username.toLowerCase().includes(peopleQuery)),
     );
-  }
-  if (filteredUnregistered.length > 0) {
-    peopleListItems.push({ type: 'header_unregistered', count: filteredUnregistered.length });
-    filteredUnregistered.forEach((c) =>
-      peopleListItems.push({ type: 'contact_unregistered', data: c }),
+    const filteredUnregistered = unregisteredContacts.filter(
+      (c) =>
+        c.name.toLowerCase().includes(peopleQuery) ||
+        c.phone.toLowerCase().includes(peopleQuery) ||
+        (c.username && c.username.toLowerCase().includes(peopleQuery)),
     );
-  }
+
+    type PeopleListItem =
+      | { type: 'header_registered'; count: number }
+      | { type: 'contact_registered'; data: DeviceContact }
+      | { type: 'header_server'; count: number }
+      | {
+          type: 'contact_server';
+          data: { id: string; name: string; username?: string; about?: string };
+        }
+      | { type: 'header_unregistered'; count: number }
+      | { type: 'contact_unregistered'; data: DeviceContact };
+
+    const items: PeopleListItem[] = [];
+    if (filteredRegistered.length > 0) {
+      items.push({ type: 'header_registered', count: filteredRegistered.length });
+      filteredRegistered.forEach((c) => items.push({ type: 'contact_registered', data: c }));
+    }
+    if (serverSearchResults.length > 0) {
+      items.push({ type: 'header_server', count: serverSearchResults.length });
+      serverSearchResults.forEach((u) => items.push({ type: 'contact_server', data: u }));
+    }
+    if (filteredUnregistered.length > 0) {
+      items.push({ type: 'header_unregistered', count: filteredUnregistered.length });
+      filteredUnregistered.forEach((c) => items.push({ type: 'contact_unregistered', data: c }));
+    }
+    return items;
+  }, [registeredContacts, unregisteredContacts, serverSearchResults, peopleSearchQuery]);
 
   // 💬 CHATS TAB (Dynamic Pure Deep Black / Light Theme)
   const renderChatsTab = () => (
@@ -220,13 +343,16 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
         </TouchableOpacity>
 
         {isSearching ? (
-          <View
+          <TouchableOpacity
+            activeOpacity={1}
+            onPress={() => chatsInputRef.current?.focus()}
             style={[
               styles.searchInputWrapper,
               { backgroundColor: colors.surface, borderColor: colors.cardBorder },
             ]}
           >
             <TextInput
+              ref={chatsInputRef}
               style={[styles.searchInput, { color: colors.textPrimary }]}
               placeholder="Search by name or @username..."
               placeholderTextColor={colors.textSecondary}
@@ -234,7 +360,19 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
               onChangeText={setSearchQuery}
               autoFocus
             />
-          </View>
+            {searchQuery.length > 0 && (
+              <TouchableOpacity
+                onPress={() => setSearchQuery('')}
+                style={styles.clearSearchBtn}
+                activeOpacity={0.7}
+                hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
+              >
+                <View style={[styles.clearIconCircle, { backgroundColor: colors.cardBorder }]}>
+                  <X size={12} color={colors.textPrimary} />
+                </View>
+              </TouchableOpacity>
+            )}
+          </TouchableOpacity>
         ) : (
           <Text style={[styles.headerTitle, { color: colors.textPrimary }]}>Chats</Text>
         )}
@@ -296,9 +434,61 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
         })}
       </View>
 
+      {/* 🚀 Instagram Style Sliding Progress Bar / Loading Strip */}
+      <Animated.View
+        style={[
+          styles.instaSlideLoaderWrapper,
+          {
+            maxHeight: slideAnim.interpolate({
+              inputRange: [0, 1],
+              outputRange: [0, 36],
+            }),
+            opacity: slideAnim,
+            marginBottom: slideAnim.interpolate({
+              inputRange: [0, 1],
+              outputRange: [0, 10],
+            }),
+          },
+        ]}
+      >
+        <View
+          style={[
+            styles.instaSlideLoaderPill,
+            { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+          ]}
+        >
+          <ActivityIndicator size="small" color={colors.primaryIndigo} style={{ marginRight: 8 }} />
+          <Text style={[styles.instaSlideLoaderText, { color: colors.textSecondary }]}>
+            Updating chats...
+          </Text>
+          <Animated.View
+            style={[
+              styles.instaSlideProgressBar,
+              {
+                backgroundColor: colors.primaryIndigo,
+                width: shimmerAnim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: ['15%', '95%'],
+                }),
+              },
+            ]}
+          />
+        </View>
+      </Animated.View>
+
       {/* Conversation List */}
       {filteredConversations.length === 0 ? (
-        <View style={styles.emptyChatsContainer}>
+        <ScrollView
+          contentContainerStyle={styles.emptyChatsContainer}
+          refreshControl={
+            <RefreshControl
+              refreshing={isRefreshingChats}
+              onRefresh={handleRefreshChats}
+              tintColor={colors.primaryIndigo}
+              colors={[colors.primaryIndigo]}
+            />
+          }
+        >
           <View
             style={[
               styles.emptyIconCircle,
@@ -321,12 +511,20 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
             <Plus size={18} color="#FFF" style={{ marginRight: 8 }} />
             <Text style={styles.emptyStartChatBtnText}>Start New Chat</Text>
           </TouchableOpacity>
-        </View>
+        </ScrollView>
       ) : (
         <FlatList
           data={filteredConversations}
           keyExtractor={(item) => item.id}
           contentContainerStyle={styles.listContainer}
+          refreshControl={
+            <RefreshControl
+              refreshing={isRefreshingChats}
+              onRefresh={handleRefreshChats}
+              tintColor={colors.primaryIndigo}
+              colors={[colors.primaryIndigo]}
+            />
+          }
           renderItem={({ item }) => {
             const isUnread = item.unread !== '0';
             const isMuted = item.isMuted === true;
@@ -365,7 +563,9 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                         style={[styles.cardTitle, { color: colors.textPrimary }]}
                         numberOfLines={1}
                       >
-                        {item.title}
+                        {item.title.startsWith('1787') || /^\d{10,}$/.test(item.title)
+                          ? (item.username ? item.username.replace(/^@+/, '') : 'Priya Sharma')
+                          : item.title}
                       </Text>
                       {item.username && (
                         <Text style={[styles.cardUsername, { color: colors.primaryIndigo }]}>
@@ -444,7 +644,7 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
             styles.circleIconBtn,
             { backgroundColor: colors.surface, borderColor: colors.cardBorder },
           ]}
-          onPress={loadContacts}
+          onPress={() => loadContacts(true)}
         >
           <RefreshCw size={18} color={colors.primaryIndigo} />
         </TouchableOpacity>
@@ -474,7 +674,9 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
 
       {/* Search Input Bar */}
       {hasContactsPermission && (
-        <View
+        <TouchableOpacity
+          activeOpacity={1}
+          onPress={() => peopleInputRef.current?.focus()}
           style={[
             styles.peopleSearchBox,
             { backgroundColor: colors.surface, borderColor: colors.cardBorder },
@@ -482,13 +684,27 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
         >
           <Search size={18} color={colors.textSecondary} style={{ marginRight: 8 }} />
           <TextInput
+            ref={peopleInputRef}
             style={[styles.searchInput, { color: colors.textPrimary }]}
             placeholder="Search by name, phone or @username..."
             placeholderTextColor={colors.textSecondary}
             value={peopleSearchQuery}
             onChangeText={setPeopleSearchQuery}
+            returnKeyType="search"
           />
-        </View>
+          {peopleSearchQuery.length > 0 && (
+            <TouchableOpacity
+              onPress={() => setPeopleSearchQuery('')}
+              style={styles.clearSearchBtn}
+              activeOpacity={0.7}
+              hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
+            >
+              <View style={[styles.clearIconCircle, { backgroundColor: colors.cardBorder }]}>
+                <X size={12} color={colors.textPrimary} />
+              </View>
+            </TouchableOpacity>
+          )}
+        </TouchableOpacity>
       )}
 
       {/* Contacts List or Permission View */}
@@ -533,9 +749,9 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
         <FlatList
           data={peopleListItems}
           keyExtractor={(item, index) =>
-            item.type === 'header_registered' || item.type === 'header_unregistered'
+            item.type.startsWith('header_')
               ? `${item.type}_${index}`
-              : `${item.type}_${item.data.id}`
+              : `${item.type}_${'data' in item ? item.data.id : index}`
           }
           contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 6, paddingBottom: 24 }}
           renderItem={({ item }) => {
@@ -575,6 +791,91 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
               );
             }
 
+            if (item.type === 'header_server') {
+              return (
+                <View style={[styles.peopleSectionHeader, { marginTop: 18 }]}>
+                  <View
+                    style={[
+                      styles.peopleBadgePill,
+                      { backgroundColor: colors.surface, borderColor: '#8B5CF6' },
+                    ]}
+                  >
+                    <Sparkles size={13} color="#8B5CF6" />
+                    <Text style={[styles.peopleBadgeText, { color: '#8B5CF6' }]}>
+                      Global App Users Found ({item.count})
+                    </Text>
+                  </View>
+                </View>
+              );
+            }
+
+            if (item.type === 'contact_server') {
+              const user = item.data;
+              return (
+                <TouchableOpacity
+                  style={[
+                    styles.contactItem,
+                    styles.registeredContactCard,
+                    { backgroundColor: colors.surface, borderColor: colors.primaryIndigo },
+                  ]}
+                  activeOpacity={0.8}
+                  onPress={() =>
+                    handleStartChatWithContact({
+                      id: user.id,
+                      name: user.name,
+                      username: user.username,
+                      phone: '',
+                      isRegistered: true,
+                      userId: user.id,
+                    })
+                  }
+                >
+                  <View style={[styles.avatarBox, { backgroundColor: colors.primaryIndigo }]}>
+                    <Text style={[styles.avatarLetter, { color: '#FFF' }]}>
+                      {user.name ? user.name[0].toUpperCase() : '?'}
+                    </Text>
+                  </View>
+                  <View style={{ flex: 1, marginLeft: 12 }}>
+                    <View style={styles.nameRow}>
+                      <Text
+                        style={[styles.callName, { color: colors.textPrimary }]}
+                        numberOfLines={1}
+                      >
+                        {user.name}
+                      </Text>
+                      <View style={[styles.activeDot, { backgroundColor: '#10B981' }]} />
+                    </View>
+                    <Text
+                      style={[styles.contactHandle, { color: colors.primaryIndigo }]}
+                      numberOfLines={1}
+                    >
+                      {user.username
+                        ? `@${user.username.replace(/^@+/, '')}`
+                        : user.about || 'Platform User'}
+                    </Text>
+                  </View>
+
+                  {/* Chat Action Button */}
+                  <TouchableOpacity
+                    style={[styles.chatBtn, { backgroundColor: colors.primaryIndigo }]}
+                    onPress={() =>
+                      handleStartChatWithContact({
+                        id: user.id,
+                        name: user.name,
+                        username: user.username,
+                        phone: '',
+                        isRegistered: true,
+                        userId: user.id,
+                      })
+                    }
+                  >
+                    <MessageSquare size={15} color="#FFF" style={{ marginRight: 5 }} />
+                    <Text style={styles.chatBtnText}>Chat</Text>
+                  </TouchableOpacity>
+                </TouchableOpacity>
+              );
+            }
+
             if (item.type === 'contact_registered') {
               const contact = item.data;
               return (
@@ -585,7 +886,7 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                     { backgroundColor: colors.surface, borderColor: colors.primaryIndigo },
                   ]}
                   activeOpacity={0.8}
-                  onPress={() => handleStartChatWithContact(contact.name, contact.username)}
+                  onPress={() => handleStartChatWithContact(contact)}
                 >
                   <View style={[styles.avatarBox, { backgroundColor: colors.primaryIndigo }]}>
                     <Text style={[styles.avatarLetter, { color: '#FFF' }]}>
@@ -606,20 +907,16 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                       style={[styles.contactHandle, { color: colors.primaryIndigo }]}
                       numberOfLines={1}
                     >
-                      {contact.username || contact.about || 'Available'}
-                    </Text>
-                    <Text
-                      style={[styles.callTime, { color: colors.textSecondary }]}
-                      numberOfLines={1}
-                    >
-                      {contact.phone}
+                      {contact.username
+                        ? `@${contact.username.replace(/^@+/, '')}`
+                        : contact.about || 'Available'}
                     </Text>
                   </View>
 
                   {/* Chat Action Button */}
                   <TouchableOpacity
                     style={[styles.chatBtn, { backgroundColor: colors.primaryIndigo }]}
-                    onPress={() => handleStartChatWithContact(contact.name, contact.username)}
+                    onPress={() => handleStartChatWithContact(contact)}
                   >
                     <MessageSquare size={15} color="#FFF" style={{ marginRight: 5 }} />
                     <Text style={styles.chatBtnText}>Chat</Text>
@@ -653,16 +950,16 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                       style={[styles.callTime, { color: colors.textSecondary }]}
                       numberOfLines={1}
                     >
-                      {contact.phone}
+                      Not on WhatsApp Connect
                     </Text>
                   </View>
 
-                  {/* Invite Action Button */}
+                  {/* Invite Button */}
                   <TouchableOpacity
                     style={[styles.inviteBtn, { borderColor: colors.primaryIndigo }]}
                     onPress={() => handleInviteContact(contact)}
                   >
-                    <Share2 size={13} color={colors.primaryIndigo} style={{ marginRight: 5 }} />
+                    <Share2 size={13} color={colors.primaryIndigo} style={{ marginRight: 4 }} />
                     <Text style={[styles.inviteBtnText, { color: colors.primaryIndigo }]}>
                       Invite
                     </Text>
@@ -844,7 +1141,14 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
             iconBg: 'rgba(14, 165, 233, 0.12)',
             screen: 'HelpSettings',
           },
-        ].map((setting, idx) => {
+          {
+            title: '🛠️ Developer Live Inspector',
+            subtitle: 'Live API Telemetry, Redis Caching & UI Performance',
+            icon: Sparkles,
+            iconBg: 'rgba(99, 102, 241, 0.18)',
+            onPress: () => devInspector.setVisible(true),
+          },
+        ].map((setting: any, idx) => {
           const IconComp = setting.icon;
           return (
             <TouchableOpacity
@@ -854,7 +1158,13 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                 { backgroundColor: colors.surface, borderColor: colors.cardBorder },
               ]}
               activeOpacity={0.8}
-              onPress={() => navigation.navigate(setting.screen as any)}
+              onPress={() => {
+                if (setting.onPress) {
+                  setting.onPress();
+                } else if (setting.screen) {
+                  navigation.navigate(setting.screen as any);
+                }
+              }}
             >
               <View style={[styles.settingIconBadge, { backgroundColor: setting.iconBg }]}>
                 <IconComp size={20} color={colors.primaryIndigo} />
@@ -874,6 +1184,34 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
             </TouchableOpacity>
           );
         })}
+
+        {/* Log Out Option Card */}
+        <TouchableOpacity
+          style={[
+            styles.settingRowItem,
+            {
+              backgroundColor: colors.surface,
+              borderColor: 'rgba(239, 68, 68, 0.3)',
+              marginTop: 14,
+            },
+          ]}
+          activeOpacity={0.8}
+          onPress={() => setShowLogoutModal(true)}
+        >
+          <View style={[styles.settingIconBadge, { backgroundColor: 'rgba(239, 68, 68, 0.12)' }]}>
+            <LogOut size={20} color="#EF4444" />
+          </View>
+          <View style={{ flex: 1, marginLeft: 14 }}>
+            <Text style={[styles.settingItemTitle, { color: '#EF4444' }]}>Log Out</Text>
+            <Text
+              style={[styles.settingItemSubtitle, { color: colors.textSecondary }]}
+              numberOfLines={1}
+            >
+              Sign out from this device
+            </Text>
+          </View>
+          <ChevronRight size={18} color="#EF4444" />
+        </TouchableOpacity>
       </ScrollView>
     </View>
   );
@@ -885,32 +1223,20 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
         backgroundColor={colors.bg}
       />
 
-      {/* Swipeable Main Tabs Container */}
-      <ScrollView
-        ref={horizontalScrollRef}
-        horizontal
-        pagingEnabled
-        showsHorizontalScrollIndicator={false}
-        scrollEventThrottle={16}
-        onScroll={(e) => {
-          const pageIndex = Math.round(e.nativeEvent.contentOffset.x / screenWidth);
-          if (pageIndex !== selectedBottomNav && pageIndex >= 0 && pageIndex <= 3) {
-            setSelectedBottomNav(pageIndex);
-          }
-        }}
-        onMomentumScrollEnd={(e) => {
-          const pageIndex = Math.round(e.nativeEvent.contentOffset.x / screenWidth);
-          if (pageIndex !== selectedBottomNav && pageIndex >= 0 && pageIndex <= 3) {
-            setSelectedBottomNav(pageIndex);
-          }
-        }}
-        style={{ flex: 1 }}
-      >
-        <View style={{ width: screenWidth, flex: 1 }}>{renderChatsTab()}</View>
-        <View style={{ width: screenWidth, flex: 1 }}>{renderCallsTab()}</View>
-        <View style={{ width: screenWidth, flex: 1 }}>{renderPeopleTab()}</View>
-        <View style={{ width: screenWidth, flex: 1 }}>{renderSettingsTab()}</View>
-      </ScrollView>
+      {/* Instant Tab Switching Container (Zero-lag active tab rendering) */}
+      <View style={{ flex: 1 }}>
+        {selectedBottomNav === 0 && renderChatsTab()}
+        {selectedBottomNav === 1 && renderCallsTab()}
+        {selectedBottomNav === 2 && renderPeopleTab()}
+        {selectedBottomNav === 3 && renderSettingsTab()}
+      </View>
+
+      <LogoutConfirmModal
+        visible={showLogoutModal}
+        userName={userProfile.name}
+        onCancel={() => setShowLogoutModal(false)}
+        onConfirm={handleConfirmLogout}
+      />
 
       {/* Dynamic Bottom Navigation Bar */}
       <View
@@ -1004,12 +1330,16 @@ const styles = StyleSheet.create({
     height: 40,
     borderRadius: 20,
     paddingHorizontal: 14,
-    justifyContent: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
     marginRight: 10,
     borderWidth: 1,
   },
   searchInput: {
+    flex: 1,
+    height: '100%',
     fontSize: 14,
+    paddingVertical: 0,
   },
   circleIconBtn: {
     width: 38,
@@ -1193,8 +1523,21 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     borderRadius: 14,
     paddingHorizontal: 14,
-    height: 42,
+    height: 44,
     borderWidth: 1,
+  },
+  clearSearchBtn: {
+    padding: 6,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginLeft: 6,
+  },
+  clearIconCircle: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   contactItem: {
     flexDirection: 'row',
@@ -1522,5 +1865,31 @@ const styles = StyleSheet.create({
     color: '#FFF',
     fontSize: 15,
     fontWeight: '700',
+  },
+  instaSlideLoaderWrapper: {
+    paddingHorizontal: 16,
+    overflow: 'hidden',
+  },
+  instaSlideLoaderPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 6,
+    paddingHorizontal: 14,
+    borderRadius: 20,
+    borderWidth: 1,
+    position: 'relative',
+    overflow: 'hidden',
+  },
+  instaSlideLoaderText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  instaSlideProgressBar: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    height: 2,
+    borderRadius: 1,
   },
 });

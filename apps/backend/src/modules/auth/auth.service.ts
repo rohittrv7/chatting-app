@@ -34,15 +34,11 @@ function generateOtpCode(): string {
 
 function normalizePhoneNumber(raw: string): string {
   if (!raw) return '';
-  const trimmed = raw.trim();
-  const digits = trimmed.replace(/\D/g, '');
-  if (trimmed.startsWith('+')) {
-    return `+${digits}`;
+  const digits = raw.replace(/\D/g, '');
+  if (digits.length >= 10) {
+    return digits.slice(-10);
   }
-  if (digits.length === 10) {
-    return `+91${digits}`;
-  }
-  return digits ? `+${digits}` : '';
+  return digits;
 }
 
 @Injectable()
@@ -84,7 +80,8 @@ export class AuthService {
     device: unknown;
     isNewUser?: boolean;
   }> {
-    const record = await this.otpRedis.getOtp(dto.phoneNumber);
+    const normalizedPhone = normalizePhoneNumber(dto.phoneNumber);
+    const record = await this.otpRedis.getOtp(normalizedPhone);
 
     // ── 1. No record (never sent / expired) ──────────────────────────────
     if (!record) {
@@ -109,7 +106,7 @@ export class AuthService {
 
     // ── 3. Code comparison (Requirement 1.3) ────────────────────────────
     if (dto.otp !== record.code) {
-      const { locked, remainingAttempts } = await this.otpRedis.recordFailure(dto.phoneNumber);
+      const { locked, remainingAttempts } = await this.otpRedis.recordFailure(normalizedPhone);
 
       if (locked) {
         throw new HttpException(
@@ -130,12 +127,12 @@ export class AuthService {
     }
 
     // ── 4. Correct OTP — clear the record immediately ───────────────────
-    await this.otpRedis.clearOtp(dto.phoneNumber);
+    await this.otpRedis.clearOtp(normalizedPhone);
 
     // ── 5. Create or find User (Requirement 1.2) ─────────────────────────
-    let user = await this.authRepository.findUserByPhoneNumber(dto.phoneNumber);
+    let user = await this.authRepository.findUserByPhoneNumber(normalizedPhone);
     if (!user) {
-      user = await this.authRepository.createUser(dto.phoneNumber);
+      user = await this.authRepository.createUser(normalizedPhone);
     }
 
     // ── 6. Device limit check (Requirement 1.9 / Task 4.3a) ──────────────
@@ -314,42 +311,46 @@ export class AuthService {
   /**
    * Sync phone contacts and discover who is registered on the platform.
    * Registered users are prioritized with full profiles.
+   * Cached in Redis for 5 minutes for instant response times.
    */
   async syncContacts(userId: string, rawPhoneNumbers: string[]) {
-    if (!rawPhoneNumbers || !Array.isArray(rawPhoneNumbers)) {
+    if (!rawPhoneNumbers || !Array.isArray(rawPhoneNumbers) || rawPhoneNumbers.length === 0) {
       return { registered: [], unregistered: [] };
     }
 
-    // Normalize phone numbers
-    const cleanNumbersSet = new Set<string>();
-    const phoneMap = new Map<string, string>(); // normalized -> raw original
-
+    // Clean phone numbers and generate deterministic Redis cache key
+    const cleanNumbers: string[] = [];
     for (const raw of rawPhoneNumbers) {
       if (!raw || typeof raw !== 'string') continue;
-      const digitsOnly = raw.replace(/\D/g, '');
-      if (digitsOnly.length < 7) continue;
-
-      // Check with plus
-      const formattedWithPlus = `+${digitsOnly}`;
-      cleanNumbersSet.add(formattedWithPlus);
-      phoneMap.set(formattedWithPlus, raw);
-
-      // Also support 10-digit without plus or Indian +91 default
-      if (digitsOnly.length === 10) {
-        cleanNumbersSet.add(`+91${digitsOnly}`);
-        phoneMap.set(`+91${digitsOnly}`, raw);
-        cleanNumbersSet.add(digitsOnly);
-        phoneMap.set(digitsOnly, raw);
+      const clean10 = raw.replace(/\D/g, '').slice(-10);
+      if (clean10 && clean10.length >= 7) {
+        cleanNumbers.push(clean10);
       }
     }
 
-    const numbersToQuery = Array.from(cleanNumbersSet);
+    const sortedSample = [...cleanNumbers].sort().join(',');
+    const cacheKey = `cache:sync_contacts:${userId}:${Buffer.from(sortedSample).toString('base64').slice(0, 48)}`;
+
+    const cached = await this.otpRedis.getCache(cacheKey);
+    if (cached) {
+      try {
+        const parsed = JSON.parse(cached);
+        return {
+          ...parsed,
+          fromRedisCache: true,
+          cachedAt: new Date().toISOString(),
+        };
+      } catch {
+        // fall through on cache parse error
+      }
+    }
+
     const registeredUsers = await this.authRepository.findRegisteredUsersByPhoneNumbers(
-      numbersToQuery,
+      rawPhoneNumbers,
       userId,
     );
 
-    const registeredPhoneSet = new Set<string>();
+    const registered10DigitSet = new Set<string>();
     const seenUserIds = new Set<string>();
     const registered: any[] = [];
 
@@ -357,17 +358,14 @@ export class AuthService {
       if (seenUserIds.has(u.id)) continue;
       seenUserIds.add(u.id);
 
-      registeredPhoneSet.add(u.phoneNumber);
-      const digits = u.phoneNumber.replace(/\D/g, '');
-      registeredPhoneSet.add(digits);
-      registeredPhoneSet.add(`+${digits}`);
-      if (digits.length === 10) {
-        registeredPhoneSet.add(`+91${digits}`);
+      const u10 = (u.phoneNumber || '').replace(/\D/g, '').slice(-10);
+      if (u10) {
+        registered10DigitSet.add(u10);
       }
 
       registered.push({
         id: u.id,
-        phoneNumber: u.phoneNumber,
+        phoneNumber: u10 || u.phoneNumber,
         displayName: u.displayName,
         username: u.username ? `@${u.username.replace(/^@+/, '')}` : null,
         avatarUrl: u.avatarUrl,
@@ -378,23 +376,40 @@ export class AuthService {
 
     const unregisteredSet = new Set<string>();
     for (const raw of rawPhoneNumbers) {
-      const digits = raw.replace(/\D/g, '');
-      const plusDigits = `+${digits}`;
-      const indDigits = `+91${digits}`;
+      if (!raw || typeof raw !== 'string') continue;
+      const raw10 = raw.replace(/\D/g, '').slice(-10);
+      if (!raw10) continue;
 
-      if (
-        !registeredPhoneSet.has(raw) &&
-        !registeredPhoneSet.has(digits) &&
-        !registeredPhoneSet.has(plusDigits) &&
-        !registeredPhoneSet.has(indDigits)
-      ) {
+      if (!registered10DigitSet.has(raw10)) {
         unregisteredSet.add(raw);
       }
     }
 
-    return {
+    const result = {
       registered,
       unregistered: Array.from(unregisteredSet),
+      fromRedisCache: false,
+    };
+
+    // Cache in Redis for 5 minutes (300 seconds)
+    await this.otpRedis.setCache(cacheKey, JSON.stringify(result), 300);
+
+    return result;
+  }
+
+  async searchUsers(currentUserId: string, query: string) {
+    const results = await this.authRepository.searchUsers(currentUserId, query);
+    return {
+      success: true,
+      users: results.map((u) => ({
+        id: u.id,
+        name: u.displayName || u.username || 'User',
+        username: u.username ? `@${u.username.replace(/^@+/, '')}` : undefined,
+        about: u.about || 'Available',
+        avatarUrl: u.avatarUrl || undefined,
+        isRegistered: true,
+      })),
     };
   }
 }
+

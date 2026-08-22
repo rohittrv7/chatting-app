@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -30,6 +30,7 @@ import {
   Share2,
   Sparkles,
   Users,
+  X,
 } from 'lucide-react-native';
 import {
   fetchDeviceContacts,
@@ -38,11 +39,13 @@ import {
   DeviceContact,
   requestContactsPermission,
 } from '../services/contactsService';
+import { apiService } from '../services/apiService';
+import { devInspector } from '../services/devInspectorService';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Contacts'>;
 
 export const ContactsScreen: React.FC<Props> = ({ navigation }) => {
-  const { userProfile } = useChat();
+  const { userProfile, addConversation } = useChat();
   const { themeMode, colors } = useTheme();
   const { showToast } = useToast();
   const token = useSelector((state: RootState) => state.auth.token);
@@ -52,34 +55,22 @@ export const ContactsScreen: React.FC<Props> = ({ navigation }) => {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [hasPermission, setHasPermission] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const searchInputRef = useRef<TextInput>(null);
 
-  useEffect(() => {
-    const onBack = () => {
-      navigation.goBack();
-      return true;
-    };
-    const sub = BackHandler.addEventListener('hardwareBackPress', onBack);
-    return () => sub.remove();
-  }, [navigation]);
-
-  const loadContacts = async () => {
+  const loadContacts = async (forceRefresh = false) => {
     setIsLoading(true);
-    const result = await fetchDeviceContacts();
+    const result = await fetchDeviceContacts(forceRefresh);
     setHasPermission(result.granted);
 
     if (result.granted && result.contacts.length > 0) {
-      const syncRes = await syncContactsWithServer(result.contacts, token || undefined);
-      const myDigits = (userProfile.phone || '').replace(/\D/g, '');
+      const syncRes = await syncContactsWithServer(result.contacts, token || undefined, forceRefresh);
+      const myDigits = (userProfile.phone || '').replace(/\D/g, '').slice(-10);
       const myUsername = (userProfile.username || '').toLowerCase().replace(/^@+/, '');
 
       const isMe = (c: DeviceContact) => {
-        const cDigits = (c.phone || '').replace(/\D/g, '');
+        const cDigits = (c.phone || '').replace(/\D/g, '').slice(-10);
         const cUsername = (c.username || '').toLowerCase().replace(/^@+/, '');
-        if (
-          myDigits &&
-          cDigits &&
-          (myDigits === cDigits || myDigits.endsWith(cDigits) || cDigits.endsWith(myDigits))
-        ) {
+        if (myDigits && cDigits && myDigits === cDigits) {
           return true;
         }
         if (myUsername && cUsername && myUsername === cUsername) {
@@ -88,8 +79,18 @@ export const ContactsScreen: React.FC<Props> = ({ navigation }) => {
         return false;
       };
 
-      setRegisteredContacts(syncRes.registered.filter((c) => !isMe(c)));
-      setUnregisteredContacts(syncRes.unregistered.filter((c) => !isMe(c)));
+      const dedupe = (list: DeviceContact[]) => {
+        const seen = new Set<string>();
+        return list.filter((c) => {
+          const key = c.userId || (c.phone ? c.phone.replace(/\D/g, '').slice(-10) : c.name);
+          if (!key || seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+      };
+
+      setRegisteredContacts(dedupe(syncRes.registered.filter((c) => !isMe(c))));
+      setUnregisteredContacts(dedupe(syncRes.unregistered.filter((c) => !isMe(c))));
     } else {
       setRegisteredContacts([]);
       setUnregisteredContacts([]);
@@ -98,12 +99,19 @@ export const ContactsScreen: React.FC<Props> = ({ navigation }) => {
   };
 
   useEffect(() => {
-    loadContacts();
-  }, [token, userProfile.phone]);
+    devInspector.logUi('ContactsScreen', 'mount', 'Select Contact Screen opened');
+    loadContacts(false);
+    return () => {
+      devInspector.logUi('ContactsScreen', 'unmount', 'Select Contact Screen closed');
+    };
+  }, []);
 
   const handleStartChat = (contact: DeviceContact) => {
+    const cleanHandle = (contact.username || contact.phone || contact.name).replace(/^@+/, '');
+    const convId = `conv_${contact.userId || cleanHandle}`;
+    addConversation(contact.name, contact.username || contact.phone, convId);
     navigation.navigate('Chat', {
-      conversationId: `conv_${contact.userId || Date.now()}`,
+      conversationId: convId,
       title: contact.name,
     });
   };
@@ -116,9 +124,47 @@ export const ContactsScreen: React.FC<Props> = ({ navigation }) => {
   const handleRequestPermission = async () => {
     const granted = await requestContactsPermission();
     if (granted) {
-      loadContacts();
+      loadContacts(true);
     }
   };
+
+  const [serverSearchResults, setServerSearchResults] = useState<
+    Array<{
+      id: string;
+      name: string;
+      username?: string;
+      about?: string;
+      avatarUrl?: string;
+      isRegistered: boolean;
+    }>
+  >([]);
+
+  useEffect(() => {
+    const q = searchQuery.trim();
+    if (!q || q.length < 2 || !token) {
+      setServerSearchResults([]);
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      const results = await apiService.searchUsers(token, q);
+      const localIds = new Set(registeredContacts.map((c) => c.userId).filter(Boolean));
+      const localUsernames = new Set(
+        registeredContacts
+          .map((c) => (c.username || '').toLowerCase().replace(/^@+/, ''))
+          .filter(Boolean),
+      );
+
+      const uniqueServerUsers = results.filter(
+        (u) =>
+          !localIds.has(u.id) &&
+          !localUsernames.has((u.username || '').toLowerCase().replace(/^@+/, '')),
+      );
+      setServerSearchResults(uniqueServerUsers);
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [searchQuery, token, registeredContacts]);
 
   const query = searchQuery.toLowerCase().trim();
 
@@ -130,17 +176,24 @@ export const ContactsScreen: React.FC<Props> = ({ navigation }) => {
   );
 
   const filteredUnregistered = unregisteredContacts.filter(
-    (c) => c.name.toLowerCase().includes(query) || c.phone.toLowerCase().includes(query),
+    (c) =>
+      c.name.toLowerCase().includes(query) ||
+      c.phone.toLowerCase().includes(query) ||
+      (c.username && c.username.toLowerCase().includes(query)),
   );
 
-  type ListItem =
+  type ContactListItem =
     | { type: 'header_registered'; count: number }
     | { type: 'contact_registered'; data: DeviceContact }
+    | { type: 'header_server'; count: number }
+    | {
+        type: 'contact_server';
+        data: { id: string; name: string; username?: string; about?: string };
+      }
     | { type: 'header_unregistered'; count: number }
     | { type: 'contact_unregistered'; data: DeviceContact };
 
-  const listItems: ListItem[] = [];
-
+  const listItems: ContactListItem[] = [];
   if (filteredRegistered.length > 0) {
     listItems.push({ type: 'header_registered', count: filteredRegistered.length });
     filteredRegistered.forEach((c) => listItems.push({ type: 'contact_registered', data: c }));
@@ -158,12 +211,16 @@ export const ContactsScreen: React.FC<Props> = ({ navigation }) => {
         backgroundColor={colors.bg}
       />
 
-      {/* Header Bar */}
-      <View style={[styles.header, { backgroundColor: colors.bg }]}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
-          <ArrowLeft size={22} color={colors.textPrimary} />
+      {/* Top Header Bar */}
+      <View style={[styles.header, { borderBottomColor: colors.cardBorder }]}>
+        <TouchableOpacity
+          style={[styles.backBtn, { backgroundColor: colors.surface }]}
+          onPress={() => navigation.goBack()}
+          hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
+        >
+          <ArrowLeft size={20} color={colors.textPrimary} />
         </TouchableOpacity>
-        <View style={{ flex: 1, marginLeft: 10 }}>
+        <View style={{ flex: 1, marginLeft: 12 }}>
           <Text style={[styles.title, { color: colors.textPrimary }]}>Select Contact</Text>
           <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
             {hasPermission
@@ -173,7 +230,7 @@ export const ContactsScreen: React.FC<Props> = ({ navigation }) => {
         </View>
         <TouchableOpacity
           style={[styles.refreshBtn, { backgroundColor: colors.surface }]}
-          onPress={loadContacts}
+          onPress={() => loadContacts(true)}
         >
           <RefreshCw size={18} color={colors.primaryIndigo} />
         </TouchableOpacity>
@@ -181,7 +238,9 @@ export const ContactsScreen: React.FC<Props> = ({ navigation }) => {
 
       {/* Search Input Bar */}
       {hasPermission && (
-        <View
+        <TouchableOpacity
+          activeOpacity={1}
+          onPress={() => searchInputRef.current?.focus()}
           style={[
             styles.searchBoxWrapper,
             { backgroundColor: colors.surface, borderColor: colors.cardBorder },
@@ -189,13 +248,27 @@ export const ContactsScreen: React.FC<Props> = ({ navigation }) => {
         >
           <Search size={18} color={colors.textSecondary} style={{ marginRight: 8 }} />
           <TextInput
+            ref={searchInputRef}
             style={[styles.searchInput, { color: colors.textPrimary }]}
             placeholder="Search contacts by name or phone..."
             placeholderTextColor={colors.textSecondary}
             value={searchQuery}
             onChangeText={setSearchQuery}
+            returnKeyType="search"
           />
-        </View>
+          {searchQuery.length > 0 && (
+            <TouchableOpacity
+              onPress={() => setSearchQuery('')}
+              style={styles.clearSearchBtn}
+              activeOpacity={0.7}
+              hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
+            >
+              <View style={[styles.clearIconCircle, { backgroundColor: colors.cardBorder }]}>
+                <X size={12} color={colors.textPrimary} />
+              </View>
+            </TouchableOpacity>
+          )}
+        </TouchableOpacity>
       )}
 
       {/* Body Content */}
@@ -244,9 +317,9 @@ export const ContactsScreen: React.FC<Props> = ({ navigation }) => {
         <FlatList
           data={listItems}
           keyExtractor={(item, index) =>
-            item.type === 'header_registered' || item.type === 'header_unregistered'
+            item.type.startsWith('header_')
               ? `${item.type}_${index}`
-              : `${item.type}_${item.data.id}`
+              : `${item.type}_${'data' in item ? item.data.id : index}`
           }
           contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 6, paddingBottom: 32 }}
           showsVerticalScrollIndicator={false}
@@ -287,6 +360,89 @@ export const ContactsScreen: React.FC<Props> = ({ navigation }) => {
               );
             }
 
+            if (item.type === 'header_server') {
+              return (
+                <View style={[styles.sectionHeader, { marginTop: 22 }]}>
+                  <View
+                    style={[
+                      styles.badgePill,
+                      { backgroundColor: colors.surface, borderColor: '#8B5CF6' },
+                    ]}
+                  >
+                    <Sparkles size={13} color="#8B5CF6" />
+                    <Text style={[styles.badgeText, { color: '#8B5CF6' }]}>
+                      Global App Users Found ({item.count})
+                    </Text>
+                  </View>
+                </View>
+              );
+            }
+
+            if (item.type === 'contact_server') {
+              const user = item.data;
+              return (
+                <TouchableOpacity
+                  style={[
+                    styles.contactCard,
+                    styles.registeredCard,
+                    { backgroundColor: colors.surface, borderColor: colors.primaryIndigo },
+                  ]}
+                  activeOpacity={0.85}
+                  onPress={() =>
+                    handleStartChat({
+                      id: user.id,
+                      name: user.name,
+                      username: user.username,
+                      phone: '',
+                      isRegistered: true,
+                      userId: user.id,
+                    })
+                  }
+                >
+                  <View style={[styles.avatar, { backgroundColor: colors.primaryIndigo }]}>
+                    <Text style={[styles.avatarLetter, { color: '#FFF' }]}>
+                      {user.name ? user.name[0].toUpperCase() : '?'}
+                    </Text>
+                  </View>
+
+                  <View style={{ flex: 1, marginLeft: 14 }}>
+                    <View style={styles.nameRow}>
+                      <Text style={[styles.contactName, { color: colors.textPrimary }]}>
+                        {user.name}
+                      </Text>
+                      <View style={[styles.activeDot, { backgroundColor: '#10B981' }]} />
+                    </View>
+                    <Text
+                      style={[styles.contactAbout, { color: colors.primaryIndigo }]}
+                      numberOfLines={1}
+                    >
+                      {user.username
+                        ? `@${user.username.replace(/^@+/, '')}`
+                        : user.about || 'Registered User'}
+                    </Text>
+                  </View>
+
+                  {/* Chat Action Button */}
+                  <TouchableOpacity
+                    style={[styles.chatBtn, { backgroundColor: colors.primaryIndigo }]}
+                    onPress={() =>
+                      handleStartChat({
+                        id: user.id,
+                        name: user.name,
+                        username: user.username,
+                        phone: '',
+                        isRegistered: true,
+                        userId: user.id,
+                      })
+                    }
+                  >
+                    <MessageSquare size={16} color="#FFF" style={{ marginRight: 5 }} />
+                    <Text style={styles.chatBtnText}>Chat</Text>
+                  </TouchableOpacity>
+                </TouchableOpacity>
+              );
+            }
+
             if (item.type === 'contact_registered') {
               const contact = item.data;
               return (
@@ -317,13 +473,12 @@ export const ContactsScreen: React.FC<Props> = ({ navigation }) => {
                       <View style={[styles.activeDot, { backgroundColor: '#10B981' }]} />
                     </View>
                     <Text
-                      style={[styles.contactAbout, { color: colors.textSecondary }]}
+                      style={[styles.contactAbout, { color: colors.primaryIndigo }]}
                       numberOfLines={1}
                     >
-                      {contact.about || 'Available | Ready to connect'}
-                    </Text>
-                    <Text style={[styles.contactPhone, { color: colors.textSecondary }]}>
-                      {contact.phone}
+                      {contact.username
+                        ? `@${contact.username.replace(/^@+/, '')}`
+                        : contact.about || 'Available'}
                     </Text>
                   </View>
 
@@ -359,7 +514,7 @@ export const ContactsScreen: React.FC<Props> = ({ navigation }) => {
                       {contact.name}
                     </Text>
                     <Text style={[styles.contactPhone, { color: colors.textSecondary }]}>
-                      {contact.phone}
+                      Not on WhatsApp Connect
                     </Text>
                   </View>
 
@@ -423,7 +578,22 @@ const styles = StyleSheet.create({
   },
   searchInput: {
     flex: 1,
+    height: '100%',
     fontSize: 14,
+    paddingVertical: 0,
+  },
+  clearSearchBtn: {
+    padding: 6,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginLeft: 6,
+  },
+  clearIconCircle: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   centerContainer: {
     flex: 1,
