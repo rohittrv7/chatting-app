@@ -46,6 +46,8 @@ export const DevInspectorModal: React.FC = () => {
   const [searchFilter, setSearchFilter] = useState<string>('');
   const [pingStatus, setPingStatus] = useState<string | null>(null);
 
+  const [showFloatingPill, setShowFloatingPill] = useState<boolean>(false);
+
   useEffect(() => {
     const updateLogs = () => {
       setApiLogs(devInspector.getApiLogs());
@@ -99,20 +101,31 @@ export const DevInspectorModal: React.FC = () => {
 
   return (
     <>
-      {/* Floating Developer Badge (Always visible at top-right corner) */}
-      <TouchableOpacity
-        style={styles.floatingBadge}
-        activeOpacity={0.85}
-        onPress={() => devInspector.setVisible(true)}
-      >
-        <Activity size={14} color="#FFF" style={{ marginRight: 5 }} />
-        <Text style={styles.floatingBadgeText}>DEV INSPECTOR</Text>
-        {apiLogs.length > 0 && (
-          <View style={styles.badgeCounter}>
-            <Text style={styles.badgeCounterText}>{apiLogs.length}</Text>
-          </View>
-        )}
-      </TouchableOpacity>
+      {/* Floating Developer Badge (Only shown if toggled, positioned at top-right corner) */}
+      {showFloatingPill && (
+        <View style={styles.floatingBadgeContainer}>
+          <TouchableOpacity
+            style={styles.floatingBadge}
+            activeOpacity={0.85}
+            onPress={() => devInspector.setVisible(true)}
+          >
+            <Activity size={12} color="#FFF" style={{ marginRight: 4 }} />
+            <Text style={styles.floatingBadgeText}>DEV</Text>
+            {apiLogs.length > 0 && (
+              <View style={styles.badgeCounter}>
+                <Text style={styles.badgeCounterText}>{apiLogs.length}</Text>
+              </View>
+            )}
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.floatingBadgeClose}
+            onPress={() => setShowFloatingPill(false)}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          >
+            <X size={12} color="#FFF" />
+          </TouchableOpacity>
+        </View>
+      )}
 
       {/* Developer Diagnostics Fullscreen Modal */}
       <Modal
@@ -186,7 +199,11 @@ export const DevInspectorModal: React.FC = () => {
                   style={[styles.tabButton, isSelected && styles.tabButtonActive]}
                   onPress={() => setActiveTab(tab.key as any)}
                 >
-                  <IconComp size={14} color={isSelected ? '#FFF' : '#64748B'} style={{ marginRight: 6 }} />
+                  <IconComp
+                    size={14}
+                    color={isSelected ? '#FFF' : '#64748B'}
+                    style={{ marginRight: 6 }}
+                  />
                   <Text style={[styles.tabButtonText, isSelected && styles.tabButtonTextActive]}>
                     {tab.label}
                   </Text>
@@ -226,7 +243,8 @@ export const DevInspectorModal: React.FC = () => {
                       <Server size={32} color="#334155" />
                       <Text style={styles.emptyText}>No API calls recorded yet.</Text>
                       <Text style={styles.emptySubText}>
-                        Perform an action (Login, Sync Contacts, Send Message) to see live telemetry.
+                        Perform an action (Login, Sync Contacts, Send Message) to see live
+                        telemetry.
                       </Text>
                     </View>
                   ) : (
@@ -243,11 +261,20 @@ export const DevInspectorModal: React.FC = () => {
                             activeOpacity={0.8}
                           >
                             <View style={{ flex: 1 }}>
-                              <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
+                              <View
+                                style={{
+                                  flexDirection: 'row',
+                                  alignItems: 'center',
+                                  marginBottom: 4,
+                                }}
+                              >
                                 <View
                                   style={[
                                     styles.methodBadge,
-                                    { backgroundColor: log.method === 'POST' ? '#3B82F6' : '#10B981' },
+                                    {
+                                      backgroundColor:
+                                        log.method === 'POST' ? '#3B82F6' : '#10B981',
+                                    },
                                   ]}
                                 >
                                   <Text style={styles.methodText}>{log.method}</Text>
@@ -257,15 +284,33 @@ export const DevInspectorModal: React.FC = () => {
                                 </Text>
                               </View>
 
-                              <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
+                              <View
+                                style={{
+                                  flexDirection: 'row',
+                                  alignItems: 'center',
+                                  flexWrap: 'wrap',
+                                  gap: 6,
+                                }}
+                              >
                                 <View
                                   style={[
                                     styles.statusBadge,
-                                    { backgroundColor: isSuccess ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)' },
+                                    {
+                                      backgroundColor: isSuccess
+                                        ? 'rgba(16, 185, 129, 0.15)'
+                                        : 'rgba(239, 68, 68, 0.15)',
+                                    },
                                   ]}
                                 >
-                                  <Text style={[styles.statusText, { color: isSuccess ? '#10B981' : '#EF4444' }]}>
-                                    {log.status === 0 ? 'NETWORK_ERR' : `${log.status} ${isSuccess ? 'OK' : 'ERR'}`}
+                                  <Text
+                                    style={[
+                                      styles.statusText,
+                                      { color: isSuccess ? '#10B981' : '#EF4444' },
+                                    ]}
+                                  >
+                                    {log.status === 0
+                                      ? 'NETWORK_ERR'
+                                      : `${log.status} ${isSuccess ? 'OK' : 'ERR'}`}
                                   </Text>
                                 </View>
 
@@ -297,14 +342,19 @@ export const DevInspectorModal: React.FC = () => {
                               <Text style={styles.jsonTitle}>REQUEST BODY:</Text>
                               <View style={styles.jsonBox}>
                                 <Text style={styles.jsonText}>
-                                  {JSON.stringify(log.requestData, null, 2) || 'None (Empty payload)'}
+                                  {JSON.stringify(log.requestData, null, 2) ||
+                                    'None (Empty payload)'}
                                 </Text>
                               </View>
 
-                              <Text style={[styles.jsonTitle, { marginTop: 10 }]}>RESPONSE PAYLOAD:</Text>
+                              <Text style={[styles.jsonTitle, { marginTop: 10 }]}>
+                                RESPONSE PAYLOAD:
+                              </Text>
                               <View style={styles.jsonBox}>
                                 <Text style={styles.jsonText}>
-                                  {JSON.stringify(log.responseData, null, 2) || log.error || 'Empty'}
+                                  {JSON.stringify(log.responseData, null, 2) ||
+                                    log.error ||
+                                    'Empty'}
                                 </Text>
                               </View>
                             </View>
@@ -338,7 +388,8 @@ export const DevInspectorModal: React.FC = () => {
                       <View style={{ flex: 1 }}>
                         <Text style={styles.uiScreen}>{log.screen}</Text>
                         <Text style={styles.uiAction}>
-                          Action: <Text style={{ color: '#38BDF8' }}>{log.action.toUpperCase()}</Text>
+                          Action:{' '}
+                          <Text style={{ color: '#38BDF8' }}>{log.action.toUpperCase()}</Text>
                           {log.details ? ` • ${log.details}` : ''}
                         </Text>
                       </View>
@@ -366,7 +417,13 @@ export const DevInspectorModal: React.FC = () => {
                 ) : (
                   socketLogs.map((log) => (
                     <View key={log.id} style={styles.logCard}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <View
+                        style={{
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                        }}
+                      >
                         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                           <View
                             style={[
@@ -407,7 +464,9 @@ export const DevInspectorModal: React.FC = () => {
                   </View>
                   <View style={styles.systemRow}>
                     <Text style={styles.systemKey}>Redis Caching</Text>
-                    <Text style={[styles.systemVal, { color: '#10B981' }]}>ENABLED (5-min TTL)</Text>
+                    <Text style={[styles.systemVal, { color: '#10B981' }]}>
+                      ENABLED (5-min TTL)
+                    </Text>
                   </View>
                   <View style={styles.systemRow}>
                     <Text style={styles.systemKey}>Phone Format</Text>
@@ -436,35 +495,48 @@ export const DevInspectorModal: React.FC = () => {
 };
 
 const styles = StyleSheet.create({
-  floatingBadge: {
+  floatingBadgeContainer: {
     position: 'absolute',
-    bottom: 80,
-    right: 14,
+    top: Platform.OS === 'ios' ? 52 : 36,
+    right: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    zIndex: 99999,
+  },
+  floatingBadge: {
     backgroundColor: '#6366F1',
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 20,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 16,
     elevation: 8,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.35,
-    shadowRadius: 6,
-    zIndex: 9999,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+  },
+  floatingBadgeClose: {
+    backgroundColor: '#475569',
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginLeft: 4,
   },
   floatingBadgeText: {
     color: '#FFF',
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '800',
     letterSpacing: 0.5,
   },
   badgeCounter: {
     backgroundColor: '#EF4444',
     borderRadius: 10,
-    paddingHorizontal: 5,
+    paddingHorizontal: 4,
     paddingVertical: 1,
-    marginLeft: 6,
+    marginLeft: 4,
   },
   badgeCounterText: {
     color: '#FFF',

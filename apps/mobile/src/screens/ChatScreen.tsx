@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   View,
   Text,
@@ -27,6 +27,10 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { devInspector } from '../services/devInspectorService';
 import {
+  getResolvedDisplayName,
+  getDeterministicConversationId,
+} from '../services/contactsService';
+import {
   ArrowLeft,
   Phone,
   Video,
@@ -47,6 +51,7 @@ import {
   User,
   Trash2,
   Bell,
+  Eraser,
 } from 'lucide-react-native';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Chat'>;
@@ -54,55 +59,75 @@ type Props = NativeStackScreenProps<RootStackParamList, 'Chat'>;
 const EMOJI_LIST = [
   '😊',
   '😂',
-  '❤️',
   '🔥',
   '👍',
-  '😍',
-  '🎉',
-  '💯',
+  '❤️',
   '🙏',
-  '🥳',
-  '😎',
+  '🎉',
   '🚀',
   '✨',
-  '👏',
-  '💡',
-  '⚡',
-  '🤩',
-  '🌟',
-  '💙',
+  '😍',
+  '😎',
   '🙌',
-  '😜',
-  '😭',
-  '🤯',
-  '💪',
-  '💬',
-  '🤙',
-  '👀',
   '💯',
-  '👌',
+  '👏',
+  '🤔',
+  '🥳',
   '🤝',
-  '🤝🏻',
+  '💪',
   '⭐',
+  '💡',
+  '👋',
+  '🥰',
+  '🤩',
+  '😇',
+  '🫡',
+  '💖',
+  '⚡',
+  '🎯',
+  '🌟',
+  '🇮🇳',
 ];
 
-interface PendingMedia {
+export interface PendingMedia {
   uri: string;
   name: string;
 }
 
 export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
   const { conversationId, title } = route.params;
-  const { conversations, messagesMap, addMessage, toggleStarMessage, openChatRoom, closeChatRoom } =
-    useChat();
+  const {
+    conversations,
+    messagesMap,
+    addMessage,
+    toggleStarMessage,
+    deleteConversation,
+    clearMessages,
+    openChatRoom,
+    closeChatRoom,
+    isUserOnline,
+    queryPresence,
+    userProfile,
+  } = useChat();
   const { themeMode, colors } = useTheme();
   const { showToast } = useToast();
 
   const currentConv = conversations.find(
     (c) => c.id === conversationId || c.title.toLowerCase() === title.toLowerCase(),
   );
+  const resolvedDisplayName = getResolvedDisplayName(
+    { username: currentConv?.username, name: currentConv?.title || title },
+    title,
+  );
   const resolvedUsername =
-    currentConv?.username || `@${title.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+    currentConv?.username || `@${resolvedDisplayName.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+
+  const isTargetOnline =
+    isUserOnline(resolvedUsername) ||
+    isUserOnline(currentConv?.username) ||
+    isUserOnline(currentConv?.id) ||
+    isUserOnline(resolvedDisplayName) ||
+    isUserOnline(title);
 
   const [inputText, setInputText] = useState('');
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
@@ -110,19 +135,42 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
   const [mediaCaption, setMediaCaption] = useState('');
   const [selectedPhotoMsg, setSelectedPhotoMsg] = useState<ChatMessage | null>(null);
   const [showUserProfileModal, setShowUserProfileModal] = useState(false);
+  const [showMoreMenuModal, setShowMoreMenuModal] = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [showClearModal, setShowClearModal] = useState(false);
 
   const flatListRef = useRef<FlatList>(null);
 
   useEffect(() => {
     devInspector.logUi('ChatScreen', 'mount', `Chat with ${title} (${conversationId})`);
     openChatRoom(conversationId);
+    queryPresence(
+      [resolvedUsername, currentConv?.username || '', currentConv?.id || '', title].filter(Boolean),
+    );
     return () => {
       devInspector.logUi('ChatScreen', 'unmount', `Chat with ${title}`);
       closeChatRoom(conversationId);
     };
-  }, [conversationId]);
+  }, [conversationId, resolvedUsername]);
 
-  const roomMessages = messagesMap[conversationId] || [];
+  const myIdentifier = userProfile.username || userProfile.phone || 'me';
+  const targetIdentifier = resolvedUsername || title || conversationId;
+  const canonicalConvId = getDeterministicConversationId(myIdentifier, targetIdentifier);
+
+  const roomMessages = useMemo(() => {
+    const rawList = messagesMap[conversationId] || [];
+    const directList = messagesMap[canonicalConvId] || [];
+    const handleClean = (resolvedUsername || '').replace(/^@+/, '');
+    const altList = handleClean ? messagesMap[`conv_${handleClean}`] || [] : [];
+
+    const map = new Map<string, ChatMessage>();
+    for (const msg of [...rawList, ...altList, ...directList]) {
+      if (msg && msg.id) {
+        map.set(msg.id, msg);
+      }
+    }
+    return Array.from(map.values()).sort((a, b) => (a.time || '').localeCompare(b.time || ''));
+  }, [messagesMap, conversationId, canonicalConvId, resolvedUsername]);
 
   useEffect(() => {
     const showSub = Keyboard.addListener(
@@ -146,7 +194,15 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
     const text = inputText.trim();
     if (!text) return;
 
-    addMessage(conversationId, text, true, undefined, undefined, title);
+    addMessage(
+      canonicalConvId,
+      text,
+      true,
+      undefined,
+      resolvedUsername,
+      resolvedDisplayName,
+      resolvedUsername,
+    );
     setInputText('');
     setShowEmojiPicker(false);
   };
@@ -184,7 +240,15 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
 
     pendingMediaList.forEach((media, idx) => {
       const captionToUse = idx === 0 ? mediaCaption.trim() : '';
-      addMessage(conversationId, captionToUse, true, media.uri, undefined, title);
+      addMessage(
+        canonicalConvId,
+        captionToUse,
+        true,
+        media.uri,
+        resolvedUsername,
+        resolvedDisplayName,
+        resolvedUsername,
+      );
     });
 
     setPendingMediaList([]);
@@ -436,18 +500,58 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
             <View style={styles.avatarWrapper}>
               <View style={[styles.avatar, { backgroundColor: colors.cardBorder }]}>
                 <Text style={[styles.avatarLetter, { color: colors.primaryIndigo }]}>
-                  {title ? title[0].toUpperCase() : 'C'}
+                  {resolvedDisplayName ? resolvedDisplayName[0].toUpperCase() : 'C'}
                 </Text>
               </View>
-              <View style={[styles.onlineDot, { borderColor: colors.surface }]} />
+              {isTargetOnline ? (
+                <View
+                  style={[
+                    styles.onlineDot,
+                    { backgroundColor: '#10B981', borderColor: colors.surface },
+                  ]}
+                />
+              ) : (
+                <View
+                  style={[
+                    styles.offlineBadgeSmall,
+                    { backgroundColor: '#475569', borderColor: colors.surface },
+                  ]}
+                >
+                  <Text style={{ color: '#FFF', fontSize: 7, fontWeight: '900', lineHeight: 8 }}>
+                    ✕
+                  </Text>
+                </View>
+              )}
             </View>
             <View style={{ marginLeft: 10, flex: 1 }}>
               <Text style={[styles.headerTitle, { color: colors.textPrimary }]} numberOfLines={1}>
-                {title}
+                {resolvedDisplayName}
               </Text>
-              <Text style={[styles.headerSubtitle, { color: colors.textSecondary }]}>
-                {resolvedUsername} • Online
-              </Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <Text
+                  style={[styles.headerSubtitle, { color: colors.textSecondary }]}
+                  numberOfLines={1}
+                >
+                  {resolvedUsername} •{' '}
+                </Text>
+                {isTargetOnline ? (
+                  <Text style={{ color: '#10B981', fontSize: 12, fontWeight: '600' }}>Online</Text>
+                ) : (
+                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                    <Text
+                      style={{
+                        color: '#94A3B8',
+                        fontSize: 10,
+                        fontWeight: '800',
+                        marginRight: 3,
+                      }}
+                    >
+                      ✕
+                    </Text>
+                    <Text style={{ color: colors.textSecondary, fontSize: 12 }}>Offline</Text>
+                  </View>
+                )}
+              </View>
             </View>
           </TouchableOpacity>
         </View>
@@ -479,10 +583,7 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
           >
             <Video size={22} color={colors.primaryIndigo} />
           </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.actionBtn}
-            onPress={() => setShowUserProfileModal(true)}
-          >
+          <TouchableOpacity style={styles.actionBtn} onPress={() => setShowMoreMenuModal(true)}>
             <MoreVertical size={20} color={colors.textPrimary} />
           </TouchableOpacity>
         </View>
@@ -769,10 +870,12 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
             <View style={styles.profileHeroSection}>
               <View style={[styles.profileBigAvatar, { backgroundColor: colors.cardBorder }]}>
                 <Text style={[styles.profileBigAvatarLetter, { color: colors.primaryIndigo }]}>
-                  {title ? title[0].toUpperCase() : 'U'}
+                  {resolvedDisplayName ? resolvedDisplayName[0].toUpperCase() : 'U'}
                 </Text>
               </View>
-              <Text style={[styles.profileHeroName, { color: colors.textPrimary }]}>{title}</Text>
+              <Text style={[styles.profileHeroName, { color: colors.textPrimary }]}>
+                {resolvedDisplayName}
+              </Text>
               <Text style={[styles.profileHeroStatus, { color: colors.primaryIndigo }]}>
                 {resolvedUsername}
               </Text>
@@ -855,13 +958,214 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
                     Encryption Verified
                   </Text>
                   <Text style={[styles.profileSecurityDesc, { color: colors.textSecondary }]}>
-                    Messages and calls are end-to-end encrypted. No one outside of this chat can read or listen to them.
+                    Messages and calls are end-to-end encrypted. No one outside of this chat can
+                    read or listen to them.
                   </Text>
                 </View>
               </View>
             </View>
+
+            {/* Chat Management Options */}
+            <View
+              style={[
+                styles.profileCard,
+                { backgroundColor: colors.surface, borderColor: colors.cardBorder, marginTop: 14 },
+              ]}
+            >
+              <TouchableOpacity
+                style={styles.profileActionRowItem}
+                onPress={() => {
+                  setShowUserProfileModal(false);
+                  setShowClearModal(true);
+                }}
+              >
+                <Eraser size={20} color="#F59E0B" />
+                <Text style={[styles.profileActionRowText, { color: colors.textPrimary }]}>
+                  Clear Chat Messages
+                </Text>
+              </TouchableOpacity>
+
+              <View style={[styles.profileActionDivider, { backgroundColor: colors.cardBorder }]} />
+
+              <TouchableOpacity
+                style={styles.profileActionRowItem}
+                onPress={() => {
+                  setShowUserProfileModal(false);
+                  setShowDeleteModal(true);
+                }}
+              >
+                <Trash2 size={20} color="#EF4444" />
+                <Text
+                  style={[styles.profileActionRowText, { color: '#EF4444', fontWeight: '700' }]}
+                >
+                  Delete Entire Chat
+                </Text>
+              </TouchableOpacity>
+            </View>
           </ScrollView>
         </SafeAreaView>
+      </Modal>
+
+      {/* 3-Dots Quick Popup Menu */}
+      <Modal
+        visible={showMoreMenuModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowMoreMenuModal(false)}
+      >
+        <TouchableOpacity
+          style={styles.menuOverlay}
+          activeOpacity={1}
+          onPress={() => setShowMoreMenuModal(false)}
+        >
+          <View
+            style={[
+              styles.menuDropdown,
+              { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+            ]}
+          >
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={() => {
+                setShowMoreMenuModal(false);
+                setShowUserProfileModal(true);
+              }}
+            >
+              <User size={18} color={colors.primaryIndigo} />
+              <Text style={[styles.menuItemText, { color: colors.textPrimary }]}>Contact Info</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={() => {
+                setShowMoreMenuModal(false);
+                setShowClearModal(true);
+              }}
+            >
+              <Eraser size={18} color="#F59E0B" />
+              <Text style={[styles.menuItemText, { color: colors.textPrimary }]}>Clear Chat</Text>
+            </TouchableOpacity>
+
+            <View style={[styles.menuDivider, { backgroundColor: colors.cardBorder }]} />
+
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={() => {
+                setShowMoreMenuModal(false);
+                setShowDeleteModal(true);
+              }}
+            >
+              <Trash2 size={18} color="#EF4444" />
+              <Text style={[styles.menuItemText, { color: '#EF4444', fontWeight: '700' }]}>
+                Delete Chat
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Clear Chat Confirmation Modal */}
+      <Modal
+        visible={showClearModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowClearModal(false)}
+      >
+        <View style={styles.confirmOverlay}>
+          <View
+            style={[
+              styles.confirmCard,
+              { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+            ]}
+          >
+            <View
+              style={[styles.confirmIconCircle, { backgroundColor: 'rgba(245, 158, 11, 0.12)' }]}
+            >
+              <Eraser size={28} color="#F59E0B" />
+            </View>
+            <Text style={[styles.confirmTitle, { color: colors.textPrimary }]}>
+              Clear chat messages?
+            </Text>
+            <Text style={[styles.confirmDesc, { color: colors.textSecondary }]}>
+              All messages in this chat will be cleared from your device.
+            </Text>
+            <View style={styles.confirmButtons}>
+              <TouchableOpacity
+                style={[
+                  styles.confirmBtnCancel,
+                  { backgroundColor: colors.bg, borderColor: colors.cardBorder },
+                ]}
+                onPress={() => setShowClearModal(false)}
+              >
+                <Text style={[styles.confirmBtnCancelText, { color: colors.textPrimary }]}>
+                  Cancel
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.confirmBtnAction, { backgroundColor: '#F59E0B' }]}
+                onPress={() => {
+                  clearMessages(canonicalConvId, [conversationId]);
+                  setShowClearModal(false);
+                  showToast('Chat cleared', 'info', 1500);
+                }}
+              >
+                <Text style={styles.confirmBtnActionText}>Clear Messages</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Delete Chat Confirmation Modal */}
+      <Modal
+        visible={showDeleteModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowDeleteModal(false)}
+      >
+        <View style={styles.confirmOverlay}>
+          <View
+            style={[
+              styles.confirmCard,
+              { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+            ]}
+          >
+            <View style={styles.confirmIconCircle}>
+              <Trash2 size={28} color="#EF4444" />
+            </View>
+            <Text style={[styles.confirmTitle, { color: colors.textPrimary }]}>
+              Delete this chat?
+            </Text>
+            <Text style={[styles.confirmDesc, { color: colors.textSecondary }]}>
+              This conversation and all its messages will be permanently deleted from your chat
+              list.
+            </Text>
+            <View style={styles.confirmButtons}>
+              <TouchableOpacity
+                style={[
+                  styles.confirmBtnCancel,
+                  { backgroundColor: colors.bg, borderColor: colors.cardBorder },
+                ]}
+                onPress={() => setShowDeleteModal(false)}
+              >
+                <Text style={[styles.confirmBtnCancelText, { color: colors.textPrimary }]}>
+                  Cancel
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.confirmBtnAction, { backgroundColor: '#EF4444' }]}
+                onPress={() => {
+                  deleteConversation(canonicalConvId, [conversationId]);
+                  setShowDeleteModal(false);
+                  showToast('Chat deleted', 'success', 1500);
+                  navigation.goBack();
+                }}
+              >
+                <Text style={styles.confirmBtnActionText}>Delete Chat</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
       </Modal>
     </SafeAreaView>
   );
@@ -907,11 +1211,22 @@ const styles = StyleSheet.create({
     position: 'absolute',
     right: 0,
     bottom: 0,
-    width: 8,
-    height: 8,
-    borderRadius: 4,
+    width: 9,
+    height: 9,
+    borderRadius: 4.5,
     backgroundColor: '#22C55E',
     borderWidth: 1.5,
+  },
+  offlineBadgeSmall: {
+    position: 'absolute',
+    right: -2,
+    bottom: -2,
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    borderWidth: 1.5,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   headerTitle: {
     fontSize: 16,
@@ -1305,5 +1620,130 @@ const styles = StyleSheet.create({
   profileSecurityDesc: {
     fontSize: 13,
     lineHeight: 18,
+  },
+  profileActionRowItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+  },
+  profileActionRowText: {
+    fontSize: 15,
+    fontWeight: '600',
+    marginLeft: 12,
+  },
+  profileActionDivider: {
+    height: 1,
+    width: '100%',
+    marginVertical: 4,
+  },
+  // 3-Dots Menu Dropdown
+  menuOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.4)',
+    justifyContent: 'flex-start',
+    alignItems: 'flex-end',
+    paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 0) + 50 : 60,
+    paddingRight: 16,
+  },
+  menuDropdown: {
+    width: 190,
+    borderRadius: 18,
+    borderWidth: 1,
+    paddingVertical: 6,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.3,
+    shadowRadius: 16,
+    elevation: 8,
+  },
+  menuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 13,
+  },
+  menuItemText: {
+    fontSize: 14,
+    fontWeight: '600',
+    marginLeft: 12,
+  },
+  menuDivider: {
+    height: 1,
+    marginVertical: 4,
+  },
+  // Confirmation Modals
+  confirmOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  confirmCard: {
+    width: '100%',
+    maxWidth: 360,
+    borderRadius: 24,
+    padding: 24,
+    borderWidth: 1,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.4,
+    shadowRadius: 24,
+    elevation: 12,
+  },
+  confirmIconCircle: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  confirmTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  confirmDesc: {
+    fontSize: 14,
+    lineHeight: 20,
+    textAlign: 'center',
+    marginBottom: 24,
+  },
+  confirmButtons: {
+    flexDirection: 'row',
+    width: '100%',
+    gap: 12,
+  },
+  confirmBtnCancel: {
+    flex: 1,
+    paddingVertical: 13,
+    borderRadius: 14,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  confirmBtnCancelText: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  confirmBtnAction: {
+    flex: 1,
+    paddingVertical: 13,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  confirmBtnActionText: {
+    color: '#FFF',
+    fontSize: 14,
+    fontWeight: '700',
   },
 });

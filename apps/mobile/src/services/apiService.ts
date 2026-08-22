@@ -4,12 +4,10 @@ import { AUTH_STORAGE_KEYS } from '../store/authSlice';
 import { UserProfile } from '../types';
 import { devInspector } from './devInspectorService';
 
-// 💻 LOCAL DEVELOPMENT URL (Active Host Wi-Fi IP)
-export const LOCAL_IP = '10.36.162.14';
-export const LOCAL_API_URL =
-  Platform.OS === 'web' ? 'http://localhost:3000/api/v1' : `http://${LOCAL_IP}:3000/api/v1`;
+// 🌐 LIVE CLOUD BACKEND URL (Render.com)
+export const LIVE_API_URL = 'https://chatting-app-rme6.onrender.com/api/v1';
 
-export const BACKEND_BASE_URL = process.env.EXPO_PUBLIC_API_URL || LOCAL_API_URL;
+export const BACKEND_BASE_URL = process.env.EXPO_PUBLIC_API_URL || LIVE_API_URL;
 
 export interface RequestOtpResponse {
   success: boolean;
@@ -373,7 +371,13 @@ export const apiService = {
         isNewUser,
       };
     } catch (e) {
-      return { token: null, refreshToken: null, phoneNumber: null, userProfile: null, isNewUser: true };
+      return {
+        token: null,
+        refreshToken: null,
+        phoneNumber: null,
+        userProfile: null,
+        isNewUser: true,
+      };
     }
   },
 
@@ -429,7 +433,11 @@ export const apiService = {
           return this.syncContacts(refreshed.accessToken, phoneNumbers);
         } else {
           // Both access token and refresh token expired -> log out to Login screen
-          devInspector.logUi('Auth', 'unmount', 'Session expired (401) - navigating to Login screen');
+          devInspector.logUi(
+            'Auth',
+            'unmount',
+            'Session expired (401) - navigating to Login screen',
+          );
           await handleSessionExpired();
           return { registered: [], unregistered: phoneNumbers };
         }
@@ -548,4 +556,3 @@ export const apiService = {
     return [];
   },
 };
-

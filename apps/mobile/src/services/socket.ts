@@ -2,12 +2,10 @@ import { Platform } from 'react-native';
 import { io, Socket } from 'socket.io-client';
 import { devInspector } from './devInspectorService';
 
-// 💻 LOCAL DEVELOPMENT SOCKET URL (Active Host Wi-Fi IP)
-export const LOCAL_IP = '10.36.162.14';
-export const LOCAL_SOCKET_URL =
-  Platform.OS === 'web' ? 'http://localhost:3000' : `http://${LOCAL_IP}:3000`;
+// 🌐 LIVE CLOUD WEBSOCKET URL (Render.com)
+export const LIVE_SOCKET_URL = 'https://chatting-app-rme6.onrender.com';
 
-export const SOCKET_URL = process.env.EXPO_PUBLIC_SOCKET_URL || LOCAL_SOCKET_URL;
+export const SOCKET_URL = process.env.EXPO_PUBLIC_SOCKET_URL || LIVE_SOCKET_URL;
 
 export interface SocketMessagePayload {
   serverMessageId?: string;
@@ -30,17 +28,24 @@ export interface SocketReceiptPayload {
   status: 'DELIVERED' | 'READ';
 }
 
+export interface SocketPresenceUpdate {
+  userId: string;
+  username?: string;
+  isOnline: boolean;
+  lastSeen?: string;
+}
+
 class RealtimeSocketService {
   private socket: Socket | null = null;
   private currentUserId: string = '';
   private callbacks?: {
     onMessageReceived?: (payload: SocketMessagePayload) => void;
-    onMessageAck?: (ack: {
-      clientMessageId: string;
-      serverMessageId: string;
-      status: any;
-    }) => void;
+    onMessageAck?: (ack: { clientMessageId: string; serverMessageId: string; status: any }) => void;
     onReceiptUpdate?: (receipt: SocketReceiptPayload) => void;
+    onPresenceUpdate?: (presence: SocketPresenceUpdate) => void;
+    onPresenceResult?: (data: {
+      presences: Record<string, { isOnline: boolean; lastSeen?: string }>;
+    }) => void;
   };
 
   public isConnected(): boolean {
@@ -61,6 +66,10 @@ class RealtimeSocketService {
         status: any;
       }) => void;
       onReceiptUpdate?: (receipt: SocketReceiptPayload) => void;
+      onPresenceUpdate?: (presence: SocketPresenceUpdate) => void;
+      onPresenceResult?: (data: {
+        presences: Record<string, { isOnline: boolean; lastSeen?: string }>;
+      }) => void;
     },
   ) {
     if (callbacks) {
@@ -179,11 +188,41 @@ class RealtimeSocketService {
       this.socket.on('v1.message.receipt', handleReceipt);
       this.socket.on('message:receipt', handleReceipt);
 
+      // 🟢/🔴 Real-time User Presence (Online / Offline)
+      const handlePresenceUpdate = (presence: SocketPresenceUpdate) => {
+        if (presence) {
+          devInspector.logSocket('presence:update', 'incoming', presence);
+          if (this.callbacks?.onPresenceUpdate) {
+            this.callbacks.onPresenceUpdate(presence);
+          }
+        }
+      };
+      this.socket.off('presence:update');
+      this.socket.on('presence:update', handlePresenceUpdate);
+
+      const handlePresenceResult = (data: any) => {
+        if (data?.presences) {
+          devInspector.logSocket('presence:result', 'incoming', data);
+          if (this.callbacks?.onPresenceResult) {
+            this.callbacks.onPresenceResult(data);
+          }
+        }
+      };
+      this.socket.off('presence:result');
+      this.socket.on('presence:result', handlePresenceResult);
+
       this.socket.on('disconnect', (reason) => {
         devInspector.logSocket('disconnect', 'incoming', { reason });
       });
     } catch (e: any) {
       devInspector.logSocket('error', 'incoming', { error: e?.message });
+    }
+  }
+
+  public queryPresence(userIds: string[]) {
+    if (this.socket && this.socket.connected && userIds.length > 0) {
+      devInspector.logSocket('presence:query', 'outgoing', { userIds });
+      this.socket.emit('presence:query', { userIds });
     }
   }
 

@@ -38,6 +38,7 @@ import {
   inviteContact,
   DeviceContact,
   requestContactsPermission,
+  getDeterministicConversationId,
 } from '../services/contactsService';
 import { apiService } from '../services/apiService';
 import { devInspector } from '../services/devInspectorService';
@@ -45,7 +46,7 @@ import { devInspector } from '../services/devInspectorService';
 type Props = NativeStackScreenProps<RootStackParamList, 'Contacts'>;
 
 export const ContactsScreen: React.FC<Props> = ({ navigation }) => {
-  const { userProfile, addConversation } = useChat();
+  const { userProfile, addConversation, isUserOnline } = useChat();
   const { themeMode, colors } = useTheme();
   const { showToast } = useToast();
   const token = useSelector((state: RootState) => state.auth.token);
@@ -63,7 +64,11 @@ export const ContactsScreen: React.FC<Props> = ({ navigation }) => {
     setHasPermission(result.granted);
 
     if (result.granted && result.contacts.length > 0) {
-      const syncRes = await syncContactsWithServer(result.contacts, token || undefined, forceRefresh);
+      const syncRes = await syncContactsWithServer(
+        result.contacts,
+        token || undefined,
+        forceRefresh,
+      );
       const myDigits = (userProfile.phone || '').replace(/\D/g, '').slice(-10);
       const myUsername = (userProfile.username || '').toLowerCase().replace(/^@+/, '');
 
@@ -107,8 +112,9 @@ export const ContactsScreen: React.FC<Props> = ({ navigation }) => {
   }, []);
 
   const handleStartChat = (contact: DeviceContact) => {
-    const cleanHandle = (contact.username || contact.phone || contact.name).replace(/^@+/, '');
-    const convId = `conv_${contact.userId || cleanHandle}`;
+    const myIdentifier = userProfile.username || userProfile.phone || 'me';
+    const targetIdentifier = contact.username || contact.phone || contact.userId || contact.name;
+    const convId = getDeterministicConversationId(myIdentifier, targetIdentifier);
     addConversation(contact.name, contact.username || contact.phone, convId);
     navigation.navigate('Chat', {
       conversationId: convId,
@@ -410,7 +416,17 @@ export const ContactsScreen: React.FC<Props> = ({ navigation }) => {
                       <Text style={[styles.contactName, { color: colors.textPrimary }]}>
                         {user.name}
                       </Text>
-                      <View style={[styles.activeDot, { backgroundColor: '#10B981' }]} />
+                      {isUserOnline(user.username) || isUserOnline(user.id) ? (
+                        <View style={[styles.activeDot, { backgroundColor: '#10B981' }]} />
+                      ) : (
+                        <View style={[styles.offlineDotSmall, { backgroundColor: '#475569' }]}>
+                          <Text
+                            style={{ color: '#FFF', fontSize: 6, fontWeight: '900', lineHeight: 7 }}
+                          >
+                            ✕
+                          </Text>
+                        </View>
+                      )}
                     </View>
                     <Text
                       style={[styles.contactAbout, { color: colors.primaryIndigo }]}
@@ -470,7 +486,20 @@ export const ContactsScreen: React.FC<Props> = ({ navigation }) => {
                       <Text style={[styles.contactName, { color: colors.textPrimary }]}>
                         {contact.name}
                       </Text>
-                      <View style={[styles.activeDot, { backgroundColor: '#10B981' }]} />
+                      {isUserOnline(contact.username) ||
+                      isUserOnline(contact.userId) ||
+                      isUserOnline(contact.phone) ||
+                      isUserOnline(contact.name) ? (
+                        <View style={[styles.activeDot, { backgroundColor: '#10B981' }]} />
+                      ) : (
+                        <View style={[styles.offlineDotSmall, { backgroundColor: '#475569' }]}>
+                          <Text
+                            style={{ color: '#FFF', fontSize: 6, fontWeight: '900', lineHeight: 7 }}
+                          >
+                            ✕
+                          </Text>
+                        </View>
+                      )}
                     </View>
                     <Text
                       style={[styles.contactAbout, { color: colors.primaryIndigo }]}
@@ -703,6 +732,14 @@ const styles = StyleSheet.create({
     height: 7,
     borderRadius: 3.5,
     marginLeft: 6,
+  },
+  offlineDotSmall: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    marginLeft: 6,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   contactName: {
     fontSize: 15,

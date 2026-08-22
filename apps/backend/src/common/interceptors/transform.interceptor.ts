@@ -1,9 +1,4 @@
-import {
-  Injectable,
-  NestInterceptor,
-  ExecutionContext,
-  CallHandler,
-} from '@nestjs/common';
+import { Injectable, NestInterceptor, ExecutionContext, CallHandler } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { Observable } from 'rxjs';
 import { map } from 'rxjs/operators';
@@ -31,6 +26,14 @@ export class TransformInterceptor<T> implements NestInterceptor<T, ApiResponseEn
 
     return next.handle().pipe(
       map((data: T) => {
+        const method = request?.method ?? 'GET';
+        const url = request?.originalUrl || request?.url || '';
+        if (url !== '/favicon.ico' && url !== '/sw.js' && !url.includes('/metrics')) {
+          console.log(
+            `\x1b[90m[${new Date().toTimeString().split(' ')[0]}]\x1b[0m \x1b[1m\x1b[92m✔ [HTTP ${method}]\x1b[0m \x1b[1m\x1b[97m${url}\x1b[0m -> \x1b[1m\x1b[92m200 OK\x1b[0m`,
+          );
+        }
+
         // Ensure X-Request-Id is reflected on success responses too.
         // (The middleware already sets it, but this is an extra safety net.)
         const requestId = request?.requestId;

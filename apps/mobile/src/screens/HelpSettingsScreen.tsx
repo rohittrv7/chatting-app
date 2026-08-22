@@ -13,7 +13,8 @@ import {
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types';
 import { useTheme } from '../context/ThemeContext';
-import { ArrowLeft, HelpCircle, FileText, Info, Mail } from 'lucide-react-native';
+import { ArrowLeft, HelpCircle, FileText, Info, Mail, Activity } from 'lucide-react-native';
+import { devInspector } from '../services/devInspectorService';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'HelpSettings'>;
 
@@ -41,6 +42,12 @@ export const HelpSettingsScreen: React.FC<Props> = ({ navigation }) => {
         contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 10, paddingBottom: 30 }}
       >
         {[
+          {
+            label: 'Developer Live Inspector',
+            desc: 'View real-time API latency, Redis cache & WebSockets',
+            icon: Activity,
+            onPress: () => devInspector.setVisible(true),
+          },
           { label: 'Help Center', desc: 'FAQs & troubleshooting guide', icon: HelpCircle },
           { label: 'Contact Us', desc: 'Questions? Talk to support team', icon: Mail },
           {
@@ -48,7 +55,7 @@ export const HelpSettingsScreen: React.FC<Props> = ({ navigation }) => {
             desc: 'Read end-to-end privacy policies',
             icon: FileText,
           },
-          { label: 'App Info', desc: 'v1.0.2 (Build 2026.08.18)', icon: Info },
+          { label: 'App Info', desc: 'v1.0.2 (Build 2026.08.22)', icon: Info },
         ].map((item, idx) => {
           const Icon = item.icon;
           return (
@@ -58,6 +65,7 @@ export const HelpSettingsScreen: React.FC<Props> = ({ navigation }) => {
                 styles.card,
                 { backgroundColor: colors.surface, borderColor: colors.cardBorder },
               ]}
+              onPress={item.onPress}
             >
               <View style={[styles.iconBox, { backgroundColor: colors.cardBorder }]}>
                 <Icon size={20} color={colors.primaryIndigo} />

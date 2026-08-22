@@ -48,6 +48,71 @@ let cachedSyncResult: {
   allSorted: DeviceContact[];
 } | null = null;
 
+/**
+ * Generate a deterministic, symmetrical 1-on-1 direct conversation ID.
+ * Example: getDeterministicConversationId('rohitrv7', 'priya_s') -> 'direct_priya_s_rohitrv7'
+ * Both users always get the exact same conversation ID!
+ */
+export const getDeterministicConversationId = (userA: string, userB: string): string => {
+  const cleanA = (userA || 'user_a')
+    .replace(/^@+/, '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]/g, '_');
+  const cleanB = (userB || 'user_b')
+    .replace(/^@+/, '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]/g, '_');
+
+  const sorted = [cleanA, cleanB].sort();
+  return `direct_${sorted[0]}_${sorted[1]}`;
+};
+
+/**
+ * Resolves contact display name according to user rule:
+ * 1. If saved in user's mobile device contacts -> use the saved name.
+ * 2. If not saved in mobile contacts -> use the profile name written by the user.
+ */
+export const getResolvedDisplayName = (
+  identifier: { phone?: string; username?: string; userId?: string; name?: string },
+  fallbackName?: string,
+): string => {
+  const contacts = cachedSyncResult?.allSorted || cachedDeviceContacts || [];
+  const cleanUsername = (identifier.username || '').replace(/^@+/, '').toLowerCase();
+  const cleanPhone = (identifier.phone || '').replace(/\D/g, '').slice(-10);
+  const userId = identifier.userId || '';
+
+  // 1. Check user's saved phonebook contacts
+  for (const c of contacts) {
+    const cPhone = (c.phone || '').replace(/\D/g, '').slice(-10);
+    const cUser = (c.username || '').replace(/^@+/, '').toLowerCase();
+    if (
+      (cleanPhone && cPhone && cleanPhone === cPhone) ||
+      (cleanUsername && cUser && cleanUsername === cUser) ||
+      (userId && c.userId && userId === c.userId)
+    ) {
+      if (c.name && c.name.trim() && !/^\d{10,}$/.test(c.name)) {
+        return c.name.trim(); // Saved name in user's phone!
+      }
+    }
+  }
+
+  // 2. If not in user's phonebook, use what the user wrote in their profile
+  if (identifier.name && identifier.name.trim() && !/^\d{10,}$/.test(identifier.name)) {
+    return identifier.name.trim();
+  }
+  if (fallbackName && fallbackName.trim() && !/^\d{10,}$/.test(fallbackName)) {
+    return fallbackName.trim();
+  }
+
+  // 3. Fallback to clean username
+  if (cleanUsername) {
+    return cleanUsername;
+  }
+  return 'Friend';
+};
+
 export const invalidateContactsCache = () => {
   cachedDeviceContacts = null;
   cachedSyncResult = null;

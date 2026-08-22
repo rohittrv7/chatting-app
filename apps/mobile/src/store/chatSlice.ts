@@ -24,19 +24,45 @@ export const chatSlice = createSlice({
   initialState,
   reducers: {
     setConversations: (state, action: PayloadAction<ConversationItem[]>) => {
-      state.conversations = action.payload;
-      safeStorage.setItem(CHAT_STORAGE_KEYS.CONVERSATIONS, JSON.stringify(action.payload));
+      const uniqueList: ConversationItem[] = [];
+      const seenKeys = new Set<string>();
+
+      for (const conv of action.payload) {
+        const cleanUser = (conv.username || '').replace(/^@+/, '').toLowerCase();
+        const cleanTitle = (conv.title || '').trim().toLowerCase();
+        const key = cleanUser || cleanTitle || conv.id;
+
+        if (!seenKeys.has(key)) {
+          seenKeys.add(key);
+          uniqueList.push(conv);
+        }
+      }
+
+      state.conversations = uniqueList;
+      safeStorage.setItem(CHAT_STORAGE_KEYS.CONVERSATIONS, JSON.stringify(uniqueList));
     },
     addConversation: (state, action: PayloadAction<ConversationItem>) => {
-      const exists = state.conversations.some(
+      const newConv = action.payload;
+      const cleanUser = (newConv.username || '').replace(/^@+/, '').toLowerCase();
+      const cleanTitle = (newConv.title || '').trim().toLowerCase();
+
+      const existingIdx = state.conversations.findIndex(
         (c) =>
-          c.id === action.payload.id ||
-          c.title.toLowerCase() === action.payload.title.toLowerCase(),
+          c.id === newConv.id ||
+          (cleanUser && (c.username || '').replace(/^@+/, '').toLowerCase() === cleanUser) ||
+          (cleanTitle && (c.title || '').trim().toLowerCase() === cleanTitle),
       );
-      if (!exists) {
-        state.conversations.unshift(action.payload);
-        safeStorage.setItem(CHAT_STORAGE_KEYS.CONVERSATIONS, JSON.stringify(state.conversations));
+
+      if (existingIdx >= 0) {
+        state.conversations[existingIdx] = {
+          ...state.conversations[existingIdx],
+          ...newConv,
+          id: state.conversations[existingIdx].id || newConv.id,
+        };
+      } else {
+        state.conversations.unshift(newConv);
       }
+      safeStorage.setItem(CHAT_STORAGE_KEYS.CONVERSATIONS, JSON.stringify(state.conversations));
     },
     setMessagesForConversation: (
       state,
@@ -134,6 +160,62 @@ export const chatSlice = createSlice({
       }
       safeStorage.setItem(CHAT_STORAGE_KEYS.MESSAGES, JSON.stringify(state.messagesMap));
     },
+    removeConversation: (
+      state,
+      action: PayloadAction<{ conversationId: string; aliasIds?: string[] }>,
+    ) => {
+      const { conversationId, aliasIds = [] } = action.payload;
+      const targetLowerSet = new Set(
+        [conversationId, ...aliasIds].filter(Boolean).map((s) => s.toLowerCase().trim()),
+      );
+
+      state.conversations = state.conversations.filter((c) => {
+        const idLower = (c.id || '').toLowerCase().trim();
+        const userLower = (c.username || '').toLowerCase().trim();
+        const cleanUserLower = userLower.replace(/^@+/, '');
+        const titleLower = (c.title || '').toLowerCase().trim();
+
+        const match =
+          targetLowerSet.has(idLower) ||
+          targetLowerSet.has(userLower) ||
+          targetLowerSet.has(cleanUserLower) ||
+          targetLowerSet.has(titleLower);
+
+        return !match;
+      });
+
+      for (const target of targetLowerSet) {
+        delete state.messagesMap[target];
+        for (const k of Object.keys(state.messagesMap)) {
+          if (k.toLowerCase().trim() === target || k.toLowerCase().includes(target)) {
+            delete state.messagesMap[k];
+          }
+        }
+      }
+
+      safeStorage.setItem(CHAT_STORAGE_KEYS.CONVERSATIONS, JSON.stringify(state.conversations));
+      safeStorage.setItem(CHAT_STORAGE_KEYS.MESSAGES, JSON.stringify(state.messagesMap));
+    },
+    clearConversationMessages: (
+      state,
+      action: PayloadAction<{ conversationId: string; aliasIds?: string[] }>,
+    ) => {
+      const { conversationId, aliasIds = [] } = action.payload;
+      const allTargetIds = new Set([conversationId, ...aliasIds]);
+
+      for (const id of allTargetIds) {
+        state.messagesMap[id] = [];
+      }
+
+      const conv = state.conversations.find((c) => allTargetIds.has(c.id));
+      if (conv) {
+        conv.lastMessage = '';
+        conv.unread = '0';
+      }
+
+      safeStorage.setItem(CHAT_STORAGE_KEYS.CONVERSATIONS, JSON.stringify(state.conversations));
+      safeStorage.setItem(CHAT_STORAGE_KEYS.MESSAGES, JSON.stringify(state.messagesMap));
+    },
     setActiveConversationId: (state, action: PayloadAction<string | null>) => {
       state.activeConversationId = action.payload;
     },
@@ -148,6 +230,8 @@ export const {
   updateMessageStatus,
   markAllMessagesRead,
   toggleStarMessage,
+  removeConversation,
+  clearConversationMessages,
   setActiveConversationId,
 } = chatSlice.actions;
 

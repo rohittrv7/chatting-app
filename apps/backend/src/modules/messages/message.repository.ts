@@ -86,6 +86,40 @@ export class MessageRepository {
       update: {},
     });
 
+    // 4b. Ensure receiver is also a member if receiverId is provided
+    if ((dto as any).receiverId) {
+      const receiverRaw = (dto as any).receiverId;
+      const cleanRec = receiverRaw.replace(/^@+/, '');
+      const rec10 = cleanRec.replace(/\D/g, '').slice(-10);
+      let recUser = await this.prisma.user.findFirst({
+        where: {
+          OR: [
+            { id: receiverRaw },
+            { username: cleanRec },
+            ...(rec10 ? [{ phoneNumber: rec10 }, { phoneNumber: `+91${rec10}` }] : []),
+            { phoneNumber: cleanRec },
+          ],
+        },
+      });
+
+      if (recUser) {
+        await this.prisma.conversationMember.upsert({
+          where: {
+            conversationId_userId: {
+              conversationId: dto.conversationId,
+              userId: recUser.id,
+            },
+          },
+          create: {
+            conversationId: dto.conversationId,
+            userId: recUser.id,
+            role: 'MEMBER',
+          },
+          update: {},
+        });
+      }
+    }
+
     // 5. Create Message in PostgreSQL
     return this.prisma.message.create({
       data: {

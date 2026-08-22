@@ -27,12 +27,70 @@ export class MessageGateway implements OnGatewayConnection, OnGatewayDisconnect 
   server!: Server;
 
   private readonly logger = new Logger(MessageGateway.name);
+  private readonly activeUserSockets = new Map<string, Set<string>>();
 
   constructor(
     @Inject(forwardRef(() => MessageService))
     private readonly messageService: MessageService,
     private readonly messageRedisService: MessageRedisService,
   ) {}
+
+  private registerUserOnline(userId: string, socketId: string) {
+    if (!userId) return;
+    const clean = userId.replace(/^@+/, '').toLowerCase();
+    const keys = [userId.toLowerCase(), clean, `@${clean}`];
+
+    for (const key of keys) {
+      if (!this.activeUserSockets.has(key)) {
+        this.activeUserSockets.set(key, new Set());
+      }
+      this.activeUserSockets.get(key)!.add(socketId);
+    }
+
+    // Broadcast presence update to all connected clients
+    this.server.emit('presence:update', {
+      userId,
+      username: clean,
+      isOnline: true,
+    });
+  }
+
+  private unregisterUserOnline(userId: string, socketId: string) {
+    if (!userId) return;
+    const clean = userId.replace(/^@+/, '').toLowerCase();
+    const keys = [userId.toLowerCase(), clean, `@${clean}`];
+    let isCompletelyOffline = false;
+
+    for (const key of keys) {
+      const set = this.activeUserSockets.get(key);
+      if (set) {
+        set.delete(socketId);
+        if (set.size === 0) {
+          this.activeUserSockets.delete(key);
+          isCompletelyOffline = true;
+        }
+      }
+    }
+
+    if (isCompletelyOffline) {
+      this.server.emit('presence:update', {
+        userId,
+        username: clean,
+        isOnline: false,
+        lastSeen: new Date().toISOString(),
+      });
+    }
+  }
+
+  public isUserOnline(userId: string): boolean {
+    if (!userId) return false;
+    const clean = userId.replace(/^@+/, '').toLowerCase();
+    return (
+      (this.activeUserSockets.get(userId.toLowerCase())?.size ?? 0) > 0 ||
+      (this.activeUserSockets.get(clean)?.size ?? 0) > 0 ||
+      (this.activeUserSockets.get(`@${clean}`)?.size ?? 0) > 0
+    );
+  }
 
   async handleConnection(client: Socket) {
     const userId = (client.handshake.query['userId'] as string) || client.id;
@@ -45,7 +103,11 @@ export class MessageGateway implements OnGatewayConnection, OnGatewayDisconnect 
       client.join(`user_${userId}`);
       client.join(`user_${cleanUserId}`);
       client.join(`user_@${cleanUserId}`);
-      this.logger.log(`Client connected: ${client.id} -> User: ${userId}`);
+
+      this.registerUserOnline(userId, client.id);
+      console.log(
+        `\x1b[90m[${new Date().toTimeString().split(' ')[0]}]\x1b[0m \x1b[1m\x1b[92m🟢 [SOCKET CONNECTED]\x1b[0m User: \x1b[1m\x1b[97m${userId}\x1b[0m (Socket ID: ${client.id})`,
+      );
     }
   }
 
@@ -53,8 +115,28 @@ export class MessageGateway implements OnGatewayConnection, OnGatewayDisconnect 
     const userId = client.handshake.query['userId'] as string;
     if (userId) {
       await this.messageRedisService.setUserActiveConversation(userId, null);
+      this.unregisterUserOnline(userId, client.id);
+      console.log(
+        `\x1b[90m[${new Date().toTimeString().split(' ')[0]}]\x1b[0m \x1b[1m\x1b[91m🔴 [SOCKET DISCONNECTED]\x1b[0m User: \x1b[1m\x1b[97m${userId}\x1b[0m (Socket ID: ${client.id})`,
+      );
     }
-    this.logger.log(`Client disconnected: ${client.id}`);
+  }
+
+  /**
+   * Presence query by list of user IDs / handles
+   */
+  @SubscribeMessage('presence:query')
+  async handlePresenceQuery(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { userIds: string[] },
+  ) {
+    const presences: Record<string, { isOnline: boolean }> = {};
+    if (payload?.userIds && Array.isArray(payload.userIds)) {
+      for (const uid of payload.userIds) {
+        presences[uid] = { isOnline: this.isUserOnline(uid) };
+      }
+    }
+    client.emit('presence:result', { presences });
   }
 
   /**
@@ -94,7 +176,15 @@ export class MessageGateway implements OnGatewayConnection, OnGatewayDisconnect 
    * Handle incoming message (Both 1-on-1 direct and E2EE formats)
    */
   @SubscribeMessage(SocketEvent.MESSAGE_SEND)
+  async handleV1SendMessage(@ConnectedSocket() client: Socket, @MessageBody() payload: any) {
+    return this.handleSendMessage(client, payload);
+  }
+
   @SubscribeMessage('message:send')
+  async handleDirectSendMessage(@ConnectedSocket() client: Socket, @MessageBody() payload: any) {
+    return this.handleSendMessage(client, payload);
+  }
+
   async handleSendMessage(@ConnectedSocket() client: Socket, @MessageBody() payload: any) {
     const senderUserId =
       (client.handshake.query['userId'] as string) || payload.senderId || client.id;
@@ -106,43 +196,10 @@ export class MessageGateway implements OnGatewayConnection, OnGatewayDisconnect 
     const senderName = payload.senderName || 'Anonymous';
     const imagePath = payload.imagePath || undefined;
 
-    let serverMessageId = `srv_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
-    let initialStatus: DeliveryStatus = DeliveryStatus.SERVER_RECEIVED;
+    const serverMessageId = `srv_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+    const initialStatus: DeliveryStatus = DeliveryStatus.SERVER_RECEIVED;
 
-    try {
-      if (payload.ciphertexts) {
-        // E2EE full payload
-        const { message, members } = await this.messageService.handleSendMessage(
-          senderUserId,
-          senderDeviceId,
-          payload as SendMessageDto,
-        );
-        serverMessageId = message.id;
-      } else {
-        // Direct standard message
-        const created = await this.messageService.handleSendMessage(senderUserId, senderDeviceId, {
-          clientMessageId: clientMsgId,
-          conversationId: convId,
-          type: imagePath ? ('IMAGE' as any) : ('TEXT' as any),
-          ciphertexts: { text, senderName, imagePath } as any,
-        });
-        serverMessageId = created.message.id;
-      }
-    } catch (err) {
-      this.logger.warn(`Could not save message to DB immediately, using cache fallback: ${err}`);
-      await this.messageRedisService.cacheMessage(convId, {
-        id: serverMessageId,
-        conversationId: convId,
-        senderId: senderUserId,
-        senderName,
-        text,
-        imagePath,
-        status: DeliveryStatus.SERVER_RECEIVED,
-        createdAt: new Date().toISOString(),
-      });
-    }
-
-    // 1. Send Single Tick ✓ (SERVER_RECEIVED) acknowledgement back to sender
+    // 1. Send Single Tick ✓ (SERVER_RECEIVED) acknowledgement back to sender immediately
     const ackPayload = {
       clientMessageId: clientMsgId,
       serverMessageId,
@@ -153,7 +210,7 @@ export class MessageGateway implements OnGatewayConnection, OnGatewayDisconnect 
     client.emit(SocketEvent.MESSAGE_ACK, ackPayload);
     client.emit('message:ack', ackPayload);
 
-    // 2. Broadcast message to recipient(s)
+    // 2. Prepare payload for recipient(s)
     const receivePayload = {
       serverMessageId,
       conversationId: convId,
@@ -164,63 +221,134 @@ export class MessageGateway implements OnGatewayConnection, OnGatewayDisconnect 
       createdAt: new Date().toISOString(),
     };
 
-    // Broadcast to the conversation room and target user rooms
+    // 3. Broadcast message to recipient(s) and conversation rooms immediately
+    console.log(
+      `\x1b[90m[${new Date().toTimeString().split(' ')[0]}]\x1b[0m \x1b[1m\x1b[95m💬 [SOCKET MESSAGE]\x1b[0m \x1b[97mFrom: ${senderName} (@${senderUserId}) -> To: ${payload.receiverId || 'Room ' + convId}\x1b[0m | \x1b[93m"${text}"\x1b[0m`,
+    );
+
     client.to(`room_${convId}`).emit(SocketEvent.MESSAGE_RECEIVE, receivePayload);
     client.to(`room_${convId}`).emit('message:receive', receivePayload);
 
     if (payload.receiverId) {
+      const cleanReceiver = payload.receiverId.replace(/^@+/, '');
       this.server
         .to(`user_${payload.receiverId}`)
         .emit(SocketEvent.MESSAGE_RECEIVE, receivePayload);
       this.server.to(`user_${payload.receiverId}`).emit('message:receive', receivePayload);
 
-      // Check if receiver has this chat currently open
-      const receiverActiveConv = await this.messageRedisService.getUserActiveConversation(
-        payload.receiverId,
-      );
-      if (receiverActiveConv === convId) {
-        // Instant READ Violet Tick (✓✓)
-        const readReceipt = {
-          messageId: serverMessageId,
-          clientMessageId: clientMsgId,
-          conversationId: convId,
-          status: DeliveryStatus.READ,
-        };
-        client.emit(SocketEvent.MESSAGE_RECEIPT_UPDATE, readReceipt);
-        client.emit('message:receipt', readReceipt);
-        await this.messageRedisService.updateCachedMessageStatus(
-          convId,
-          serverMessageId,
-          DeliveryStatus.READ,
-        );
-      } else {
-        // DELIVERED Double Tick (✓✓)
-        const deliveredReceipt = {
-          messageId: serverMessageId,
-          clientMessageId: clientMsgId,
-          conversationId: convId,
-          status: DeliveryStatus.DELIVERED,
-        };
-        client.emit(SocketEvent.MESSAGE_RECEIPT_UPDATE, deliveredReceipt);
-        client.emit('message:receipt', deliveredReceipt);
-        await this.messageRedisService.updateCachedMessageStatus(
-          convId,
-          serverMessageId,
-          DeliveryStatus.DELIVERED,
-        );
-      }
+      this.server.to(`user_${cleanReceiver}`).emit(SocketEvent.MESSAGE_RECEIVE, receivePayload);
+      this.server.to(`user_${cleanReceiver}`).emit('message:receive', receivePayload);
+
+      this.server.to(`user_@${cleanReceiver}`).emit(SocketEvent.MESSAGE_RECEIVE, receivePayload);
+      this.server.to(`user_@${cleanReceiver}`).emit('message:receive', receivePayload);
+
+      this.server
+        .to(`user_${cleanReceiver.toLowerCase()}`)
+        .emit(SocketEvent.MESSAGE_RECEIVE, receivePayload);
+      this.server.to(`user_${cleanReceiver.toLowerCase()}`).emit('message:receive', receivePayload);
+
+      this.server
+        .to(`user_@${cleanReceiver.toLowerCase()}`)
+        .emit(SocketEvent.MESSAGE_RECEIVE, receivePayload);
+      this.server
+        .to(`user_@${cleanReceiver.toLowerCase()}`)
+        .emit('message:receive', receivePayload);
     } else {
-      // Broadcast to room
       this.server.to(`room_${convId}`).emit(SocketEvent.MESSAGE_RECEIVE, receivePayload);
       this.server.to(`room_${convId}`).emit('message:receive', receivePayload);
     }
+
+    // 4. Check recipient read/delivered status
+    if (payload.receiverId) {
+      this.messageRedisService
+        .getUserActiveConversation(payload.receiverId)
+        .then((receiverActiveConv) => {
+          if (receiverActiveConv === convId) {
+            const readReceipt = {
+              messageId: serverMessageId,
+              clientMessageId: clientMsgId,
+              conversationId: convId,
+              status: DeliveryStatus.READ,
+            };
+            client.emit(SocketEvent.MESSAGE_RECEIPT_UPDATE, readReceipt);
+            client.emit('message:receipt', readReceipt);
+            this.messageRedisService.updateCachedMessageStatus(
+              convId,
+              serverMessageId,
+              DeliveryStatus.READ,
+            );
+          } else {
+            const deliveredReceipt = {
+              messageId: serverMessageId,
+              clientMessageId: clientMsgId,
+              conversationId: convId,
+              status: DeliveryStatus.DELIVERED,
+            };
+            client.emit(SocketEvent.MESSAGE_RECEIPT_UPDATE, deliveredReceipt);
+            client.emit('message:receipt', deliveredReceipt);
+            this.messageRedisService.updateCachedMessageStatus(
+              convId,
+              serverMessageId,
+              DeliveryStatus.DELIVERED,
+            );
+          }
+        })
+        .catch(() => {});
+    }
+
+    // 5. Persist to PostgreSQL Database and cache to Redis in parallel
+    (async () => {
+      try {
+        if (payload.ciphertexts) {
+          await this.messageService.handleSendMessage(
+            senderUserId,
+            senderDeviceId,
+            payload as SendMessageDto,
+          );
+        } else {
+          await this.messageService.handleSendMessage(senderUserId, senderDeviceId, {
+            clientMessageId: clientMsgId,
+            conversationId: convId,
+            type: imagePath ? ('IMAGE' as any) : ('TEXT' as any),
+            ciphertexts: { text, senderName, imagePath } as any,
+            receiverId: payload.receiverId,
+          } as any);
+        }
+      } catch (err) {
+        this.logger.warn(`Could not save message to DB immediately, caching to Redis: ${err}`);
+        await this.messageRedisService.cacheMessage(convId, {
+          id: serverMessageId,
+          conversationId: convId,
+          senderId: senderUserId,
+          senderName,
+          text,
+          imagePath,
+          status: DeliveryStatus.SERVER_RECEIVED,
+          createdAt: new Date().toISOString(),
+        });
+      }
+    })();
   }
 
   /**
    * Handle Receipt Updates (Single Tick ✓ -> Double Tick ✓✓ -> Violet Tick ✓✓)
    */
   @SubscribeMessage(SocketEvent.MESSAGE_RECEIPT_UPDATE)
+  async handleV1ReceiptUpdate(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { messageId: string; conversationId?: string; status: DeliveryStatus },
+  ) {
+    return this.handleReceiptUpdate(client, payload);
+  }
+
   @SubscribeMessage('message:receipt')
+  async handleDirectReceiptUpdate(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { messageId: string; conversationId?: string; status: DeliveryStatus },
+  ) {
+    return this.handleReceiptUpdate(client, payload);
+  }
+
   async handleReceiptUpdate(
     @ConnectedSocket() client: Socket,
     @MessageBody() payload: { messageId: string; conversationId?: string; status: DeliveryStatus },
@@ -249,6 +377,10 @@ export class MessageGateway implements OnGatewayConnection, OnGatewayDisconnect 
       deviceId,
       status: payload.status,
     };
+
+    console.log(
+      `\x1b[90m[${new Date().toTimeString().split(' ')[0]}]\x1b[0m \x1b[1m\x1b[96m👁️ [RECEIPT UPDATE]\x1b[0m User: \x1b[97m${userId}\x1b[0m -> Status: \x1b[1m\x1b[93m${payload.status}\x1b[0m | MsgId: ${payload.messageId}`,
+    );
 
     // Fan-out receipt update to all clients in the conversation
     if (payload.conversationId) {

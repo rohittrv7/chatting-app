@@ -15,10 +15,11 @@ import {
   BackHandler,
   Animated,
   RefreshControl,
+  Modal,
 } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useFocusEffect } from '@react-navigation/native';
-import { RootStackParamList } from '../types';
+import { RootStackParamList, ConversationItem } from '../types';
 import { useChat } from '../context/ChatContext';
 import { useTheme } from '../context/ThemeContext';
 import { useSelector, useDispatch } from 'react-redux';
@@ -52,6 +53,10 @@ import {
   Share2,
   Sparkles,
   LogOut,
+  Trash2,
+  Eraser,
+  CheckCheck,
+  MoreVertical,
 } from 'lucide-react-native';
 import {
   fetchDeviceContacts,
@@ -59,6 +64,8 @@ import {
   inviteContact,
   DeviceContact,
   requestContactsPermission,
+  getDeterministicConversationId,
+  getResolvedDisplayName,
 } from '../services/contactsService';
 import { requestAllAppPermissions } from '../services/permissionsService';
 import { AppLogo } from '../components/AppLogo';
@@ -70,15 +77,33 @@ type Props = NativeStackScreenProps<RootStackParamList, 'MainTabs'>;
 
 export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
   const dispatch = useDispatch();
-  const { conversations, addConversation, userProfile } = useChat();
+  const {
+    conversations,
+    addConversation,
+    deleteConversation,
+    clearMessages,
+    markConversationRead,
+    userProfile,
+    isUserOnline,
+    queryPresence,
+  } = useChat();
   const { themeMode, colors, setThemeMode } = useTheme();
   const { showToast } = useToast();
   const token = useSelector((state: RootState) => state.auth.token);
   const [showLogoutModal, setShowLogoutModal] = useState<boolean>(false);
+  const [selectedChatForAction, setSelectedChatForAction] = useState<ConversationItem | null>(null);
+  const [showDeleteConfirmModal, setShowDeleteConfirmModal] = useState<boolean>(false);
 
   const [isRefreshingChats, setIsRefreshingChats] = useState<boolean>(false);
   const slideAnim = useRef(new Animated.Value(0)).current;
   const shimmerAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const handles = conversations.map((c) => c.username || c.title || c.id).filter(Boolean);
+    if (handles.length > 0) {
+      queryPresence(handles);
+    }
+  }, [conversations.length]);
 
   const handleConfirmLogout = () => {
     setShowLogoutModal(false);
@@ -129,7 +154,11 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
 
   const handleTabPress = (idx: number) => {
     setSelectedBottomNav(idx);
-    devInspector.logUi('MainTabs', 'tab_switch', `Tab: ${['Chats', 'Calls', 'People', 'Settings'][idx]}`);
+    devInspector.logUi(
+      'MainTabs',
+      'tab_switch',
+      `Tab: ${['Chats', 'Calls', 'People', 'Settings'][idx]}`,
+    );
   };
   const [selectedFilter, setSelectedFilter] = useState<string>('All'); // 'All', 'Unread'
   const [isSearching, setIsSearching] = useState<boolean>(false);
@@ -149,7 +178,11 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
     setHasContactsPermission(result.granted);
 
     if (result.granted && result.contacts.length > 0) {
-      const syncRes = await syncContactsWithServer(result.contacts, token || undefined, forceRefresh);
+      const syncRes = await syncContactsWithServer(
+        result.contacts,
+        token || undefined,
+        forceRefresh,
+      );
       const myDigits = (userProfile.phone || '').replace(/\D/g, '').slice(-10);
       const myUsername = (userProfile.username || '').toLowerCase().replace(/^@+/, '');
 
@@ -203,7 +236,7 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
 
       const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
       return () => subscription.remove();
-    }, [selectedBottomNav])
+    }, [selectedBottomNav]),
   );
 
   const handleGrantPermission = async () => {
@@ -214,8 +247,9 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
   };
 
   const handleStartChatWithContact = (contact: DeviceContact) => {
-    const cleanHandle = (contact.username || contact.phone || contact.name).replace(/^@+/, '');
-    const convId = `conv_${contact.userId || cleanHandle}`;
+    const myIdentifier = userProfile.username || userProfile.phone || 'me';
+    const targetIdentifier = contact.username || contact.phone || contact.userId || contact.name;
+    const convId = getDeterministicConversationId(myIdentifier, targetIdentifier);
     addConversation(contact.name, contact.username || contact.phone, convId);
     navigation.navigate('Chat', { conversationId: convId, title: contact.name });
   };
@@ -539,6 +573,8 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                 onPress={() =>
                   navigation.navigate('Chat', { conversationId: item.id, title: item.title })
                 }
+                onLongPress={() => setSelectedChatForAction(item)}
+                delayLongPress={280}
               >
                 <View style={styles.cardAvatarWrapper}>
                   <View
@@ -551,8 +587,28 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                       {item.avatar}
                     </Text>
                   </View>
-                  {item.isOnline && (
-                    <View style={[styles.onlineBadgeCard, { borderColor: colors.surface }]} />
+                  {isUserOnline(item.username) ||
+                  isUserOnline(item.id) ||
+                  isUserOnline(item.title) ? (
+                    <View
+                      style={[
+                        styles.onlineBadgeCard,
+                        { backgroundColor: '#10B981', borderColor: colors.surface },
+                      ]}
+                    />
+                  ) : (
+                    <View
+                      style={[
+                        styles.offlineBadgeCard,
+                        { backgroundColor: '#475569', borderColor: colors.surface },
+                      ]}
+                    >
+                      <Text
+                        style={{ color: '#FFF', fontSize: 6, fontWeight: '900', lineHeight: 7 }}
+                      >
+                        ✕
+                      </Text>
+                    </View>
                   )}
                 </View>
 
@@ -563,9 +619,10 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                         style={[styles.cardTitle, { color: colors.textPrimary }]}
                         numberOfLines={1}
                       >
-                        {item.title.startsWith('1787') || /^\d{10,}$/.test(item.title)
-                          ? (item.username ? item.username.replace(/^@+/, '') : 'Priya Sharma')
-                          : item.title}
+                        {getResolvedDisplayName(
+                          { username: item.username, name: item.title },
+                          item.title,
+                        )}
                       </Text>
                       {item.username && (
                         <Text style={[styles.cardUsername, { color: colors.primaryIndigo }]}>
@@ -573,9 +630,20 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                         </Text>
                       )}
                     </View>
-                    <Text style={[styles.cardTime, { color: colors.textSecondary }]}>
-                      {item.time}
-                    </Text>
+                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                      <Text
+                        style={[styles.cardTime, { color: colors.textSecondary, marginRight: 4 }]}
+                      >
+                        {item.time}
+                      </Text>
+                      <TouchableOpacity
+                        style={styles.cardMenuBtn}
+                        hitSlop={{ top: 12, bottom: 12, left: 10, right: 10 }}
+                        onPress={() => setSelectedChatForAction(item)}
+                      >
+                        <MoreVertical size={16} color={colors.textSecondary} />
+                      </TouchableOpacity>
+                    </View>
                   </View>
 
                   <View style={styles.cardSubtitleRow}>
@@ -843,7 +911,17 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                       >
                         {user.name}
                       </Text>
-                      <View style={[styles.activeDot, { backgroundColor: '#10B981' }]} />
+                      {isUserOnline(user.username) || isUserOnline(user.id) ? (
+                        <View style={[styles.activeDot, { backgroundColor: '#10B981' }]} />
+                      ) : (
+                        <View style={[styles.offlineDotSmall, { backgroundColor: '#475569' }]}>
+                          <Text
+                            style={{ color: '#FFF', fontSize: 6, fontWeight: '900', lineHeight: 7 }}
+                          >
+                            ✕
+                          </Text>
+                        </View>
+                      )}
                     </View>
                     <Text
                       style={[styles.contactHandle, { color: colors.primaryIndigo }]}
@@ -901,7 +979,20 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                       >
                         {contact.name}
                       </Text>
-                      <View style={[styles.activeDot, { backgroundColor: '#10B981' }]} />
+                      {isUserOnline(contact.username) ||
+                      isUserOnline(contact.userId) ||
+                      isUserOnline(contact.phone) ||
+                      isUserOnline(contact.name) ? (
+                        <View style={[styles.activeDot, { backgroundColor: '#10B981' }]} />
+                      ) : (
+                        <View style={[styles.offlineDotSmall, { backgroundColor: '#475569' }]}>
+                          <Text
+                            style={{ color: '#FFF', fontSize: 6, fontWeight: '900', lineHeight: 7 }}
+                          >
+                            ✕
+                          </Text>
+                        </View>
+                      )}
                     </View>
                     <Text
                       style={[styles.contactHandle, { color: colors.primaryIndigo }]}
@@ -1238,6 +1329,189 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
         onConfirm={handleConfirmLogout}
       />
 
+      {/* WhatsApp-Style Chat Action Modal (Long Press on Chat Card) */}
+      <Modal
+        visible={!!selectedChatForAction && !showDeleteConfirmModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSelectedChatForAction(null)}
+      >
+        <TouchableOpacity
+          style={styles.actionModalOverlay}
+          activeOpacity={1}
+          onPress={() => setSelectedChatForAction(null)}
+        >
+          <View
+            style={[
+              styles.actionModalCard,
+              { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+            ]}
+          >
+            {/* Header info */}
+            <View style={styles.actionModalHeader}>
+              <View style={[styles.actionAvatar, { backgroundColor: colors.cardBorder }]}>
+                <Text style={[styles.actionAvatarText, { color: colors.primaryIndigo }]}>
+                  {selectedChatForAction?.avatar || 'C'}
+                </Text>
+              </View>
+              <View style={{ marginLeft: 12, flex: 1 }}>
+                <Text
+                  style={[styles.actionChatTitle, { color: colors.textPrimary }]}
+                  numberOfLines={1}
+                >
+                  {selectedChatForAction
+                    ? getResolvedDisplayName(
+                        {
+                          username: selectedChatForAction.username,
+                          name: selectedChatForAction.title,
+                        },
+                        selectedChatForAction.title,
+                      )
+                    : ''}
+                </Text>
+                {selectedChatForAction?.username && (
+                  <Text style={[styles.actionChatUsername, { color: colors.primaryIndigo }]}>
+                    {selectedChatForAction.username}
+                  </Text>
+                )}
+              </View>
+            </View>
+
+            <View style={[styles.actionDivider, { backgroundColor: colors.cardBorder }]} />
+
+            {/* Mark as Read */}
+            <TouchableOpacity
+              style={styles.actionRow}
+              onPress={() => {
+                if (selectedChatForAction) {
+                  markConversationRead(selectedChatForAction.id);
+                  showToast('Marked as read', 'info', 1200);
+                }
+                setSelectedChatForAction(null);
+              }}
+            >
+              <CheckCheck size={20} color={colors.primaryIndigo} />
+              <Text style={[styles.actionRowText, { color: colors.textPrimary }]}>
+                Mark as Read
+              </Text>
+            </TouchableOpacity>
+
+            {/* Clear Messages */}
+            <TouchableOpacity
+              style={styles.actionRow}
+              onPress={() => {
+                if (selectedChatForAction) {
+                  clearMessages(selectedChatForAction.id);
+                  showToast('Chat cleared', 'info', 1500);
+                }
+                setSelectedChatForAction(null);
+              }}
+            >
+              <Eraser size={20} color="#F59E0B" />
+              <Text style={[styles.actionRowText, { color: colors.textPrimary }]}>
+                Clear Messages
+              </Text>
+            </TouchableOpacity>
+
+            {/* Delete Chat */}
+            <TouchableOpacity
+              style={styles.actionRow}
+              onPress={() => {
+                setShowDeleteConfirmModal(true);
+              }}
+            >
+              <Trash2 size={20} color="#EF4444" />
+              <Text style={[styles.actionRowText, { color: '#EF4444', fontWeight: '700' }]}>
+                Delete Chat
+              </Text>
+            </TouchableOpacity>
+
+            <View style={[styles.actionDivider, { backgroundColor: colors.cardBorder }]} />
+
+            {/* Cancel Button */}
+            <TouchableOpacity
+              style={styles.actionCancelBtn}
+              onPress={() => setSelectedChatForAction(null)}
+            >
+              <Text style={[styles.actionCancelText, { color: colors.textSecondary }]}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Delete Confirmation Modal */}
+      <Modal
+        visible={showDeleteConfirmModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          setShowDeleteConfirmModal(false);
+          setSelectedChatForAction(null);
+        }}
+      >
+        <View style={styles.confirmModalOverlay}>
+          <View
+            style={[
+              styles.confirmModalCard,
+              { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+            ]}
+          >
+            <View style={styles.confirmIconCircle}>
+              <Trash2 size={28} color="#EF4444" />
+            </View>
+            <Text style={[styles.confirmModalTitle, { color: colors.textPrimary }]}>
+              Delete this chat?
+            </Text>
+            <Text style={[styles.confirmModalDesc, { color: colors.textSecondary }]}>
+              Messages will be permanently deleted from this device for{' '}
+              <Text style={{ fontWeight: '700', color: colors.textPrimary }}>
+                {selectedChatForAction
+                  ? getResolvedDisplayName(
+                      {
+                        username: selectedChatForAction.username,
+                        name: selectedChatForAction.title,
+                      },
+                      selectedChatForAction.title,
+                    )
+                  : 'this contact'}
+              </Text>
+              .
+            </Text>
+
+            <View style={styles.confirmModalButtons}>
+              <TouchableOpacity
+                style={[
+                  styles.confirmBtnSecondary,
+                  { backgroundColor: colors.bg, borderColor: colors.cardBorder },
+                ]}
+                onPress={() => {
+                  setShowDeleteConfirmModal(false);
+                  setSelectedChatForAction(null);
+                }}
+              >
+                <Text style={[styles.confirmBtnSecondaryText, { color: colors.textPrimary }]}>
+                  Cancel
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.confirmBtnDanger, { backgroundColor: '#EF4444' }]}
+                onPress={() => {
+                  if (selectedChatForAction) {
+                    deleteConversation(selectedChatForAction.id);
+                    showToast('Chat deleted', 'success', 1500);
+                  }
+                  setShowDeleteConfirmModal(false);
+                  setSelectedChatForAction(null);
+                }}
+              >
+                <Text style={styles.confirmBtnDangerText}>Delete Chat</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       {/* Dynamic Bottom Navigation Bar */}
       <View
         style={[
@@ -1408,11 +1682,30 @@ const styles = StyleSheet.create({
     position: 'absolute',
     right: 0,
     bottom: 0,
-    width: 10,
-    height: 10,
-    borderRadius: 5,
+    width: 11,
+    height: 11,
+    borderRadius: 5.5,
     backgroundColor: '#22C55E',
     borderWidth: 2,
+  },
+  offlineBadgeCard: {
+    position: 'absolute',
+    right: -2,
+    bottom: -2,
+    width: 13,
+    height: 13,
+    borderRadius: 6.5,
+    borderWidth: 1.5,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  offlineDotSmall: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    marginLeft: 6,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   cardContent: {
     flex: 1,
@@ -1434,6 +1727,12 @@ const styles = StyleSheet.create({
   },
   cardTime: {
     fontSize: 12,
+  },
+  cardMenuBtn: {
+    padding: 4,
+    marginLeft: 2,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   cardSubtitleRow: {
     flexDirection: 'row',
@@ -1891,5 +2190,149 @@ const styles = StyleSheet.create({
     left: 0,
     height: 2,
     borderRadius: 1,
+  },
+  // WhatsApp-style Action Sheet Modal
+  actionModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    justifyContent: 'flex-end',
+    padding: 16,
+    paddingBottom: Platform.OS === 'ios' ? 34 : 20,
+  },
+  actionModalCard: {
+    borderRadius: 24,
+    borderWidth: 1,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.35,
+    shadowRadius: 20,
+    elevation: 10,
+  },
+  actionModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+  },
+  actionAvatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  actionAvatarText: {
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  actionChatTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  actionChatUsername: {
+    fontSize: 13,
+    fontWeight: '600',
+    marginTop: 2,
+  },
+  actionDivider: {
+    height: 1,
+    width: '100%',
+  },
+  actionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: 15,
+  },
+  actionRowText: {
+    fontSize: 15,
+    fontWeight: '600',
+    marginLeft: 14,
+  },
+  actionCancelBtn: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 16,
+  },
+  actionCancelText: {
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  // Delete Confirmation Modal
+  confirmModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  confirmModalCard: {
+    width: '100%',
+    maxWidth: 360,
+    borderRadius: 24,
+    padding: 24,
+    borderWidth: 1,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.4,
+    shadowRadius: 24,
+    elevation: 12,
+  },
+  confirmIconCircle: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: 'rgba(239, 68, 68, 0.12)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  confirmModalTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  confirmModalDesc: {
+    fontSize: 14,
+    lineHeight: 20,
+    textAlign: 'center',
+    marginBottom: 24,
+  },
+  confirmModalButtons: {
+    flexDirection: 'row',
+    width: '100%',
+    gap: 12,
+  },
+  confirmBtnSecondary: {
+    flex: 1,
+    paddingVertical: 13,
+    borderRadius: 14,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  confirmBtnSecondaryText: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  confirmBtnDanger: {
+    flex: 1,
+    paddingVertical: 13,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#EF4444',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  confirmBtnDangerText: {
+    color: '#FFF',
+    fontSize: 14,
+    fontWeight: '700',
   },
 });
