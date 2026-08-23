@@ -21,6 +21,7 @@ import { socketService } from '../services/socket';
 import {
   getDeterministicConversationId,
   getResolvedDisplayName,
+  syncContactsWithBackend,
 } from '../services/contactsService';
 
 interface ChatContextType {
@@ -96,6 +97,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
   activeConversationIdRef.current = activeConversationId;
   const userProfileRef = useRef(userProfile);
   userProfileRef.current = userProfile;
+  const sentReceiptsSetRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (authProfile) {
@@ -106,6 +108,12 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }));
     }
   }, [authProfile, authPhone]);
+
+  useEffect(() => {
+    if (token) {
+      syncContactsWithBackend(token).catch(() => {});
+    }
+  }, [token]);
 
   useEffect(() => {
     // 1. Load stored profile
@@ -231,6 +239,9 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
           payload.senderName || 'Friend',
         );
 
+        const cleanSender = (payload.senderId || payload.senderName || '')
+          .replace(/^@+/, '')
+          .toLowerCase();
         const incomingMsg: ChatMessage = {
           id: payload.serverMessageId || `msg_${Date.now()}`,
           conversationId: canonicalConvId,
@@ -238,17 +249,24 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
           isMe: false,
           time: timeStr,
           status: 'DELIVERED',
+          createdAtMs: payload.createdAt ? new Date(payload.createdAt).getTime() : Date.now(),
+          createdAt: payload.createdAt || new Date().toISOString(),
           imagePath: payload.imagePath,
           isStarred: false,
         };
 
-        dispatch(appendMessage({ conversationId: canonicalConvId, message: incomingMsg }));
-        if (payload.conversationId && payload.conversationId !== canonicalConvId) {
-          dispatch(appendMessage({ conversationId: payload.conversationId, message: incomingMsg }));
-        }
-        if (payload.senderId) {
-          const cleanSender = payload.senderId.replace(/^@+/, '');
-          dispatch(appendMessage({ conversationId: `conv_${cleanSender}`, message: incomingMsg }));
+        // Append to all relevant conversation keys to guarantee instant rendering
+        const appendKeys = new Set<string>([
+          canonicalConvId,
+          payload.conversationId,
+          `conv_${cleanSender}`,
+          `direct_me_${cleanSender}`,
+          `room_${canonicalConvId}`,
+          `room_${payload.conversationId}`,
+        ].filter(Boolean) as string[]);
+
+        for (const k of appendKeys) {
+          dispatch(appendMessage({ conversationId: k, message: incomingMsg }));
         }
 
         // Ensure conversation exists in main chat list with updated lastMessage and resolved title
@@ -258,8 +276,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
             c.id === payload.conversationId ||
             (c.username &&
               payload.senderId &&
-              c.username.replace(/^@+/, '').toLowerCase() ===
-                payload.senderId.replace(/^@+/, '').toLowerCase()) ||
+              c.username.replace(/^@+/, '').toLowerCase() === cleanSender) ||
             c.title.toLowerCase() === resolvedTitle.toLowerCase(),
         );
 
@@ -280,12 +297,19 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
           );
         }
 
-        // If user is currently looking at this active conversation, send READ receipt (Violet Tick)
-        if (
+        // Send receipt ONCE without looping
+        const isUserLooking =
           activeConversationIdRef.current === canonicalConvId ||
-          activeConversationIdRef.current === payload.conversationId
-        ) {
-          socketService.sendReceipt(incomingMsg.id, canonicalConvId, 'READ');
+          activeConversationIdRef.current === payload.conversationId ||
+          (activeConversationIdRef.current &&
+            cleanSender &&
+            activeConversationIdRef.current.includes(cleanSender));
+
+        const receiptType = isUserLooking ? 'READ' : 'DELIVERED';
+        const receiptKey = `${incomingMsg.id}_${receiptType}`;
+        if (!sentReceiptsSetRef.current.has(receiptKey)) {
+          sentReceiptsSetRef.current.add(receiptKey);
+          socketService.sendReceipt(incomingMsg.id, canonicalConvId, receiptType);
         }
       },
 
@@ -440,6 +464,8 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       isMe,
       time: timeStr,
       status: 'SERVER_RECEIVED',
+      createdAtMs: Date.now(),
+      createdAt: new Date().toISOString(),
       imagePath,
       isStarred: false,
     };

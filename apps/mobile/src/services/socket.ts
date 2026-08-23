@@ -1,11 +1,9 @@
 import { Platform } from 'react-native';
 import { io, Socket } from 'socket.io-client';
 import { devInspector } from './devInspectorService';
+import { serverConfig } from './serverConfig';
 
-// 🌐 LIVE CLOUD WEBSOCKET URL (Render.com)
-export const LIVE_SOCKET_URL = 'https://chatting-app-rme6.onrender.com';
-
-export const SOCKET_URL = process.env.EXPO_PUBLIC_SOCKET_URL || LIVE_SOCKET_URL;
+export const getSocketUrl = () => serverConfig.getSocketUrl();
 
 export interface SocketMessagePayload {
   serverMessageId?: string;
@@ -48,12 +46,32 @@ class RealtimeSocketService {
     }) => void;
   };
 
+  constructor() {
+    // Listen for environment toggle (Local <-> Live) and auto-reconnect
+    serverConfig.subscribe(() => {
+      if (this.currentUserId) {
+        this.reconnect();
+      }
+    });
+  }
+
   public isConnected(): boolean {
     return Boolean(this.socket && this.socket.connected);
   }
 
   public getSocketId(): string | null {
     return this.socket?.id || null;
+  }
+
+  public reconnect() {
+    if (this.socket) {
+      this.socket.disconnect();
+      this.socket.removeAllListeners();
+      this.socket = null;
+    }
+    if (this.currentUserId) {
+      this.connect(this.currentUserId);
+    }
   }
 
   public connect(
@@ -90,8 +108,10 @@ class RealtimeSocketService {
       this.socket = null;
     }
 
+    const activeSocketUrl = getSocketUrl();
+
     try {
-      this.socket = io(SOCKET_URL, {
+      this.socket = io(activeSocketUrl, {
         transports: ['websocket'],
         autoConnect: true,
         reconnection: true,
@@ -108,6 +128,7 @@ class RealtimeSocketService {
         devInspector.logSocket('connect', 'incoming', {
           socketId: this.socket?.id,
           userId: this.currentUserId,
+          serverUrl: activeSocketUrl,
         });
       });
 
@@ -126,9 +147,6 @@ class RealtimeSocketService {
             sender,
             text,
           });
-
-          // Send DELIVERED receipt back to server immediately
-          this.sendReceipt(serverMsgId, convId, 'DELIVERED');
 
           if (this.callbacks?.onMessageReceived) {
             this.callbacks.onMessageReceived({

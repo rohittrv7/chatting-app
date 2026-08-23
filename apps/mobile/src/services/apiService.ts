@@ -3,11 +3,9 @@ import { safeStorage } from './storageHelper';
 import { AUTH_STORAGE_KEYS } from '../store/authSlice';
 import { UserProfile } from '../types';
 import { devInspector } from './devInspectorService';
+import { serverConfig } from './serverConfig';
 
-// 🌐 LIVE CLOUD BACKEND URL (Render.com)
-export const LIVE_API_URL = 'https://chatting-app-rme6.onrender.com/api/v1';
-
-export const BACKEND_BASE_URL = process.env.EXPO_PUBLIC_API_URL || LIVE_API_URL;
+export const getApiBaseUrl = () => serverConfig.getApiBaseUrl();
 
 export interface RequestOtpResponse {
   success: boolean;
@@ -48,7 +46,7 @@ export const apiService = {
    */
   async requestOtp(phoneNumber: string): Promise<RequestOtpResponse> {
     const startTime = Date.now();
-    const url = `${BACKEND_BASE_URL}/auth/otp/request`;
+    const url = `${getApiBaseUrl()}/auth/otp/request`;
     const reqBody = { phoneNumber };
 
     try {
@@ -117,7 +115,7 @@ export const apiService = {
    */
   async verifyOtp(phoneNumber: string, otp: string): Promise<VerifyOtpResponse> {
     const startTime = Date.now();
-    const url = `${BACKEND_BASE_URL}/auth/otp/verify`;
+    const url = `${getApiBaseUrl()}/auth/otp/verify`;
     const reqBody = {
       phoneNumber,
       otp,
@@ -230,7 +228,7 @@ export const apiService = {
       if (!storedRefreshToken) return null;
 
       const startTime = Date.now();
-      const url = `${BACKEND_BASE_URL}/auth/token/refresh`;
+      const url = `${getApiBaseUrl()}/auth/token/refresh`;
       const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -285,7 +283,7 @@ export const apiService = {
    */
   async updateProfile(token: string, profile: UserProfile): Promise<boolean> {
     const startTime = Date.now();
-    const url = `${BACKEND_BASE_URL}/auth/profile`;
+    const url = `${getApiBaseUrl()}/auth/profile`;
     const reqBody = {
       name: profile.name,
       username: profile.username,
@@ -401,7 +399,7 @@ export const apiService = {
     fromRedisCache?: boolean;
   }> {
     const startTime = Date.now();
-    const url = `${BACKEND_BASE_URL}/auth/contacts/sync`;
+    const url = `${getApiBaseUrl()}/auth/contacts/sync`;
     const reqBody = { phoneNumbers };
 
     try {
@@ -507,7 +505,7 @@ export const apiService = {
     if (!cleanQuery) return [];
 
     const startTime = Date.now();
-    const url = `${BACKEND_BASE_URL}/auth/users/search?q=${encodeURIComponent(cleanQuery)}`;
+    const url = `${getApiBaseUrl()}/auth/users/search?q=${encodeURIComponent(cleanQuery)}`;
 
     try {
       const response = await fetch(url, {

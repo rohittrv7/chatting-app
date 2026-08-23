@@ -11,6 +11,7 @@ import { Server, Socket } from 'socket.io';
 import { Logger, Inject, forwardRef } from '@nestjs/common';
 import { MessageService } from './message.service';
 import { MessageRedisService } from './message-redis.service';
+import { PrismaService } from '../../database/prisma.service';
 import {
   SocketEvent,
   SendMessageDto,
@@ -33,12 +34,67 @@ export class MessageGateway implements OnGatewayConnection, OnGatewayDisconnect 
     @Inject(forwardRef(() => MessageService))
     private readonly messageService: MessageService,
     private readonly messageRedisService: MessageRedisService,
+    private readonly prisma: PrismaService,
   ) {}
 
-  private registerUserOnline(userId: string, socketId: string) {
+  private async registerUserOnline(userId: string, socketId: string, client?: Socket) {
     if (!userId) return;
     const clean = userId.replace(/^@+/, '').toLowerCase();
-    const keys = [userId.toLowerCase(), clean, `@${clean}`];
+    const digits = clean.replace(/\D/g, '');
+    const keys = new Set<string>([userId.toLowerCase(), clean, `@${clean}`]);
+    if (digits) keys.add(digits);
+
+    try {
+      const dbUser = await this.prisma.user.findFirst({
+        where: {
+          OR: [
+            { username: { equals: clean, mode: 'insensitive' } },
+            { phoneNumber: { contains: clean } },
+            { id: clean },
+            { displayName: { contains: clean, mode: 'insensitive' } },
+          ],
+        },
+      });
+
+      if (dbUser) {
+        if (dbUser.username) {
+          const u = dbUser.username.toLowerCase();
+          keys.add(u);
+          keys.add(`@${u}`);
+          if (client) {
+            client.join(`user_${u}`);
+            client.join(`user_@${u}`);
+          }
+        }
+        if (dbUser.id) {
+          keys.add(dbUser.id);
+          if (client) client.join(`user_${dbUser.id}`);
+        }
+        if (dbUser.phoneNumber) {
+          const p = dbUser.phoneNumber.replace(/\D/g, '');
+          keys.add(dbUser.phoneNumber);
+          keys.add(p);
+          if (client) {
+            client.join(`user_${dbUser.phoneNumber}`);
+            client.join(`user_${p}`);
+          }
+        }
+        if (dbUser.displayName) {
+          const d = dbUser.displayName.toLowerCase().replace(/\s+/g, '');
+          const d1 = dbUser.displayName.toLowerCase().split(' ')[0];
+          keys.add(d);
+          keys.add(d1);
+          keys.add(`@${d}`);
+          keys.add(`@${d1}`);
+          if (client) {
+            client.join(`user_${d}`);
+            client.join(`user_${d1}`);
+            client.join(`user_@${d}`);
+            client.join(`user_@${d1}`);
+          }
+        }
+      }
+    } catch {}
 
     for (const key of keys) {
       if (!this.activeUserSockets.has(key)) {
@@ -58,7 +114,8 @@ export class MessageGateway implements OnGatewayConnection, OnGatewayDisconnect 
   private unregisterUserOnline(userId: string, socketId: string) {
     if (!userId) return;
     const clean = userId.replace(/^@+/, '').toLowerCase();
-    const keys = [userId.toLowerCase(), clean, `@${clean}`];
+    const digits = clean.replace(/\D/g, '');
+    const keys = [userId.toLowerCase(), clean, `@${clean}`, digits].filter(Boolean);
     let isCompletelyOffline = false;
 
     for (const key of keys) {
@@ -85,10 +142,12 @@ export class MessageGateway implements OnGatewayConnection, OnGatewayDisconnect 
   public isUserOnline(userId: string): boolean {
     if (!userId) return false;
     const clean = userId.replace(/^@+/, '').toLowerCase();
+    const digits = clean.replace(/\D/g, '');
     return (
       (this.activeUserSockets.get(userId.toLowerCase())?.size ?? 0) > 0 ||
       (this.activeUserSockets.get(clean)?.size ?? 0) > 0 ||
-      (this.activeUserSockets.get(`@${clean}`)?.size ?? 0) > 0
+      (this.activeUserSockets.get(`@${clean}`)?.size ?? 0) > 0 ||
+      (digits ? (this.activeUserSockets.get(digits)?.size ?? 0) > 0 : false)
     );
   }
 
@@ -104,7 +163,7 @@ export class MessageGateway implements OnGatewayConnection, OnGatewayDisconnect 
       client.join(`user_${cleanUserId}`);
       client.join(`user_@${cleanUserId}`);
 
-      this.registerUserOnline(userId, client.id);
+      await this.registerUserOnline(userId, client.id, client);
       console.log(
         `\x1b[90m[${new Date().toTimeString().split(' ')[0]}]\x1b[0m \x1b[1m\x1b[92m🟢 [SOCKET CONNECTED]\x1b[0m User: \x1b[1m\x1b[97m${userId}\x1b[0m (Socket ID: ${client.id})`,
       );
@@ -231,34 +290,61 @@ export class MessageGateway implements OnGatewayConnection, OnGatewayDisconnect 
 
     if (payload.receiverId) {
       const cleanReceiver = payload.receiverId.replace(/^@+/, '');
-      this.server
-        .to(`user_${payload.receiverId}`)
-        .emit(SocketEvent.MESSAGE_RECEIVE, receivePayload);
-      this.server.to(`user_${payload.receiverId}`).emit('message:receive', receivePayload);
+      const receiverRooms = new Set<string>([
+        `user_${payload.receiverId}`,
+        `user_${cleanReceiver}`,
+        `user_@${cleanReceiver}`,
+        `user_${cleanReceiver.toLowerCase()}`,
+        `user_@${cleanReceiver.toLowerCase()}`,
+      ]);
 
-      this.server.to(`user_${cleanReceiver}`).emit(SocketEvent.MESSAGE_RECEIVE, receivePayload);
-      this.server.to(`user_${cleanReceiver}`).emit('message:receive', receivePayload);
+      // Resolve recipient from DB to hit all registered rooms/aliases
+      try {
+        const targetUser = await this.prisma.user.findFirst({
+          where: {
+            OR: [
+              { username: { equals: cleanReceiver, mode: 'insensitive' } },
+              { displayName: { contains: cleanReceiver, mode: 'insensitive' } },
+              { phoneNumber: { contains: cleanReceiver } },
+              { id: cleanReceiver },
+            ],
+          },
+        });
 
-      this.server.to(`user_@${cleanReceiver}`).emit(SocketEvent.MESSAGE_RECEIVE, receivePayload);
-      this.server.to(`user_@${cleanReceiver}`).emit('message:receive', receivePayload);
+        if (targetUser) {
+          if (targetUser.username) {
+            const u = targetUser.username.toLowerCase();
+            receiverRooms.add(`user_${targetUser.username}`);
+            receiverRooms.add(`user_@${targetUser.username}`);
+            receiverRooms.add(`user_${u}`);
+            receiverRooms.add(`user_@${u}`);
+          }
+          if (targetUser.id) receiverRooms.add(`user_${targetUser.id}`);
+          if (targetUser.phoneNumber) {
+            receiverRooms.add(`user_${targetUser.phoneNumber}`);
+            receiverRooms.add(`user_${targetUser.phoneNumber.replace(/\D/g, '')}`);
+          }
+          if (targetUser.displayName) {
+            const d = targetUser.displayName.toLowerCase().replace(/\s+/g, '');
+            const d1 = targetUser.displayName.toLowerCase().split(' ')[0];
+            receiverRooms.add(`user_${d}`);
+            receiverRooms.add(`user_${d1}`);
+            receiverRooms.add(`user_@${d}`);
+            receiverRooms.add(`user_@${d1}`);
+          }
+        }
+      } catch {}
 
-      this.server
-        .to(`user_${cleanReceiver.toLowerCase()}`)
-        .emit(SocketEvent.MESSAGE_RECEIVE, receivePayload);
-      this.server.to(`user_${cleanReceiver.toLowerCase()}`).emit('message:receive', receivePayload);
-
-      this.server
-        .to(`user_@${cleanReceiver.toLowerCase()}`)
-        .emit(SocketEvent.MESSAGE_RECEIVE, receivePayload);
-      this.server
-        .to(`user_@${cleanReceiver.toLowerCase()}`)
-        .emit('message:receive', receivePayload);
+      for (const room of receiverRooms) {
+        this.server.to(room).emit(SocketEvent.MESSAGE_RECEIVE, receivePayload);
+        this.server.to(room).emit('message:receive', receivePayload);
+      }
     } else {
       this.server.to(`room_${convId}`).emit(SocketEvent.MESSAGE_RECEIVE, receivePayload);
       this.server.to(`room_${convId}`).emit('message:receive', receivePayload);
     }
 
-    // 4. Check recipient read/delivered status
+    // 4. Check if recipient is actively looking at this conversation for immediate READ receipt
     if (payload.receiverId) {
       this.messageRedisService
         .getUserActiveConversation(payload.receiverId)
@@ -276,20 +362,6 @@ export class MessageGateway implements OnGatewayConnection, OnGatewayDisconnect 
               convId,
               serverMessageId,
               DeliveryStatus.READ,
-            );
-          } else {
-            const deliveredReceipt = {
-              messageId: serverMessageId,
-              clientMessageId: clientMsgId,
-              conversationId: convId,
-              status: DeliveryStatus.DELIVERED,
-            };
-            client.emit(SocketEvent.MESSAGE_RECEIPT_UPDATE, deliveredReceipt);
-            client.emit('message:receipt', deliveredReceipt);
-            this.messageRedisService.updateCachedMessageStatus(
-              convId,
-              serverMessageId,
-              DeliveryStatus.DELIVERED,
             );
           }
         })
@@ -331,7 +403,7 @@ export class MessageGateway implements OnGatewayConnection, OnGatewayDisconnect 
   }
 
   /**
-   * Handle Receipt Updates (Single Tick ✓ -> Double Tick ✓✓ -> Violet Tick ✓✓)
+   * Handle Receipt Updates (Single Tick ✓ -> Double Tick ✓✓ -> Blue Tick 🩵)
    */
   @SubscribeMessage(SocketEvent.MESSAGE_RECEIPT_UPDATE)
   async handleV1ReceiptUpdate(
@@ -358,9 +430,7 @@ export class MessageGateway implements OnGatewayConnection, OnGatewayDisconnect 
 
     try {
       await this.messageService.updateReceipt(payload.messageId, userId, deviceId, payload.status);
-    } catch {
-      // Ignored if receipt upsert fails
-    }
+    } catch {}
 
     if (payload.conversationId) {
       await this.messageRedisService.updateCachedMessageStatus(
@@ -382,15 +452,14 @@ export class MessageGateway implements OnGatewayConnection, OnGatewayDisconnect 
       `\x1b[90m[${new Date().toTimeString().split(' ')[0]}]\x1b[0m \x1b[1m\x1b[96m👁️ [RECEIPT UPDATE]\x1b[0m User: \x1b[97m${userId}\x1b[0m -> Status: \x1b[1m\x1b[93m${payload.status}\x1b[0m | MsgId: ${payload.messageId}`,
     );
 
-    // Fan-out receipt update to all clients in the conversation
+    // Fan-out receipt update to both the conversation room and all connected sockets
     if (payload.conversationId) {
       this.server
         .to(`room_${payload.conversationId}`)
         .emit(SocketEvent.MESSAGE_RECEIPT_UPDATE, receiptPayload);
       this.server.to(`room_${payload.conversationId}`).emit('message:receipt', receiptPayload);
-    } else {
-      this.server.emit(SocketEvent.MESSAGE_RECEIPT_UPDATE, receiptPayload);
-      this.server.emit('message:receipt', receiptPayload);
     }
+    this.server.emit(SocketEvent.MESSAGE_RECEIPT_UPDATE, receiptPayload);
+    this.server.emit('message:receipt', receiptPayload);
   }
 }

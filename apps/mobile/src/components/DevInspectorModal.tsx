@@ -11,6 +11,7 @@ import {
   TextInput,
   Platform,
   Share,
+  ActivityIndicator,
 } from 'react-native';
 import {
   devInspector,
@@ -19,6 +20,7 @@ import {
   SocketLogEntry,
 } from '../services/devInspectorService';
 import { invalidateContactsCache } from '../services/contactsService';
+import { serverConfig, ServerEnvironment } from '../services/serverConfig';
 import {
   X,
   Activity,
@@ -34,6 +36,8 @@ import {
   RefreshCw,
   ChevronDown,
   ChevronUp,
+  Cloud,
+  Laptop,
 } from 'lucide-react-native';
 
 export const DevInspectorModal: React.FC = () => {
@@ -45,8 +49,12 @@ export const DevInspectorModal: React.FC = () => {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [searchFilter, setSearchFilter] = useState<string>('');
   const [pingStatus, setPingStatus] = useState<string | null>(null);
+  const [pingTimeMs, setPingTimeMs] = useState<number | null>(null);
+  const [isPinging, setIsPinging] = useState<boolean>(false);
 
-  const [showFloatingPill, setShowFloatingPill] = useState<boolean>(false);
+  const [serverEnv, setServerEnv] = useState<ServerEnvironment>(serverConfig.getEnvironment());
+  const [customIpInput, setCustomIpInput] = useState<string>(serverConfig.getLocalIp());
+  const [showFloatingPill, setShowFloatingPill] = useState<boolean>(true);
 
   useEffect(() => {
     const updateLogs = () => {
@@ -57,9 +65,47 @@ export const DevInspectorModal: React.FC = () => {
     };
 
     updateLogs();
-    const unsubscribe = devInspector.subscribe(updateLogs);
-    return () => unsubscribe();
+    const unsubLogs = devInspector.subscribe(updateLogs);
+    const unsubServer = serverConfig.subscribe((env, ip) => {
+      setServerEnv(env);
+      setCustomIpInput(ip);
+    });
+
+    return () => {
+      unsubLogs();
+      unsubServer();
+    };
   }, []);
+
+  const handleToggleServer = async () => {
+    setIsPinging(true);
+    const nextEnv = await serverConfig.toggleEnvironment();
+    setServerEnv(nextEnv);
+    setPingStatus(`Switched to ${nextEnv.toUpperCase()} Server!`);
+    setIsPinging(false);
+    setTimeout(() => setPingStatus(null), 3500);
+  };
+
+  const handleTestPing = async () => {
+    setIsPinging(true);
+    const start = Date.now();
+    const baseUrl = serverConfig.getApiBaseUrl();
+    try {
+      const pingUrl = `${baseUrl}/ping`;
+      const res = await fetch(pingUrl, { method: 'GET' }).catch(() => null);
+      const elapsed = Date.now() - start;
+      setPingTimeMs(elapsed);
+      if (res && res.ok) {
+        setPingStatus(`🟢 ${serverEnv.toUpperCase()} Server Online (${elapsed}ms)`);
+      } else {
+        setPingStatus(`🟡 ${serverEnv.toUpperCase()} Responded in ${elapsed}ms (status ${res?.status || 'OK'})`);
+      }
+    } catch (e: any) {
+      setPingStatus(`🔴 ${serverEnv.toUpperCase()} Offline: ${e?.message || 'Unreachable'}`);
+    }
+    setIsPinging(false);
+    setTimeout(() => setPingStatus(null), 4000);
+  };
 
   const handleClear = () => {
     devInspector.clearAllLogs();
@@ -74,6 +120,9 @@ export const DevInspectorModal: React.FC = () => {
   const handleExportLogs = async () => {
     const report = {
       exportedAt: new Date().toISOString(),
+      activeServer: serverEnv,
+      apiBaseUrl: serverConfig.getApiBaseUrl(),
+      socketUrl: serverConfig.getSocketUrl(),
       apiLogs,
       uiLogs,
       socketLogs,
@@ -99,30 +148,34 @@ export const DevInspectorModal: React.FC = () => {
       ? Math.round(apiLogs.reduce((acc, l) => acc + l.durationMs, 0) / apiLogs.length)
       : 0;
 
+  const isLocal = serverEnv === 'local';
+
   return (
     <>
-      {/* Floating Developer Badge (Only shown if toggled, positioned at top-right corner) */}
+      {/* Floating Developer Badge (Always visible on top right) */}
       {showFloatingPill && (
         <View style={styles.floatingBadgeContainer}>
           <TouchableOpacity
-            style={styles.floatingBadge}
+            style={[
+              styles.floatingBadge,
+              { backgroundColor: isLocal ? '#059669' : '#2563EB' },
+            ]}
             activeOpacity={0.85}
             onPress={() => devInspector.setVisible(true)}
           >
-            <Activity size={12} color="#FFF" style={{ marginRight: 4 }} />
-            <Text style={styles.floatingBadgeText}>DEV</Text>
+            {isLocal ? (
+              <Laptop size={13} color="#FFF" style={{ marginRight: 5 }} />
+            ) : (
+              <Cloud size={13} color="#FFF" style={{ marginRight: 5 }} />
+            )}
+            <Text style={styles.floatingBadgeText}>
+              {isLocal ? 'LOCAL:3000' : 'LIVE:RENDER'}
+            </Text>
             {apiLogs.length > 0 && (
               <View style={styles.badgeCounter}>
                 <Text style={styles.badgeCounterText}>{apiLogs.length}</Text>
               </View>
             )}
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.floatingBadgeClose}
-            onPress={() => setShowFloatingPill(false)}
-            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-          >
-            <X size={12} color="#FFF" />
           </TouchableOpacity>
         </View>
       )}
@@ -144,9 +197,9 @@ export const DevInspectorModal: React.FC = () => {
                 <Zap size={18} color="#6366F1" />
               </View>
               <View style={{ marginLeft: 10 }}>
-                <Text style={styles.modalHeaderTitle}>Developer Live Inspector</Text>
+                <Text style={styles.modalHeaderTitle}>Developer Live Monitor</Text>
                 <Text style={styles.modalHeaderSubtitle}>
-                  Real-time API, Redis Cache, UI Renders & WebSockets
+                  Active Backend: <Text style={{ color: isLocal ? '#10B981' : '#38BDF8', fontWeight: '800' }}>{serverEnv.toUpperCase()}</Text> • Telemetry & Sockets
                 </Text>
               </View>
             </View>
@@ -159,6 +212,70 @@ export const DevInspectorModal: React.FC = () => {
               <X size={20} color="#94A3B8" />
             </TouchableOpacity>
           </View>
+
+          {/* Quick Server Switcher Banner */}
+          <View style={styles.serverSwitcherBanner}>
+            <View style={styles.serverSwitcherInfo}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 2 }}>
+                <View
+                  style={[
+                    styles.serverStatusDot,
+                    { backgroundColor: isLocal ? '#10B981' : '#38BDF8' },
+                  ]}
+                />
+                <Text style={styles.serverSwitcherLabel}>
+                  {isLocal ? '💻 LOCAL HOST BACKEND' : '☁️ LIVE RENDER CLOUD'}
+                </Text>
+              </View>
+              <Text style={styles.serverSwitcherUrl} numberOfLines={1}>
+                {serverConfig.getApiBaseUrl()}
+              </Text>
+            </View>
+
+            <View style={{ flexDirection: 'row', gap: 8 }}>
+              <TouchableOpacity
+                style={styles.pingTestBtn}
+                onPress={handleTestPing}
+                disabled={isPinging}
+              >
+                {isPinging ? (
+                  <ActivityIndicator size="small" color="#FFF" />
+                ) : (
+                  <Text style={styles.pingTestBtnText}>Ping</Text>
+                )}
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.switchServerBtn,
+                  { backgroundColor: isLocal ? '#2563EB' : '#059669' },
+                ]}
+                onPress={handleToggleServer}
+              >
+                <Text style={styles.switchServerBtnText}>
+                  {isLocal ? '⚡ Switch to LIVE' : '💻 Switch to LOCAL'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          {pingStatus && (
+            <View
+              style={[
+                styles.pingStatusAlert,
+                { backgroundColor: pingStatus.includes('Offline') ? 'rgba(239, 68, 68, 0.2)' : 'rgba(16, 185, 129, 0.2)' },
+              ]}
+            >
+              <Text
+                style={[
+                  styles.pingStatusText,
+                  { color: pingStatus.includes('Offline') ? '#EF4444' : '#10B981' },
+                ]}
+              >
+                {pingStatus}
+              </Text>
+            </View>
+          )}
 
           {/* Metrics Quick Strip */}
           <View style={styles.metricsStrip}>
@@ -455,12 +572,27 @@ export const DevInspectorModal: React.FC = () => {
 
                 <View style={styles.systemCard}>
                   <View style={styles.systemRow}>
+                    <Text style={styles.systemKey}>Active Server Mode</Text>
+                    <Text
+                      style={[
+                        styles.systemVal,
+                        { color: isLocal ? '#10B981' : '#38BDF8', fontWeight: '800' },
+                      ]}
+                    >
+                      {isLocal ? '💻 LOCAL HOST (PC)' : '☁️ LIVE CLOUD (RENDER)'}
+                    </Text>
+                  </View>
+                  <View style={styles.systemRow}>
                     <Text style={styles.systemKey}>Backend API Endpoint</Text>
-                    <Text style={styles.systemVal}>http://10.36.162.14:3000/api/v1</Text>
+                    <Text style={styles.systemVal} numberOfLines={1}>
+                      {serverConfig.getApiBaseUrl()}
+                    </Text>
                   </View>
                   <View style={styles.systemRow}>
                     <Text style={styles.systemKey}>WebSocket Gateway</Text>
-                    <Text style={styles.systemVal}>http://10.36.162.14:3000</Text>
+                    <Text style={styles.systemVal} numberOfLines={1}>
+                      {serverConfig.getSocketUrl()}
+                    </Text>
                   </View>
                   <View style={styles.systemRow}>
                     <Text style={styles.systemKey}>Redis Caching</Text>
@@ -474,6 +606,34 @@ export const DevInspectorModal: React.FC = () => {
                   </View>
                 </View>
 
+                <View style={styles.systemCard}>
+                  <Text style={styles.systemKey}>LOCAL PC IP ADDRESS (Wi-Fi)</Text>
+                  <Text style={{ color: '#64748B', fontSize: 11, marginTop: 2, marginBottom: 8 }}>
+                    Current PC IP from ipconfig: 10.145.28.14 (or localhost for Web)
+                  </Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    <TextInput
+                      style={styles.ipInput}
+                      value={customIpInput}
+                      onChangeText={setCustomIpInput}
+                      placeholder="e.g. 10.145.28.14"
+                      placeholderTextColor="#64748B"
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                    />
+                    <TouchableOpacity
+                      style={styles.ipSaveBtn}
+                      onPress={async () => {
+                        await serverConfig.setLocalIp(customIpInput);
+                        setPingStatus(`Saved Local IP: ${customIpInput}`);
+                        handleTestPing();
+                      }}
+                    >
+                      <Text style={styles.ipSaveBtnText}>Save IP</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+
                 {pingStatus && (
                   <View style={styles.pingAlert}>
                     <CheckCircle size={16} color="#10B981" style={{ marginRight: 6 }} />
@@ -481,9 +641,21 @@ export const DevInspectorModal: React.FC = () => {
                   </View>
                 )}
 
-                <TouchableOpacity style={styles.systemBtn} onPress={handleInvalidateCache}>
-                  <RefreshCw size={16} color="#FFF" style={{ marginRight: 8 }} />
-                  <Text style={styles.systemBtnText}>Clear Local & Server Contacts Cache</Text>
+                <TouchableOpacity style={styles.systemBtn} onPress={handleToggleServer}>
+                  <Zap size={16} color="#FFF" style={{ marginRight: 8 }} />
+                  <Text style={styles.systemBtnText}>
+                    {isLocal ? '⚡ Switch to LIVE Cloud (Render)' : '💻 Switch to LOCAL Backend (PC)'}
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.systemBtn, { backgroundColor: '#1E293B', marginTop: 10 }]}
+                  onPress={handleInvalidateCache}
+                >
+                  <RefreshCw size={16} color="#94A3B8" style={{ marginRight: 8 }} />
+                  <Text style={[styles.systemBtnText, { color: '#94A3B8' }]}>
+                    Clear Local & Server Contacts Cache
+                  </Text>
                 </TouchableOpacity>
               </ScrollView>
             )}
@@ -865,6 +1037,106 @@ const styles = StyleSheet.create({
   systemBtnText: {
     color: '#FFF',
     fontSize: 13,
+    fontWeight: '700',
+  },
+  // Server Switcher Banner Styles
+  serverSwitcherBanner: {
+    backgroundColor: '#131C2E',
+    marginHorizontal: 14,
+    marginTop: 8,
+    borderRadius: 14,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  serverSwitcherInfo: {
+    flex: 1,
+    marginRight: 10,
+  },
+  serverStatusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginRight: 6,
+  },
+  serverSwitcherLabel: {
+    color: '#F8FAFC',
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  serverSwitcherUrl: {
+    color: '#94A3B8',
+    fontSize: 11,
+    marginTop: 2,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+  },
+  pingTestBtn: {
+    backgroundColor: '#1E293B',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  pingTestBtnText: {
+    color: '#38BDF8',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  switchServerBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  switchServerBtnText: {
+    color: '#FFF',
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  pingStatusAlert: {
+    marginHorizontal: 14,
+    marginTop: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  pingStatusText: {
+    fontSize: 12,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  ipInput: {
+    flex: 1,
+    backgroundColor: '#0B0F19',
+    color: '#38BDF8',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    height: 38,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    fontSize: 13,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+  },
+  ipSaveBtn: {
+    backgroundColor: '#6366F1',
+    paddingHorizontal: 14,
+    height: 38,
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  ipSaveBtnText: {
+    color: '#FFF',
+    fontSize: 12,
     fontWeight: '700',
   },
 });

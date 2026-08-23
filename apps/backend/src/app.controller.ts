@@ -23,6 +23,18 @@ export class AppController {
     };
   }
 
+  @Get('ping')
+  @Public()
+  @ApiOperation({ summary: 'Instant public ping endpoint for latency testing' })
+  getPing() {
+    return {
+      status: 'ok',
+      message: 'pong',
+      timestamp: new Date().toISOString(),
+      environment: process.env.NODE_ENV || 'development',
+    };
+  }
+
   @Head()
   @Public()
   @ApiOperation({ summary: 'Render & Load Balancer HEAD probe' })

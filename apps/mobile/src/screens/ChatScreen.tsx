@@ -160,17 +160,43 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
   const roomMessages = useMemo(() => {
     const rawList = messagesMap[conversationId] || [];
     const directList = messagesMap[canonicalConvId] || [];
-    const handleClean = (resolvedUsername || '').replace(/^@+/, '');
+    const handleClean = (resolvedUsername || '').replace(/^@+/, '').toLowerCase();
+    const titleClean = (title || '').replace(/^@+/, '').toLowerCase().replace(/[^a-z0-9]/g, '_');
+
     const altList = handleClean ? messagesMap[`conv_${handleClean}`] || [] : [];
+    const titleList = titleClean ? messagesMap[`conv_${titleClean}`] || [] : [];
+    const directMeList = handleClean ? messagesMap[`direct_me_${handleClean}`] || [] : [];
 
     const map = new Map<string, ChatMessage>();
-    for (const msg of [...rawList, ...altList, ...directList]) {
+    for (const msg of [...rawList, ...altList, ...titleList, ...directMeList, ...directList]) {
       if (msg && msg.id) {
         map.set(msg.id, msg);
       }
     }
-    return Array.from(map.values()).sort((a, b) => (a.time || '').localeCompare(b.time || ''));
-  }, [messagesMap, conversationId, canonicalConvId, resolvedUsername]);
+
+    // Also check for any direct conversations between me and this contact in messagesMap
+    if (handleClean) {
+      for (const [key, msgs] of Object.entries(messagesMap)) {
+        if (
+          key.includes(handleClean) ||
+          (titleClean && titleClean.length >= 3 && key.includes(titleClean))
+        ) {
+          if (Array.isArray(msgs)) {
+            for (const msg of msgs) {
+              if (msg && msg.id) map.set(msg.id, msg);
+            }
+          }
+        }
+      }
+    }
+
+    return Array.from(map.values()).sort((a, b) => {
+      const tA = a.createdAtMs || (a.createdAt ? new Date(a.createdAt).getTime() : 0);
+      const tB = b.createdAtMs || (b.createdAt ? new Date(b.createdAt).getTime() : 0);
+      if (tA && tB && tA !== tB) return tA - tB;
+      return (a.time || '').localeCompare(b.time || '');
+    });
+  }, [messagesMap, conversationId, canonicalConvId, resolvedUsername, title]);
 
   useEffect(() => {
     const showSub = Keyboard.addListener(
@@ -389,7 +415,19 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
                 {msg.time}
               </Text>
               {isMe && (
-                <CheckCheck size={14} color="rgba(255, 255, 255, 0.8)" style={{ marginLeft: 4 }} />
+                <>
+                  {msg.status === 'READ' ? (
+                    <CheckCheck size={14} color="#38BDF8" style={{ marginLeft: 4 }} />
+                  ) : msg.status === 'DELIVERED' ? (
+                    <CheckCheck
+                      size={14}
+                      color="rgba(255, 255, 255, 0.85)"
+                      style={{ marginLeft: 4 }}
+                    />
+                  ) : (
+                    <Check size={14} color="rgba(255, 255, 255, 0.6)" style={{ marginLeft: 4 }} />
+                  )}
+                </>
               )}
             </View>
           </View>
@@ -451,18 +489,18 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
             {isMe && (
               <>
                 {msg.status === 'READ' ? (
-                  // 💜 Violet Double Tick when read by recipient
-                  <CheckCheck size={14} color="#C4B5FD" style={{ marginLeft: 4 }} />
+                  // 🩵 Bright Electric Blue Double Tick (WhatsApp Read Receipt)
+                  <CheckCheck size={14} color="#38BDF8" style={{ marginLeft: 4 }} />
                 ) : msg.status === 'DELIVERED' ? (
                   // 🤍 Double White Tick when delivered to recipient
                   <CheckCheck
                     size={14}
-                    color="rgba(255, 255, 255, 0.9)"
+                    color="rgba(255, 255, 255, 0.85)"
                     style={{ marginLeft: 4 }}
                   />
                 ) : (
                   // 🔘 Single Tick when sent to server
-                  <Check size={14} color="rgba(255, 255, 255, 0.65)" style={{ marginLeft: 4 }} />
+                  <Check size={14} color="rgba(255, 255, 255, 0.6)" style={{ marginLeft: 4 }} />
                 )}
               </>
             )}

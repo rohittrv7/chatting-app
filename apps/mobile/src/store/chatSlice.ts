@@ -113,16 +113,18 @@ export const chatSlice = createSlice({
         status: 'SENDING' | 'SENT' | 'DELIVERED' | 'READ' | 'SERVER_RECEIVED';
       }>,
     ) => {
-      const { conversationId, messageId, clientMessageId, status } = action.payload;
+      const { messageId, clientMessageId, status } = action.payload;
 
-      // Update in specific conversation if provided or across all conversations
-      const convIds = conversationId ? [conversationId] : Object.keys(state.messagesMap);
-
-      for (const cId of convIds) {
+      // Always update across all conversation buckets to guarantee consistency
+      for (const cId of Object.keys(state.messagesMap)) {
         const msgs = state.messagesMap[cId];
-        if (msgs) {
+        if (msgs && Array.isArray(msgs)) {
           for (const msg of msgs) {
-            if (msg.id === messageId || (clientMessageId && msg.id === clientMessageId)) {
+            if (
+              msg.id === messageId ||
+              (clientMessageId && msg.id === clientMessageId) ||
+              (messageId && msg.id && (msg.id.includes(messageId) || messageId.includes(msg.id)))
+            ) {
               msg.status = status;
             }
           }

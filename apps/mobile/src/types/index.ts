@@ -19,6 +19,8 @@ export interface ChatMessage {
   isMe: boolean;
   time: string;
   status: 'SENDING' | 'SENT' | 'DELIVERED' | 'READ' | 'SERVER_RECEIVED';
+  createdAtMs?: number;
+  createdAt?: string;
   isFile?: boolean;
   fileSize?: string;
   imagePath?: string;

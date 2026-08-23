@@ -54,16 +54,25 @@ let cachedSyncResult: {
  * Both users always get the exact same conversation ID!
  */
 export const getDeterministicConversationId = (userA: string, userB: string): string => {
-  const cleanA = (userA || 'user_a')
-    .replace(/^@+/, '')
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]/g, '_');
-  const cleanB = (userB || 'user_b')
-    .replace(/^@+/, '')
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]/g, '_');
+  const resolveHandle = (raw: string): string => {
+    if (!raw) return 'user';
+    const clean = raw.replace(/^@+/, '').trim();
+    const contacts = cachedSyncResult?.allSorted || cachedDeviceContacts || [];
+    for (const c of contacts) {
+      if (
+        c.username &&
+        (c.name?.toLowerCase() === clean.toLowerCase() ||
+          (clean.length >= 7 && c.phone?.replace(/\D/g, '').endsWith(clean.replace(/\D/g, ''))) ||
+          c.userId === clean)
+      ) {
+        return c.username.replace(/^@+/, '').toLowerCase().trim();
+      }
+    }
+    return clean.toLowerCase().replace(/[^a-z0-9]/g, '_');
+  };
+
+  const cleanA = resolveHandle(userA);
+  const cleanB = resolveHandle(userB);
 
   const sorted = [cleanA, cleanB].sort();
   return `direct_${sorted[0]}_${sorted[1]}`;
@@ -187,6 +196,18 @@ export const fetchDeviceContacts = async (
  * Returns contacts sorted with Registered App Users on TOP!
  * Cached in memory to prevent repeated network calls.
  */
+export const syncContactsWithBackend = async (
+  token?: string,
+  forceRefresh = false,
+): Promise<{
+  registered: DeviceContact[];
+  unregistered: DeviceContact[];
+  allSorted: DeviceContact[];
+}> => {
+  const { contacts } = await fetchDeviceContacts(forceRefresh);
+  return syncContactsWithServer(contacts, token, forceRefresh);
+};
+
 export const syncContactsWithServer = async (
   contacts: DeviceContact[],
   token?: string,
