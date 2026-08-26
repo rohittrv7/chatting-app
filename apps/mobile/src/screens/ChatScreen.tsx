@@ -17,6 +17,8 @@ import {
   KeyboardAvoidingView,
   Linking,
   Keyboard,
+  Animated,
+  PanResponder,
 } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList, ChatMessage } from '../types';
@@ -107,6 +109,95 @@ export interface PendingMedia {
   base64?: string;
 }
 
+interface SwipeableBubbleProps {
+  children: React.ReactNode;
+  isMe: boolean;
+  onSwipeReply: () => void;
+  colors: any;
+}
+
+const SwipeableBubble: React.FC<SwipeableBubbleProps> = ({
+  children,
+  isMe,
+  onSwipeReply,
+  colors,
+}) => {
+  const panX = useRef(new Animated.Value(0)).current;
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onMoveShouldSetPanResponder: (_, gestureState) => {
+        return (
+          Math.abs(gestureState.dx) > 12 && Math.abs(gestureState.dx) > Math.abs(gestureState.dy)
+        );
+      },
+      onPanResponderMove: (_, gestureState) => {
+        const maxDrag = 65;
+        let dx = gestureState.dx;
+        if (dx > maxDrag) dx = maxDrag + (dx - maxDrag) * 0.2;
+        if (dx < -maxDrag) dx = -maxDrag + (dx + maxDrag) * 0.2;
+        panX.setValue(dx);
+      },
+      onPanResponderRelease: (_, gestureState) => {
+        if (Math.abs(gestureState.dx) > 35) {
+          onSwipeReply();
+        }
+        Animated.spring(panX, {
+          toValue: 0,
+          useNativeDriver: true,
+          bounciness: 6,
+        }).start();
+      },
+      onPanResponderTerminate: () => {
+        Animated.spring(panX, {
+          toValue: 0,
+          useNativeDriver: true,
+        }).start();
+      },
+    }),
+  ).current;
+
+  return (
+    <View style={{ position: 'relative', width: '100%' }}>
+      {/* Reply indicator behind bubble */}
+      <Animated.View
+        style={{
+          position: 'absolute',
+          top: '50%',
+          marginTop: -16,
+          [isMe ? 'right' : 'left']: 12,
+          width: 32,
+          height: 32,
+          borderRadius: 16,
+          backgroundColor: colors.surface,
+          borderWidth: 1,
+          borderColor: colors.cardBorder,
+          justifyContent: 'center',
+          alignItems: 'center',
+          opacity: panX.interpolate({
+            inputRange: [-50, -18, 0, 18, 50],
+            outputRange: [1, 0.6, 0, 0.6, 1],
+          }),
+          transform: [
+            {
+              scale: panX.interpolate({
+                inputRange: [-50, -18, 0, 18, 50],
+                outputRange: [1, 0.7, 0.3, 0.7, 1],
+              }),
+            },
+          ],
+        }}
+      >
+        <Reply size={16} color={colors.primaryIndigo} />
+      </Animated.View>
+
+      <Animated.View {...panResponder.panHandlers} style={{ transform: [{ translateX: panX }] }}>
+        {children}
+      </Animated.View>
+    </View>
+  );
+};
+
 export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
   const { conversationId, title } = route.params;
 
@@ -116,6 +207,7 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
     addMessage,
     updateMessageUploadProgress,
     toggleStarMessage,
+    reactToMessage,
     deleteConversation,
     clearMessages,
     openChatRoom,
@@ -159,6 +251,11 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
     currentConv?.recipientDbId || (route.params as any)?.recipientDbId || resolvedRecipientId;
   const targetAvatarUrl =
     currentConv?.avatarUrl || (route.params as any)?.avatarUrl || matchedContact?.avatarUrl;
+  const targetUsername =
+    currentConv?.username ||
+    (route.params as any)?.username ||
+    (matchedContact?.username ? `@${matchedContact.username.replace(/^@+/, '')}` : undefined);
+  const targetPhone = currentConv?.phone || (route.params as any)?.phone || matchedContact?.phone;
 
   // Auto-resolve recipient UUID from server if missing on mount
   useEffect(() => {
@@ -247,9 +344,11 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
   const [isSendingLocation, setIsSendingLocation] = useState(false);
 
   const flatListRef = useRef<FlatList>(null);
+  const textInputRef = useRef<TextInput>(null);
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const typingDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastTypingSentRef = useRef(false);
+  const lastTypingPingTimeRef = useRef(0);
 
   // ── Mount / unmount ───────────────────────────────────────────────────────
   useEffect(() => {
@@ -277,10 +376,13 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
 
         if (!senderMatch && !convMatch) return;
 
-        setIsRemoteTyping(data.isTyping);
         if (data.isTyping) {
+          setIsRemoteTyping(true);
           if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-          typingTimeoutRef.current = setTimeout(() => setIsRemoteTyping(false), 3500);
+          typingTimeoutRef.current = setTimeout(() => setIsRemoteTyping(false), 4000);
+        } else {
+          if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+          setIsRemoteTyping(false);
         }
       },
     };
@@ -397,18 +499,23 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
       if (!effectiveTargetId) return;
 
       if (text.length > 0) {
-        if (!lastTypingSentRef.current) {
+        const now = Date.now();
+        // Send typing heartbeat if not sent yet OR if last sent was > 1800ms ago
+        if (!lastTypingSentRef.current || now - lastTypingPingTimeRef.current > 1800) {
           lastTypingSentRef.current = true;
+          lastTypingPingTimeRef.current = now;
           socketService.sendTyping(conversationId, effectiveTargetId, true);
         }
         if (typingDebounceTimerRef.current) clearTimeout(typingDebounceTimerRef.current);
         typingDebounceTimerRef.current = setTimeout(() => {
           lastTypingSentRef.current = false;
+          lastTypingPingTimeRef.current = 0;
           socketService.sendTyping(conversationId, effectiveTargetId, false);
         }, 2500);
       } else if (text.length === 0 && lastTypingSentRef.current) {
         if (typingDebounceTimerRef.current) clearTimeout(typingDebounceTimerRef.current);
         lastTypingSentRef.current = false;
+        lastTypingPingTimeRef.current = 0;
         socketService.sendTyping(conversationId, effectiveTargetId, false);
       }
     },
@@ -424,12 +531,6 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
     },
     [handleSendMessage],
   );
-
-  const handleReact = useCallback((msg: ChatMessage, emoji: string) => {
-    setReactingToMsg(null);
-    // Optimistic local reaction update — TODO wire to backend when reaction endpoint added
-    showToast(`${emoji} reacted`, 'info', 1200);
-  }, []);
 
   const handlePickImage = async () => {
     try {
@@ -467,11 +568,23 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
     setMediaCaption('');
     list.forEach(async (media, idx) => {
       const captionToUse = idx === 0 ? cap : '';
+      let mediaUrlToSend = media.uri;
+
+      // Upload directly to Backblaze B2 via backend if base64 and token available
+      if (token && media.base64) {
+        try {
+          const uploadRes = await apiService.uploadMediaFile(token, media.base64, media.name);
+          if (uploadRes.success && uploadRes.url) {
+            mediaUrlToSend = uploadRes.url;
+          }
+        } catch {}
+      }
+
       addMessage(
         conversationId,
         captionToUse,
         true,
-        media.uri,
+        mediaUrlToSend,
         undefined,
         recipientDbId,
         resolvedDisplayName,
@@ -561,6 +674,11 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
     } catch {}
   };
 
+  const handleReact = (msg: ChatMessage, emoji: string) => {
+    setReactingToMsg(null);
+    reactToMessage(conversationId, msg.id, emoji, recipientDbId);
+  };
+
   // ── Bubble renderer ────────────────────────────────────────────────────────
   const renderBubble = useCallback(
     ({ item: msg }: { item: ChatMessage }) => {
@@ -581,175 +699,191 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
         return <Check size={14} color="rgba(255,255,255,0.6)" style={{ marginLeft: 4 }} />;
       };
 
+      const activeReactions = msg.reactions
+        ? Object.entries(msg.reactions).filter(([_, count]) => count > 0)
+        : [];
+
       return (
-        <View
-          style={[styles.bubbleWrapper, isMe ? styles.bubbleWrapperMe : styles.bubbleWrapperOther]}
+        <SwipeableBubble
+          isMe={isMe}
+          onSwipeReply={() => {
+            setReplyTo(msg);
+            textInputRef.current?.focus();
+          }}
+          colors={colors}
         >
-          <TouchableOpacity
-            activeOpacity={0.85}
-            onLongPress={() => setReactingToMsg(msg)}
+          <View
             style={[
-              styles.bubble,
-              isMe
-                ? styles.bubbleMe
-                : [
-                    styles.bubbleOther,
-                    { backgroundColor: colors.surface, borderColor: colors.cardBorder },
-                  ],
+              styles.bubbleWrapper,
+              isMe ? styles.bubbleWrapperMe : styles.bubbleWrapperOther,
             ]}
           >
-            {/* Reply quote */}
-            {msg.replyTo && (
-              <View
-                style={[
-                  styles.replyQuote,
-                  { borderLeftColor: isMe ? 'rgba(255,255,255,0.6)' : colors.primaryIndigo },
-                ]}
-              >
-                <Text
+            <TouchableOpacity
+              activeOpacity={0.85}
+              onLongPress={() => setReactingToMsg(msg)}
+              style={[
+                styles.bubble,
+                isMe
+                  ? styles.bubbleMe
+                  : [
+                      styles.bubbleOther,
+                      { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+                    ],
+                activeReactions.length > 0 && { marginBottom: 12 },
+              ]}
+            >
+              {/* Reply quote */}
+              {msg.replyTo && (
+                <View
                   style={[
-                    styles.replyQuoteText,
-                    { color: isMe ? 'rgba(255,255,255,0.8)' : colors.primaryIndigo },
+                    styles.replyQuote,
+                    { borderLeftColor: isMe ? 'rgba(255,255,255,0.6)' : colors.primaryIndigo },
                   ]}
-                  numberOfLines={1}
                 >
-                  {msg.replyTo.isMe ? 'You' : resolvedDisplayName}
-                </Text>
-                <Text
-                  style={[
-                    styles.replyQuoteBody,
-                    { color: isMe ? 'rgba(255,255,255,0.7)' : colors.textSecondary },
-                  ]}
-                  numberOfLines={2}
-                >
-                  {msg.replyTo.imagePath ? '📷 Photo' : msg.replyTo.text}
-                </Text>
-              </View>
-            )}
-
-            {/* Image */}
-            {msg.imagePath ? (
-              <TouchableOpacity
-                activeOpacity={0.9}
-                onPress={() => setSelectedPhotoMsg(msg)}
-                style={styles.imageBubbleWrapper}
-              >
-                <Image
-                  source={{ uri: msg.imagePath }}
-                  style={styles.chatImageBubble}
-                  resizeMode="cover"
-                />
-                {msg.isUploading ? (
-                  <View style={styles.uploadProgressOverlay}>
-                    <ActivityIndicator size="small" color="#FFF" />
-                    <Text style={styles.uploadProgressText}>{msg.uploadProgress ?? 45}%</Text>
-                  </View>
-                ) : (
-                  <View style={styles.imageOverlayBadge}>
-                    <ZoomIn size={13} color="#FFF" />
-                  </View>
-                )}
-              </TouchableOpacity>
-            ) : null}
-
-            {/* Location */}
-            {msg.location ? (
-              <TouchableOpacity
-                style={[
-                  styles.locationBubble,
-                  { backgroundColor: isMe ? 'rgba(255,255,255,0.15)' : colors.cardBorder },
-                ]}
-                onPress={() => {
-                  const { lat, lng } = msg.location!;
-                  const url =
-                    Platform.OS === 'ios'
-                      ? `maps://?q=${lat},${lng}`
-                      : `geo:${lat},${lng}?q=${lat},${lng}`;
-                  Linking.openURL(url).catch(() =>
-                    Linking.openURL(`https://maps.google.com/?q=${lat},${lng}`),
-                  );
-                }}
-              >
-                <MapPin
-                  size={18}
-                  color={isMe ? '#FFF' : colors.primaryIndigo}
-                  style={{ marginRight: 8 }}
-                />
-                <View style={{ flex: 1 }}>
                   <Text
-                    style={[styles.locationLabel, { color: isMe ? '#FFF' : colors.textPrimary }]}
-                    numberOfLines={2}
+                    style={[
+                      styles.replyQuoteText,
+                      { color: isMe ? 'rgba(255,255,255,0.8)' : colors.primaryIndigo },
+                    ]}
+                    numberOfLines={1}
                   >
-                    {msg.location.label ||
-                      `${msg.location.lat.toFixed(4)}, ${msg.location.lng.toFixed(4)}`}
+                    {msg.replyTo.isMe ? 'You' : resolvedDisplayName}
                   </Text>
                   <Text
                     style={[
-                      styles.locationCoords,
+                      styles.replyQuoteBody,
                       { color: isMe ? 'rgba(255,255,255,0.7)' : colors.textSecondary },
                     ]}
+                    numberOfLines={2}
                   >
-                    Tap to open in Maps
+                    {msg.replyTo.imagePath ? '📷 Photo' : msg.replyTo.text}
                   </Text>
                 </View>
-              </TouchableOpacity>
-            ) : null}
-
-            {/* Text */}
-            {msg.text?.trim() ? (
-              <Text style={[styles.msgText, { color: isMe ? '#FFF' : colors.textPrimary }]}>
-                {msg.text}
-              </Text>
-            ) : null}
-
-            {/* Footer: time + ticks */}
-            <View style={styles.bubbleFooter}>
-              {msg.isStarred && (
-                <Star size={11} color="#FBBF24" fill="#FBBF24" style={{ marginRight: 4 }} />
               )}
-              <Text
-                style={[
-                  styles.timeText,
-                  { color: isMe ? 'rgba(255,255,255,0.7)' : colors.textSecondary },
-                ]}
-              >
-                {msg.time}
-              </Text>
-              {statusIcon()}
-            </View>
 
-            {/* Reactions row */}
-            {msg.reactions && Object.keys(msg.reactions).length > 0 && (
-              <View style={styles.reactionsRow}>
-                {Object.entries(msg.reactions).map(([emoji, count]) => (
-                  <TouchableOpacity
-                    key={emoji}
-                    style={[styles.reactionBubble, { backgroundColor: colors.cardBorder }]}
-                    onPress={() => handleReact(msg, emoji)}
-                  >
-                    <Text style={styles.reactionEmoji}>{emoji}</Text>
-                    {count > 1 && (
-                      <Text style={[styles.reactionCount, { color: colors.textSecondary }]}>
-                        {count}
-                      </Text>
-                    )}
-                  </TouchableOpacity>
-                ))}
+              {/* Image */}
+              {msg.imagePath ? (
+                <TouchableOpacity
+                  activeOpacity={0.9}
+                  onPress={() => setSelectedPhotoMsg(msg)}
+                  style={styles.imageBubbleWrapper}
+                >
+                  <Image
+                    source={{ uri: msg.imagePath }}
+                    style={styles.chatImageBubble}
+                    resizeMode="cover"
+                  />
+                  {msg.isUploading ? (
+                    <View style={styles.uploadProgressOverlay}>
+                      <ActivityIndicator size="small" color="#FFF" />
+                      <Text style={styles.uploadProgressText}>{msg.uploadProgress ?? 45}%</Text>
+                    </View>
+                  ) : (
+                    <View style={styles.imageOverlayBadge}>
+                      <ZoomIn size={13} color="#FFF" />
+                    </View>
+                  )}
+                </TouchableOpacity>
+              ) : null}
+
+              {/* Location */}
+              {msg.location ? (
+                <TouchableOpacity
+                  style={[
+                    styles.locationBubble,
+                    { backgroundColor: isMe ? 'rgba(255,255,255,0.15)' : colors.cardBorder },
+                  ]}
+                  onPress={() => {
+                    const { lat, lng } = msg.location!;
+                    const url =
+                      Platform.OS === 'ios'
+                        ? `maps://?q=${lat},${lng}`
+                        : `geo:${lat},${lng}?q=${lat},${lng}`;
+                    Linking.openURL(url).catch(() =>
+                      Linking.openURL(`https://maps.google.com/?q=${lat},${lng}`),
+                    );
+                  }}
+                >
+                  <MapPin
+                    size={18}
+                    color={isMe ? '#FFF' : colors.primaryIndigo}
+                    style={{ marginRight: 8 }}
+                  />
+                  <View style={{ flex: 1 }}>
+                    <Text
+                      style={[styles.locationLabel, { color: isMe ? '#FFF' : colors.textPrimary }]}
+                      numberOfLines={2}
+                    >
+                      {msg.location.label ||
+                        `${msg.location.lat.toFixed(4)}, ${msg.location.lng.toFixed(4)}`}
+                    </Text>
+                    <Text
+                      style={[
+                        styles.locationCoords,
+                        { color: isMe ? 'rgba(255,255,255,0.7)' : colors.textSecondary },
+                      ]}
+                    >
+                      Tap to open in Maps
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+              ) : null}
+
+              {/* Text */}
+              {msg.text?.trim() ? (
+                <Text style={[styles.msgText, { color: isMe ? '#FFF' : colors.textPrimary }]}>
+                  {msg.text}
+                </Text>
+              ) : null}
+
+              {/* Footer: time + ticks */}
+              <View style={styles.bubbleFooter}>
+                {msg.isStarred && (
+                  <Star size={11} color="#FBBF24" fill="#FBBF24" style={{ marginRight: 4 }} />
+                )}
+                <Text
+                  style={[
+                    styles.timeText,
+                    { color: isMe ? 'rgba(255,255,255,0.7)' : colors.textSecondary },
+                  ]}
+                >
+                  {msg.time}
+                </Text>
+                {statusIcon()}
               </View>
-            )}
-          </TouchableOpacity>
 
-          {/* Swipe-to-reply button */}
-          <TouchableOpacity
-            style={[styles.replyBtn, isMe ? { left: -36 } : { right: -36 }]}
-            onPress={() => setReplyTo(msg)}
-          >
-            <Reply size={16} color={colors.textSecondary} />
-          </TouchableOpacity>
-        </View>
+              {/* 🌟 WhatsApp Style Floating Reaction Badge */}
+              {activeReactions.length > 0 && (
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={() => setReactingToMsg(msg)}
+                  style={[
+                    styles.whatsappReactionPill,
+                    isMe ? styles.whatsappReactionPillMe : styles.whatsappReactionPillOther,
+                    {
+                      backgroundColor: colors.surface,
+                      borderColor: colors.cardBorder,
+                    },
+                  ]}
+                >
+                  {activeReactions.map(([emoji]) => (
+                    <Text key={emoji} style={styles.whatsappReactionEmoji}>
+                      {emoji}
+                    </Text>
+                  ))}
+                  {activeReactions.reduce((acc, [_, count]) => acc + count, 0) > 1 && (
+                    <Text style={[styles.whatsappReactionCount, { color: colors.textSecondary }]}>
+                      {activeReactions.reduce((acc, [_, count]) => acc + count, 0)}
+                    </Text>
+                  )}
+                </TouchableOpacity>
+              )}
+            </TouchableOpacity>
+          </View>
+        </SwipeableBubble>
       );
     },
-    [colors, resolvedDisplayName],
+    [colors, resolvedDisplayName, conversationId, recipientDbId, reactToMessage],
   );
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -1017,6 +1151,7 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
             ]}
           >
             <TextInput
+              ref={textInputRef}
               style={[styles.textInput, { color: colors.textPrimary }]}
               placeholder="Type a message..."
               placeholderTextColor={colors.textSecondary}
@@ -1269,7 +1404,7 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
             <View style={styles.profileHeroSection}>
               {targetAvatarUrl ? (
                 <Image
-                  source={{ uri: targetAvatarUrl }}
+                  source={{ uri: apiService.getResolvedMediaUrl(targetAvatarUrl) }}
                   style={styles.profileBigAvatarImage}
                   resizeMode="cover"
                 />
@@ -1283,10 +1418,36 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
               <Text style={[styles.profileHeroName, { color: colors.textPrimary }]}>
                 {resolvedDisplayName}
               </Text>
+              {targetUsername ? (
+                <Text
+                  style={{
+                    fontSize: 14,
+                    color: colors.primaryIndigo,
+                    fontWeight: '600',
+                    marginTop: 3,
+                  }}
+                >
+                  {targetUsername.startsWith('@') ? targetUsername : `@${targetUsername}`}
+                </Text>
+              ) : null}
+              {targetPhone ? (
+                <Text
+                  style={{
+                    fontSize: 13,
+                    color: colors.textSecondary,
+                    marginTop: 2,
+                  }}
+                >
+                  {targetPhone}
+                </Text>
+              ) : null}
               <Text
                 style={[
                   styles.profileHeroStatus,
-                  { color: isTargetOnline ? '#10B981' : colors.textSecondary },
+                  {
+                    color: isTargetOnline ? '#10B981' : colors.textSecondary,
+                    marginTop: 4,
+                  },
                 ]}
               >
                 {lastSeenLabel}
@@ -1954,4 +2115,35 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
   confirmBtnActionText: { color: '#FFF', fontSize: 14, fontWeight: '700' },
+  whatsappReactionPill: {
+    position: 'absolute',
+    bottom: -10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.18,
+    shadowRadius: 3,
+    elevation: 3,
+    zIndex: 10,
+  },
+  whatsappReactionPillMe: {
+    right: 8,
+  },
+  whatsappReactionPillOther: {
+    left: 8,
+  },
+  whatsappReactionEmoji: {
+    fontSize: 13,
+    marginHorizontal: 1,
+  },
+  whatsappReactionCount: {
+    fontSize: 11,
+    fontWeight: '700',
+    marginLeft: 3,
+  },
 });

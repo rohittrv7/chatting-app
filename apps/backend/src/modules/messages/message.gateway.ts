@@ -442,6 +442,44 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
   }
 
   // ─────────────────────────────────────────────────────────────────────────
+  // message:reaction  — emoji reaction on message
+  // ─────────────────────────────────────────────────────────────────────────
+
+  @SubscribeMessage('message:reaction')
+  async handleReaction(
+    @ConnectedSocket() client: Socket,
+    @MessageBody()
+    payload: { conversationId: string; messageId: string; receiverId?: string; emoji: string },
+  ) {
+    const userId: string = (client as any)._userId;
+    if (!userId || !payload?.messageId || !payload?.emoji) return;
+
+    let receiverId = payload.receiverId;
+    if (!receiverId && payload.conversationId) {
+      try {
+        const members = await this.prisma.conversationMember.findMany({
+          where: { conversationId: payload.conversationId },
+          select: { userId: true },
+        });
+        const other = members.find((m) => m.userId !== userId);
+        receiverId = other?.userId;
+      } catch {}
+    }
+
+    if (receiverId) {
+      this.server.to(`user:${receiverId}`).emit('message:reaction:update', {
+        conversationId: payload.conversationId,
+        messageId: payload.messageId,
+        emoji: payload.emoji,
+        senderId: userId,
+      });
+      this.logger.log(
+        `❤️  REACTION  uid=${userId} msg=${payload.messageId} emoji=${payload.emoji}`,
+      );
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
   // presence:query  — batch online status request
   // ─────────────────────────────────────────────────────────────────────────
 

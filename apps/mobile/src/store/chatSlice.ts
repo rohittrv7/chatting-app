@@ -209,6 +209,43 @@ export const chatSlice = createSlice({
       }
       safeStorage.setItem(CHAT_STORAGE_KEYS.MESSAGES, JSON.stringify(state.messagesMap));
     },
+    toggleMessageReaction: (
+      state,
+      action: PayloadAction<{
+        conversationId?: string;
+        messageId: string;
+        emoji: string;
+        senderIsMe: boolean;
+      }>,
+    ) => {
+      const { messageId, emoji, senderIsMe } = action.payload;
+      for (const cId of Object.keys(state.messagesMap)) {
+        const msgs = state.messagesMap[cId];
+        if (!msgs) continue;
+        for (const msg of msgs) {
+          if (msg.id === messageId) {
+            const rx: Record<string, number> = { ...(msg.reactions || {}) };
+            if (senderIsMe) {
+              const oldEmoji = msg.myReaction;
+              if (oldEmoji) {
+                rx[oldEmoji] = Math.max(0, (rx[oldEmoji] || 1) - 1);
+                if (rx[oldEmoji] === 0) delete rx[oldEmoji];
+              }
+              if (oldEmoji === emoji) {
+                msg.myReaction = undefined;
+              } else {
+                msg.myReaction = emoji;
+                rx[emoji] = (rx[emoji] || 0) + 1;
+              }
+            } else {
+              rx[emoji] = (rx[emoji] || 0) + 1;
+            }
+            msg.reactions = rx;
+          }
+        }
+      }
+      safeStorage.setItem(CHAT_STORAGE_KEYS.MESSAGES, JSON.stringify(state.messagesMap));
+    },
     removeConversation: (
       state,
       action: PayloadAction<{ conversationId: string; aliasIds?: string[] }>,
@@ -280,6 +317,7 @@ export const {
   updateMessageProgress,
   markAllMessagesRead,
   toggleStarMessage,
+  toggleMessageReaction,
   removeConversation,
   clearConversationMessages,
   setActiveConversationId,

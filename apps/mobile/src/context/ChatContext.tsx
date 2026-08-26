@@ -21,6 +21,7 @@ import {
   updateMessageProgress,
   markAllMessagesRead,
   toggleStarMessage as toggleStarRedux,
+  toggleMessageReaction as toggleReactionRedux,
   removeConversation,
   clearConversationMessages,
   setActiveConversationId,
@@ -96,6 +97,12 @@ interface ChatContextType {
   clearMessages: (conversationId: string, aliasIds?: string[]) => void;
   updateLastMessage: (conversationId: string, text: string, incrementUnread?: boolean) => void;
   toggleStarMessage: (conversationId: string, messageId: string) => boolean;
+  reactToMessage: (
+    conversationId: string,
+    messageId: string,
+    emoji: string,
+    receiverId?: string,
+  ) => void;
   markConversationRead: (conversationId: string) => void;
   openChatRoom: (conversationId: string) => void;
   closeChatRoom: (conversationId: string) => void;
@@ -128,6 +135,7 @@ const ChatContext = createContext<ChatContextType>({
   clearMessages: () => {},
   updateLastMessage: () => {},
   toggleStarMessage: () => false,
+  reactToMessage: () => {},
   markConversationRead: () => {},
   openChatRoom: () => {},
   closeChatRoom: () => {},
@@ -281,6 +289,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         onPresenceUpdate: _handlePresenceUpdate,
         onPresenceResult: _handlePresenceResult,
         onTypingUpdate: _handleTypingUpdate,
+        onReactionUpdate: _handleReactionUpdate,
         onMessageDeleted: _handleMessageDeleted,
       },
     });
@@ -394,7 +403,13 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       (c) => c.id === convId || (c.recipientDbId && c.recipientDbId === payload.senderId),
     );
     if (existingConv) {
-      _updateLastMessageInternal(existingConv.id, payload.text || '📷 Photo', !isUserLooking);
+      _updateLastMessageInternal(
+        existingConv.id,
+        payload.text || '📷 Photo',
+        !isUserLooking,
+        false,
+        'DELIVERED',
+      );
     } else {
       const matched = getResolvedContact({
         username: senderUsernameClean,
@@ -413,6 +428,8 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
           phone: payload.senderPhone || matched?.phone,
           lastMessage: payload.text || '📷 Photo',
           time: timeStr,
+          lastMessageIsMe: false,
+          lastMessageStatus: 'DELIVERED',
           unread: isUserLooking ? '0' : '1',
           avatar: resolvedTitle[0]?.toUpperCase() ?? 'C',
           isOnline: true,
@@ -552,6 +569,22 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     [],
   );
 
+  const _handleReactionUpdate = useCallback(
+    (data: { conversationId: string; messageId: string; emoji: string; senderId: string }) => {
+      const myDbId = (authUserIdRef.current ?? '').toLowerCase();
+      const isMe = myDbId ? (data.senderId || '').toLowerCase() === myDbId : false;
+      dispatch(
+        toggleReactionRedux({
+          conversationId: data.conversationId,
+          messageId: data.messageId,
+          emoji: data.emoji,
+          senderIsMe: isMe,
+        }),
+      );
+    },
+    [dispatch],
+  );
+
   // ─────────────────────────────────────────────────────────────────────────
   // Public API
   // ─────────────────────────────────────────────────────────────────────────
@@ -677,6 +710,23 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
 
         const existing = currentMap.get(sc.id);
+        const msgs = messagesMapRef.current[sc.id] || [];
+        const localLastMsg = msgs.length > 0 ? msgs[msgs.length - 1] : undefined;
+
+        const finalLastMsgIsMe =
+          lastMsgObj !== undefined
+            ? lastMsgIsMe
+            : localLastMsg !== undefined
+              ? localLastMsg.isMe
+              : (existing?.lastMessageIsMe ?? false);
+
+        const finalLastMsgStatus =
+          lastMsgObj !== undefined
+            ? lastMsgStatus
+            : localLastMsg !== undefined
+              ? localLastMsg.status
+              : existing?.lastMessageStatus;
+
         currentMap.set(sc.id, {
           id: sc.id,
           title: resolvedTitle,
@@ -685,11 +735,10 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
           avatarUrl: otherAvatar || matchedContact?.avatarUrl || existing?.avatarUrl,
           phone: otherPhone || matchedContact?.phone || existing?.phone,
           about: otherMember?.user?.about || matchedContact?.about || existing?.about,
-          lastMessage: existing?.lastMessage || lastMsgText,
-          time: existing?.time || lastMsgTime,
-          lastMessageStatus: existing?.lastMessageStatus || lastMsgStatus,
-          lastMessageIsMe:
-            existing?.lastMessageIsMe !== undefined ? existing.lastMessageIsMe : lastMsgIsMe,
+          lastMessage: lastMsgObj ? lastMsgText : existing?.lastMessage || lastMsgText,
+          time: lastMsgObj && lastMsgTime ? lastMsgTime : existing?.time || lastMsgTime,
+          lastMessageStatus: finalLastMsgStatus,
+          lastMessageIsMe: finalLastMsgIsMe,
           unread: existing?.unread || '0',
           avatar: resolvedTitle[0]?.toUpperCase() ?? 'C',
           isOnline: isUserOnline(otherDbId),
@@ -763,6 +812,18 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       dispatch(setMessagesForConversation({ conversationId: targetConvId, messages: sorted }));
       if (targetConvId !== conversationId) {
         dispatch(setMessagesForConversation({ conversationId, messages: sorted }));
+      }
+
+      if (activeConvIdRef.current === targetConvId || activeConvIdRef.current === conversationId) {
+        for (const msg of sorted) {
+          if (!msg.isMe && msg.status !== 'READ') {
+            const key = `${msg.id}_READ`;
+            if (!sentReceiptsRef.current.has(key)) {
+              sentReceiptsRef.current.add(key);
+              socketService.sendReceipt(msg.id, targetConvId, 'READ');
+            }
+          }
+        }
       }
     } catch {}
   };
@@ -890,6 +951,9 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       _updateLastMessageInternal(
         conversationId,
         text || (imagePath ? '📷 Photo' : location ? '📍 Location' : ''),
+        false,
+        true,
+        'SENDING',
       );
     } else {
       const matched = getResolvedContact({
@@ -906,6 +970,8 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
           phone: matched?.phone,
           lastMessage: text || (imagePath ? '📷 Photo' : location ? '📍 Location' : ''),
           time: timeStr,
+          lastMessageIsMe: true,
+          lastMessageStatus: 'SENDING',
           unread: '0',
           avatar: resolvedTitle[0]?.toUpperCase() ?? 'C',
           isOnline: isUserOnline(receiverId),
@@ -974,10 +1040,29 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return msg ? !msg.isStarred : true;
   };
 
+  const reactToMessage = (
+    conversationId: string,
+    messageId: string,
+    emoji: string,
+    receiverId?: string,
+  ) => {
+    dispatch(
+      toggleReactionRedux({
+        conversationId,
+        messageId,
+        emoji,
+        senderIsMe: true,
+      }),
+    );
+    socketService.sendReaction(conversationId, messageId, emoji, receiverId);
+  };
+
   const _updateLastMessageInternal = (
     conversationId: string,
     text: string,
     incrementUnread = false,
+    isMe = false,
+    status?: string,
   ) => {
     const now = new Date();
     const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
@@ -990,6 +1075,10 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
               ...c,
               lastMessage: text,
               time: timeStr,
+              lastMessageIsMe: isMe,
+              lastMessageStatus: (status ||
+                c.lastMessageStatus ||
+                (isMe ? 'SENT' : 'DELIVERED')) as any,
               unread: incrementUnread ? String(currentUnread + 1) : '0',
             };
           }
@@ -1056,7 +1145,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const markConversationRead = (conversationId: string) => {
     dispatch(markAllMessagesRead({ conversationId }));
-    const msgs = messagesMap[conversationId] || [];
+    const msgs = messagesMapRef.current[conversationId] || [];
     for (const msg of msgs) {
       if (!msg.isMe && msg.status !== 'READ') {
         const key = `${msg.id}_READ`;
@@ -1164,6 +1253,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         clearMessages,
         updateLastMessage,
         toggleStarMessage,
+        reactToMessage,
         markConversationRead,
         openChatRoom,
         closeChatRoom,

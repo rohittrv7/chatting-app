@@ -45,4 +45,8 @@ apps/mobile/ios/
 # Local IDE and tool configs
 .kiro/
 .idea/
-.vscode/
+.vscode/
+
+# Local file uploads
+uploads/
+apps/backend/uploads/

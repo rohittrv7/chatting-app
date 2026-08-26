@@ -21,7 +21,20 @@ import { useSelector } from 'react-redux';
 import { RootState } from '../store';
 import { apiService } from '../services/apiService';
 import * as ImagePicker from 'expo-image-picker';
-import { ArrowLeft, Camera, User, AtSign, Info, Phone, Check, QrCode } from 'lucide-react-native';
+import {
+  ArrowLeft,
+  Camera,
+  User,
+  AtSign,
+  Info,
+  Phone,
+  Check,
+  QrCode,
+  Eye,
+  Image as ImageIcon,
+  X,
+} from 'lucide-react-native';
+import { Modal } from 'react-native';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'EditProfile'>;
 
@@ -36,12 +49,33 @@ export const EditProfileScreen: React.FC<Props> = ({ navigation }) => {
   const [phone, setPhone] = useState(userProfile.phone);
   const [avatarUri, setAvatarUri] = useState<string | undefined>(userProfile.avatarUrl);
   const [isSaved, setIsSaved] = useState(false);
+  const [showAvatarMenuModal, setShowAvatarMenuModal] = useState(false);
+  const [showFullScreenAvatar, setShowFullScreenAvatar] = useState(false);
 
-  const handlePickAvatar = async () => {
+  const _processPickedImage = async (result: ImagePicker.ImagePickerResult) => {
+    if (!result.canceled && result.assets && result.assets.length > 0) {
+      const asset = result.assets[0];
+      setAvatarUri(asset.uri);
+      if (asset.base64 && token) {
+        apiService
+          .uploadAvatar(token, asset.base64)
+          .then((res) => {
+            if (res.avatarUrl) {
+              setAvatarUri(res.avatarUrl);
+              updateUserProfile({ avatarUrl: res.avatarUrl });
+            }
+          })
+          .catch((e) => console.warn('Avatar upload error:', e));
+      }
+    }
+  };
+
+  const handlePickFromGallery = async () => {
+    setShowAvatarMenuModal(false);
     try {
       const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (!permission.granted) {
-        Alert.alert('Permission Required', 'Permission to access media library is required!');
+        Alert.alert('Permission Required', 'Permission to access photo library is required!');
         return;
       }
 
@@ -52,24 +86,31 @@ export const EditProfileScreen: React.FC<Props> = ({ navigation }) => {
         aspect: [1, 1],
         base64: true,
       });
-
-      if (!result.canceled && result.assets && result.assets.length > 0) {
-        const asset = result.assets[0];
-        setAvatarUri(asset.uri);
-        if (asset.base64 && token) {
-          apiService
-            .uploadAvatar(token, asset.base64)
-            .then((res) => {
-              if (res.avatarUrl) {
-                setAvatarUri(res.avatarUrl);
-                updateUserProfile({ avatarUrl: res.avatarUrl });
-              }
-            })
-            .catch((e) => console.warn('Avatar upload error:', e));
-        }
-      }
+      await _processPickedImage(result);
     } catch (e) {
-      console.warn('Error selecting profile picture:', e);
+      console.warn('Error selecting photo:', e);
+    }
+  };
+
+  const handleTakePhoto = async () => {
+    setShowAvatarMenuModal(false);
+    try {
+      const permission = await ImagePicker.requestCameraPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert('Permission Required', 'Camera permission is required to take a photo!');
+        return;
+      }
+
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ['images'],
+        quality: 0.8,
+        allowsEditing: true,
+        aspect: [1, 1],
+        base64: true,
+      });
+      await _processPickedImage(result);
+    } catch (e) {
+      console.warn('Error taking photo:', e);
     }
   };
 
@@ -134,11 +175,14 @@ export const EditProfileScreen: React.FC<Props> = ({ navigation }) => {
           <View style={styles.avatarSection}>
             <TouchableOpacity
               activeOpacity={0.85}
-              onPress={handlePickAvatar}
+              onPress={() => setShowAvatarMenuModal(true)}
               style={styles.avatarWrapper}
             >
               {avatarUri ? (
-                <Image source={{ uri: avatarUri }} style={styles.avatarImage} />
+                <Image
+                  source={{ uri: apiService.getResolvedMediaUrl(avatarUri) }}
+                  style={styles.avatarImage}
+                />
               ) : (
                 <View style={[styles.avatarCircle, { backgroundColor: colors.primaryIndigo }]}>
                   <Text style={styles.avatarInitial}>{name ? name[0].toUpperCase() : 'R'}</Text>
@@ -153,9 +197,11 @@ export const EditProfileScreen: React.FC<Props> = ({ navigation }) => {
                 <Camera size={16} color="#FFF" />
               </View>
             </TouchableOpacity>
-            <Text style={[styles.changePhotoText, { color: colors.primaryIndigo }]}>
-              Tap to change profile picture
-            </Text>
+            <TouchableOpacity onPress={() => setShowAvatarMenuModal(true)} activeOpacity={0.7}>
+              <Text style={[styles.changePhotoText, { color: colors.primaryIndigo }]}>
+                Tap to change profile picture
+              </Text>
+            </TouchableOpacity>
           </View>
 
           {/* Input Card 1: Name */}
@@ -269,6 +315,126 @@ export const EditProfileScreen: React.FC<Props> = ({ navigation }) => {
           </TouchableOpacity>
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {/* 📸 Avatar Options Bottom Sheet Modal */}
+      <Modal
+        visible={showAvatarMenuModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowAvatarMenuModal(false)}
+      >
+        <TouchableOpacity
+          style={styles.menuModalBackdrop}
+          activeOpacity={1}
+          onPress={() => setShowAvatarMenuModal(false)}
+        >
+          <View
+            style={[
+              styles.menuModalCard,
+              { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+            ]}
+          >
+            <Text style={[styles.menuModalTitle, { color: colors.textPrimary }]}>
+              Profile Photo
+            </Text>
+
+            {avatarUri ? (
+              <TouchableOpacity
+                style={styles.menuModalRow}
+                onPress={() => {
+                  setShowAvatarMenuModal(false);
+                  setShowFullScreenAvatar(true);
+                }}
+              >
+                <Eye size={22} color={colors.primaryIndigo} />
+                <Text style={[styles.menuModalRowText, { color: colors.textPrimary }]}>
+                  View Profile Photo
+                </Text>
+              </TouchableOpacity>
+            ) : null}
+
+            <TouchableOpacity style={styles.menuModalRow} onPress={handleTakePhoto}>
+              <Camera size={22} color="#10B981" />
+              <Text style={[styles.menuModalRowText, { color: colors.textPrimary }]}>
+                Take Photo
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.menuModalRow} onPress={handlePickFromGallery}>
+              <ImageIcon size={22} color="#8B5CF6" />
+              <Text style={[styles.menuModalRowText, { color: colors.textPrimary }]}>
+                Choose from Gallery
+              </Text>
+            </TouchableOpacity>
+
+            <View style={[styles.menuModalDivider, { backgroundColor: colors.cardBorder }]} />
+
+            <TouchableOpacity
+              style={styles.menuModalCancelBtn}
+              onPress={() => setShowAvatarMenuModal(false)}
+            >
+              <Text style={[styles.menuModalCancelText, { color: colors.textSecondary }]}>
+                Cancel
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* 🖼️ Fullscreen Profile Photo Viewer */}
+      <Modal
+        visible={showFullScreenAvatar}
+        transparent={false}
+        animationType="fade"
+        onRequestClose={() => setShowFullScreenAvatar(false)}
+      >
+        <SafeAreaView style={styles.fullScreenPhotoContainer}>
+          <StatusBar barStyle="light-content" backgroundColor="#000" />
+          <View style={styles.fullScreenPhotoHeader}>
+            <TouchableOpacity
+              onPress={() => setShowFullScreenAvatar(false)}
+              style={styles.fullScreenPhotoBackBtn}
+            >
+              <ArrowLeft size={24} color="#FFF" />
+            </TouchableOpacity>
+            <Text style={styles.fullScreenPhotoTitle}>Profile Photo</Text>
+            <TouchableOpacity
+              onPress={() => {
+                setShowFullScreenAvatar(false);
+                setShowAvatarMenuModal(true);
+              }}
+              style={styles.fullScreenPhotoBackBtn}
+            >
+              <Camera size={22} color="#FFF" />
+            </TouchableOpacity>
+          </View>
+          <View style={styles.fullScreenPhotoBody}>
+            {avatarUri ? (
+              <Image
+                source={{ uri: apiService.getResolvedMediaUrl(avatarUri) }}
+                style={styles.fullScreenPhotoImage}
+                resizeMode="contain"
+              />
+            ) : (
+              <View
+                style={[
+                  styles.avatarCircle,
+                  {
+                    width: 220,
+                    height: 220,
+                    borderRadius: 110,
+                    backgroundColor: colors.primaryIndigo,
+                  },
+                ]}
+              >
+                <Text style={[styles.avatarInitial, { fontSize: 72 }]}>
+                  {name ? name[0].toUpperCase() : 'R'}
+                </Text>
+              </View>
+            )}
+          </View>
+        </SafeAreaView>
+      </Modal>
     </SafeAreaView>
   );
 };
@@ -378,5 +544,74 @@ const styles = StyleSheet.create({
     color: '#FFF',
     fontSize: 16,
     fontWeight: '800',
+  },
+  menuModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.65)',
+    justifyContent: 'flex-end',
+  },
+  menuModalCard: {
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 20,
+    borderWidth: 1,
+  },
+  menuModalTitle: {
+    fontSize: 17,
+    fontWeight: '800',
+    marginBottom: 16,
+    textAlign: 'center',
+  },
+  menuModalRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 14,
+  },
+  menuModalRowText: {
+    fontSize: 16,
+    fontWeight: '600',
+    marginLeft: 14,
+  },
+  menuModalDivider: {
+    height: 1,
+    marginVertical: 10,
+  },
+  menuModalCancelBtn: {
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  menuModalCancelText: {
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  fullScreenPhotoContainer: {
+    flex: 1,
+    backgroundColor: '#000',
+  },
+  fullScreenPhotoHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    backgroundColor: '#111',
+  },
+  fullScreenPhotoBackBtn: {
+    padding: 6,
+  },
+  fullScreenPhotoTitle: {
+    color: '#FFF',
+    fontSize: 17,
+    fontWeight: '700',
+  },
+  fullScreenPhotoBody: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#000',
+  },
+  fullScreenPhotoImage: {
+    width: '100%',
+    height: '100%',
   },
 });

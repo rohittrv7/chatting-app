@@ -61,6 +61,8 @@ import {
   Check,
   CheckCheck,
   Clock,
+  ArrowLeft,
+  ShieldCheck,
   MoreVertical,
   UserX,
 } from 'lucide-react-native';
@@ -215,6 +217,10 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
   const [isSearching, setIsSearching] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedAvatarProfile, setSelectedAvatarProfile] = useState<ConversationItem | null>(null);
+  const [selectedFullScreenAvatar, setSelectedFullScreenAvatar] = useState<ConversationItem | null>(
+    null,
+  );
+  const [selectedInfoProfile, setSelectedInfoProfile] = useState<ConversationItem | null>(null);
 
   const [registeredContacts, setRegisteredContacts] = useState<DeviceContact[]>([]);
   const [unregisteredContacts, setUnregisteredContacts] = useState<DeviceContact[]>([]);
@@ -448,7 +454,14 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
   const renderMessageStatusIcon = (item: ConversationItem) => {
     const msgs = messagesMap[item.id] || [];
     const lastMsg = msgs.length > 0 ? msgs[msgs.length - 1] : undefined;
-    const isMe = item.lastMessageIsMe !== undefined ? item.lastMessageIsMe : lastMsg?.isMe;
+    const isMe =
+      lastMsg !== undefined
+        ? lastMsg.isMe
+        : item.lastMessageIsMe !== undefined
+          ? item.lastMessageIsMe
+          : false;
+
+    // Only show delivery/read checkmarks if the last message was sent by ME
     if (!isMe) return null;
 
     const status = item.lastMessageStatus || lastMsg?.status || 'SENT';
@@ -2190,34 +2203,46 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
 
             {/* Big Profile Photo */}
             <View style={styles.avatarModalImageContainer}>
-              {selectedAvatarProfile?.avatarUrl ? (
-                <Image
-                  source={{ uri: selectedAvatarProfile.avatarUrl }}
-                  style={styles.avatarModalImage}
-                  resizeMode="cover"
-                />
-              ) : (
-                <View
-                  style={[
-                    styles.avatarModalPlaceholder,
-                    { backgroundColor: selectedAvatarProfile?.groupBg || colors.primaryIndigo },
-                  ]}
-                >
-                  <Text style={styles.avatarModalPlaceholderLetter}>
-                    {selectedAvatarProfile
-                      ? (
-                          getResolvedDisplayName(
-                            {
-                              username: selectedAvatarProfile.username,
-                              name: selectedAvatarProfile.title,
-                            },
-                            selectedAvatarProfile.title,
-                          )[0] || 'U'
-                        ).toUpperCase()
-                      : 'U'}
-                  </Text>
-                </View>
-              )}
+              <TouchableOpacity
+                activeOpacity={0.9}
+                style={{ width: '100%', height: '100%' }}
+                onPress={() => {
+                  const p = selectedAvatarProfile;
+                  setSelectedAvatarProfile(null);
+                  if (p) setSelectedFullScreenAvatar(p);
+                }}
+              >
+                {selectedAvatarProfile?.avatarUrl ? (
+                  <Image
+                    source={{
+                      uri: apiService.getResolvedMediaUrl(selectedAvatarProfile.avatarUrl),
+                    }}
+                    style={styles.avatarModalImage}
+                    resizeMode="cover"
+                  />
+                ) : (
+                  <View
+                    style={[
+                      styles.avatarModalPlaceholder,
+                      { backgroundColor: selectedAvatarProfile?.groupBg || colors.primaryIndigo },
+                    ]}
+                  >
+                    <Text style={styles.avatarModalPlaceholderLetter}>
+                      {selectedAvatarProfile
+                        ? (
+                            getResolvedDisplayName(
+                              {
+                                username: selectedAvatarProfile.username,
+                                name: selectedAvatarProfile.title,
+                              },
+                              selectedAvatarProfile.title,
+                            )[0] || 'U'
+                          ).toUpperCase()
+                        : 'U'}
+                    </Text>
+                  </View>
+                )}
+              </TouchableOpacity>
             </View>
 
             {/* Quick WhatsApp Action Buttons */}
@@ -2277,7 +2302,7 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                 onPress={() => {
                   const p = selectedAvatarProfile;
                   setSelectedAvatarProfile(null);
-                  if (p) setSelectedChatForAction(p);
+                  if (p) setSelectedInfoProfile(p);
                 }}
               >
                 <Info size={22} color={colors.textSecondary} />
@@ -2288,6 +2313,448 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
             </View>
           </View>
         </TouchableOpacity>
+      </Modal>
+
+      {/* 🖼️ WhatsApp Style Fullscreen Profile Photo Viewer */}
+      <Modal
+        visible={!!selectedFullScreenAvatar}
+        transparent={false}
+        animationType="fade"
+        onRequestClose={() => setSelectedFullScreenAvatar(null)}
+      >
+        <SafeAreaView style={{ flex: 1, backgroundColor: '#000' }}>
+          <StatusBar barStyle="light-content" backgroundColor="#000" />
+          <View
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              paddingHorizontal: 16,
+              paddingVertical: 12,
+              backgroundColor: '#111',
+            }}
+          >
+            <TouchableOpacity
+              onPress={() => setSelectedFullScreenAvatar(null)}
+              style={{ padding: 6 }}
+            >
+              <ArrowLeft size={24} color="#FFF" />
+            </TouchableOpacity>
+            <Text style={{ color: '#FFF', fontSize: 17, fontWeight: '700' }} numberOfLines={1}>
+              {selectedFullScreenAvatar
+                ? getResolvedDisplayName(
+                    {
+                      username: selectedFullScreenAvatar.username,
+                      name: selectedFullScreenAvatar.title,
+                      phone: selectedFullScreenAvatar.phone,
+                    },
+                    selectedFullScreenAvatar.title,
+                  )
+                : 'Profile Photo'}
+            </Text>
+            <View style={{ width: 36 }} />
+          </View>
+          <View
+            style={{
+              flex: 1,
+              justifyContent: 'center',
+              alignItems: 'center',
+              backgroundColor: '#000',
+            }}
+          >
+            {selectedFullScreenAvatar?.avatarUrl ? (
+              <Image
+                source={{
+                  uri: apiService.getResolvedMediaUrl(selectedFullScreenAvatar.avatarUrl),
+                }}
+                style={{ width: '100%', height: '100%' }}
+                resizeMode="contain"
+              />
+            ) : (
+              <View
+                style={{
+                  width: 220,
+                  height: 220,
+                  borderRadius: 110,
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                  backgroundColor: selectedFullScreenAvatar?.groupBg || colors.primaryIndigo,
+                }}
+              >
+                <Text style={{ fontSize: 72, fontWeight: '800', color: '#FFF' }}>
+                  {selectedFullScreenAvatar
+                    ? (
+                        getResolvedDisplayName(
+                          {
+                            username: selectedFullScreenAvatar.username,
+                            name: selectedFullScreenAvatar.title,
+                          },
+                          selectedFullScreenAvatar.title,
+                        )[0] || 'U'
+                      ).toUpperCase()
+                    : 'U'}
+                </Text>
+              </View>
+            )}
+          </View>
+        </SafeAreaView>
+      </Modal>
+
+      {/* 👤 Contact Info Screen Modal (Opened on Info button click) */}
+      <Modal
+        visible={!!selectedInfoProfile}
+        animationType="slide"
+        transparent={false}
+        onRequestClose={() => setSelectedInfoProfile(null)}
+      >
+        <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg }}>
+          <StatusBar
+            barStyle={themeMode === 'dark' ? 'light-content' : 'dark-content'}
+            backgroundColor={colors.bg}
+          />
+          {/* Header */}
+          <View
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              paddingHorizontal: 16,
+              paddingVertical: 14,
+              borderBottomWidth: 1,
+              borderBottomColor: colors.cardBorder,
+              backgroundColor: colors.surface,
+            }}
+          >
+            <TouchableOpacity onPress={() => setSelectedInfoProfile(null)} style={{ padding: 4 }}>
+              <ArrowLeft size={24} color={colors.textPrimary} />
+            </TouchableOpacity>
+            <Text
+              style={{
+                fontSize: 18,
+                fontWeight: '800',
+                color: colors.textPrimary,
+              }}
+            >
+              Contact Info
+            </Text>
+            <View style={{ width: 32 }} />
+          </View>
+
+          <ScrollView
+            contentContainerStyle={{
+              paddingHorizontal: 16,
+              paddingTop: 18,
+              paddingBottom: 40,
+            }}
+          >
+            {/* Hero */}
+            <View style={{ alignItems: 'center', marginBottom: 20 }}>
+              <TouchableOpacity
+                activeOpacity={0.9}
+                onPress={() => {
+                  const p = selectedInfoProfile;
+                  setSelectedInfoProfile(null);
+                  if (p) setSelectedFullScreenAvatar(p);
+                }}
+              >
+                {selectedInfoProfile?.avatarUrl ? (
+                  <Image
+                    source={{
+                      uri: apiService.getResolvedMediaUrl(selectedInfoProfile.avatarUrl),
+                    }}
+                    style={{
+                      width: 100,
+                      height: 100,
+                      borderRadius: 50,
+                      marginBottom: 12,
+                    }}
+                    resizeMode="cover"
+                  />
+                ) : (
+                  <View
+                    style={{
+                      width: 100,
+                      height: 100,
+                      borderRadius: 50,
+                      backgroundColor: selectedInfoProfile?.groupBg || colors.primaryIndigo,
+                      justifyContent: 'center',
+                      alignItems: 'center',
+                      marginBottom: 12,
+                    }}
+                  >
+                    <Text style={{ fontSize: 40, fontWeight: '800', color: '#FFF' }}>
+                      {selectedInfoProfile
+                        ? (
+                            getResolvedDisplayName(
+                              {
+                                username: selectedInfoProfile.username,
+                                name: selectedInfoProfile.title,
+                              },
+                              selectedInfoProfile.title,
+                            )[0] || 'U'
+                          ).toUpperCase()
+                        : 'U'}
+                    </Text>
+                  </View>
+                )}
+              </TouchableOpacity>
+
+              <Text
+                style={{
+                  fontSize: 22,
+                  fontWeight: '800',
+                  color: colors.textPrimary,
+                  textAlign: 'center',
+                }}
+              >
+                {selectedInfoProfile
+                  ? getResolvedDisplayName(
+                      {
+                        username: selectedInfoProfile.username,
+                        name: selectedInfoProfile.title,
+                        phone: selectedInfoProfile.phone,
+                      },
+                      selectedInfoProfile.title,
+                    )
+                  : ''}
+              </Text>
+
+              {selectedInfoProfile?.username ? (
+                <Text
+                  style={{
+                    fontSize: 15,
+                    fontWeight: '600',
+                    color: colors.primaryIndigo,
+                    marginTop: 3,
+                  }}
+                >
+                  {selectedInfoProfile.username.startsWith('@')
+                    ? selectedInfoProfile.username
+                    : `@${selectedInfoProfile.username}`}
+                </Text>
+              ) : null}
+
+              {selectedInfoProfile?.phone ? (
+                <Text
+                  style={{
+                    fontSize: 13,
+                    color: colors.textSecondary,
+                    marginTop: 2,
+                  }}
+                >
+                  {selectedInfoProfile.phone}
+                </Text>
+              ) : null}
+
+              <Text
+                style={{
+                  fontSize: 13,
+                  fontWeight: '600',
+                  color: isUserOnline(selectedInfoProfile?.recipientDbId)
+                    ? '#10B981'
+                    : colors.textSecondary,
+                  marginTop: 6,
+                }}
+              >
+                {isUserOnline(selectedInfoProfile?.recipientDbId) ? 'Online' : 'Offline'}
+              </Text>
+            </View>
+
+            {/* Action Buttons (Message, Audio, Video) */}
+            <View
+              style={{
+                flexDirection: 'row',
+                justifyContent: 'center',
+                gap: 12,
+                marginBottom: 20,
+              }}
+            >
+              <TouchableOpacity
+                style={{
+                  flex: 1,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  paddingVertical: 12,
+                  borderRadius: 14,
+                  backgroundColor: colors.surface,
+                  borderWidth: 1,
+                  borderColor: colors.cardBorder,
+                }}
+                onPress={() => {
+                  const p = selectedInfoProfile;
+                  setSelectedInfoProfile(null);
+                  if (p)
+                    navigation.navigate('Chat', {
+                      conversationId: p.id,
+                      title: p.title,
+                    });
+                }}
+              >
+                <MessageSquare size={18} color={colors.primaryIndigo} style={{ marginRight: 6 }} />
+                <Text
+                  style={{
+                    fontSize: 14,
+                    fontWeight: '700',
+                    color: colors.primaryIndigo,
+                  }}
+                >
+                  Message
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={{
+                  flex: 1,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  paddingVertical: 12,
+                  borderRadius: 14,
+                  backgroundColor: colors.surface,
+                  borderWidth: 1,
+                  borderColor: colors.cardBorder,
+                }}
+                onPress={() => {
+                  const p = selectedInfoProfile;
+                  setSelectedInfoProfile(null);
+                  if (p)
+                    navigation.navigate('Call', {
+                      callId: `call_${Date.now()}`,
+                      targetUserId: p.title,
+                      isCaller: true,
+                      isVideo: false,
+                    });
+                }}
+              >
+                <Phone size={18} color="#10B981" style={{ marginRight: 6 }} />
+                <Text style={{ fontSize: 14, fontWeight: '700', color: '#10B981' }}>Audio</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={{
+                  flex: 1,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  paddingVertical: 12,
+                  borderRadius: 14,
+                  backgroundColor: colors.surface,
+                  borderWidth: 1,
+                  borderColor: colors.cardBorder,
+                }}
+                onPress={() => {
+                  const p = selectedInfoProfile;
+                  setSelectedInfoProfile(null);
+                  if (p)
+                    navigation.navigate('Call', {
+                      callId: `call_${Date.now()}`,
+                      targetUserId: p.title,
+                      isCaller: true,
+                      isVideo: true,
+                    });
+                }}
+              >
+                <Video size={18} color="#8B5CF6" style={{ marginRight: 6 }} />
+                <Text style={{ fontSize: 14, fontWeight: '700', color: '#8B5CF6' }}>Video</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Encryption Verified Card */}
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                padding: 16,
+                borderRadius: 16,
+                backgroundColor: colors.surface,
+                borderWidth: 1,
+                borderColor: colors.cardBorder,
+                marginBottom: 14,
+              }}
+            >
+              <ShieldCheck size={22} color="#10B981" style={{ marginRight: 12 }} />
+              <View style={{ flex: 1 }}>
+                <Text
+                  style={{
+                    fontSize: 14,
+                    fontWeight: '700',
+                    color: colors.textPrimary,
+                  }}
+                >
+                  Encryption Verified
+                </Text>
+                <Text
+                  style={{
+                    fontSize: 12,
+                    color: colors.textSecondary,
+                    marginTop: 2,
+                  }}
+                >
+                  Messages and calls are end-to-end encrypted.
+                </Text>
+              </View>
+            </View>
+
+            {/* Clear Messages Action */}
+            <TouchableOpacity
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                padding: 16,
+                borderRadius: 16,
+                backgroundColor: colors.surface,
+                borderWidth: 1,
+                borderColor: colors.cardBorder,
+                marginBottom: 12,
+              }}
+              onPress={() => {
+                if (selectedInfoProfile) {
+                  clearMessages(selectedInfoProfile.id);
+                  showToast('Chat cleared', 'info', 1500);
+                }
+                setSelectedInfoProfile(null);
+              }}
+            >
+              <Eraser size={20} color="#F59E0B" style={{ marginRight: 12 }} />
+              <Text
+                style={{
+                  fontSize: 15,
+                  fontWeight: '700',
+                  color: colors.textPrimary,
+                }}
+              >
+                Clear Chat Messages
+              </Text>
+            </TouchableOpacity>
+
+            {/* Delete Chat Action */}
+            <TouchableOpacity
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                padding: 16,
+                borderRadius: 16,
+                backgroundColor: colors.surface,
+                borderWidth: 1,
+                borderColor: 'rgba(239, 68, 68, 0.3)',
+              }}
+              onPress={() => {
+                const p = selectedInfoProfile;
+                setSelectedInfoProfile(null);
+                if (p) {
+                  setSelectedChatForAction(p);
+                  setShowDeleteConfirmModal(true);
+                }
+              }}
+            >
+              <Trash2 size={20} color="#EF4444" style={{ marginRight: 12 }} />
+              <Text style={{ fontSize: 15, fontWeight: '700', color: '#EF4444' }}>
+                Delete Entire Chat
+              </Text>
+            </TouchableOpacity>
+          </ScrollView>
+        </SafeAreaView>
       </Modal>
 
       {/* Dynamic Bottom Navigation Bar */}

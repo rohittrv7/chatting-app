@@ -90,6 +90,12 @@ export interface SocketCallbacks {
     presences: Record<string, { isOnline: boolean; lastSeen: string | null }>;
   }) => void;
   onTypingUpdate?: (data: TypingUpdate) => void;
+  onReactionUpdate?: (data: {
+    conversationId: string;
+    messageId: string;
+    emoji: string;
+    senderId: string;
+  }) => void;
   onMessageDeleted?: (data: { messageId: string; conversationId: string }) => void;
   onConnect?: () => void;
   onDisconnect?: (reason: string) => void;
@@ -213,6 +219,17 @@ class RealtimeSocketService {
     this.socket.emit(EVT_PRESENCE_QUERY, { userIds });
   }
 
+  /** Send emoji reaction on a message. */
+  sendReaction(
+    conversationId: string,
+    messageId: string,
+    emoji: string,
+    receiverId?: string,
+  ): void {
+    if (!this.socket?.connected) return;
+    this.socket.emit('message:reaction', { conversationId, messageId, emoji, receiverId });
+  }
+
   // ─── Private ───────────────────────────────────────────────────────────────
 
   private async _setup(): Promise<void> {
@@ -331,6 +348,12 @@ class RealtimeSocketService {
     this.socket.on(EVT_TYPING_UPDATE, (data: TypingUpdate) => {
       if (!data?.senderId) return;
       this.callbacks.onTypingUpdate?.(data);
+    });
+
+    // ── Reaction broadcast ───────────────────────────────────────────────
+    this.socket.on('message:reaction:update', (data: any) => {
+      if (!data?.messageId || !data?.emoji) return;
+      this.callbacks.onReactionUpdate?.(data);
     });
 
     // ── Delete-for-everyone broadcast ─────────────────────────────────────

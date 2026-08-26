@@ -16,6 +16,8 @@ import {
 import * as path from 'path';
 import * as fs from 'fs';
 
+import * as crypto from 'crypto';
+
 @Injectable()
 export class MediaService implements OnModuleInit {
   private readonly logger = new Logger(MediaService.name);
@@ -24,10 +26,16 @@ export class MediaService implements OnModuleInit {
   private region!: string;
   private endpoint!: string;
 
+  private b2AuthToken: string | null = null;
+  private b2ApiUrl: string | null = null;
+  private b2DownloadUrl: string | null = null;
+  private b2BucketId: string | null = null;
+  private b2AccountId: string | null = null;
+
   constructor(private readonly configService: ConfigService) {}
 
   async onModuleInit() {
-    this.bucketName = this.configService.get<string>('B2_BUCKET_NAME', 'chatting-media');
+    this.bucketName = this.configService.get<string>('B2_BUCKET_NAME', 'chatting-indian-app');
     this.region = this.configService.get<string>('B2_REGION', 'us-east-005');
 
     // Auto-resolve S3 endpoint from region if not explicitly provided
@@ -55,15 +63,78 @@ export class MediaService implements OnModuleInit {
       forcePathStyle: true,
     });
 
-    if (accessKeyId && secretAccessKey) {
-      try {
-        await this.s3Client.send(new HeadBucketCommand({ Bucket: this.bucketName }));
-        this.logger.log(`Backblaze B2 connection active (Bucket: ${this.bucketName})`);
-      } catch {
-        this.logger.log(
-          `Backblaze B2 presigned storage engine active (Bucket: ${this.bucketName})`,
-        );
+    // Initialize native Backblaze B2 connection
+    this.getB2Auth().catch((e) => {
+      this.logger.warn(`Backblaze B2 initialization: ${e?.message}`);
+    });
+  }
+
+  /**
+   * Authorize with Backblaze B2 Native API and cache tokens & bucketId
+   */
+  private async getB2Auth(): Promise<{
+    apiUrl: string;
+    token: string;
+    bucketId: string;
+    downloadUrl: string;
+  } | null> {
+    const keyId = this.configService.get<string>('B2_KEY_ID', '595ef2c87205');
+    const appKey = this.configService.get<string>(
+      'B2_APPLICATION_KEY',
+      '00529b271cf066977877a16a12a1e10e7d434a268d',
+    );
+    const bucketName = this.bucketName;
+
+    try {
+      const creds = Buffer.from(`${keyId}:${appKey}`).toString('base64');
+      const authRes = await fetch('https://api.backblazeb2.com/b2api/v2/b2_authorize_account', {
+        method: 'GET',
+        headers: { Authorization: `Basic ${creds}` },
+      });
+
+      if (!authRes.ok) {
+        this.logger.warn(`B2 auth failed: HTTP ${authRes.status}`);
+        return null;
       }
+
+      const authData = await authRes.json();
+      this.b2ApiUrl = authData.apiUrl;
+      this.b2AuthToken = authData.authorizationToken;
+      this.b2DownloadUrl = authData.downloadUrl;
+      this.b2AccountId = authData.accountId;
+
+      // Find bucketId
+      const listBucketsRes = await fetch(`${this.b2ApiUrl}/b2api/v2/b2_list_buckets`, {
+        method: 'POST',
+        headers: {
+          Authorization: this.b2AuthToken!,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ accountId: this.b2AccountId }),
+      });
+
+      if (listBucketsRes.ok) {
+        const bucketsData = await listBucketsRes.json();
+        const found =
+          bucketsData.buckets?.find((b: any) => b.bucketName === bucketName) ||
+          bucketsData.buckets?.[0];
+        if (found) {
+          this.b2BucketId = found.bucketId;
+          this.logger.log(
+            `Backblaze B2 Native Storage Active (Bucket: ${bucketName}, ID: ${this.b2BucketId})`,
+          );
+        }
+      }
+
+      return {
+        apiUrl: this.b2ApiUrl!,
+        token: this.b2AuthToken!,
+        bucketId: this.b2BucketId || '7589554e4fb20c58a7020015',
+        downloadUrl: this.b2DownloadUrl!,
+      };
+    } catch (err: any) {
+      this.logger.warn(`Backblaze B2 Auth exception: ${err?.message}`);
+      return null;
     }
   }
 
@@ -72,7 +143,6 @@ export class MediaService implements OnModuleInit {
    * and generates a presigned Backblaze B2 upload URL.
    */
   async getPresignedUploadUrl(dto: RequestUploadUrlDto) {
-    // 1. Validate File Size (Max 10 MB = 10 * 1024 * 1024 bytes)
     if (dto.fileSize > MAX_MEDIA_FILE_SIZE_BYTES) {
       throw new BadRequestException({
         code: 'FILE_TOO_LARGE',
@@ -88,7 +158,6 @@ export class MediaService implements OnModuleInit {
       });
     }
 
-    // 2. Validate Dangerous File Extension
     const ext = path.extname(dto.fileName).toLowerCase();
     if (BANNED_EXTENSIONS.includes(ext)) {
       throw new BadRequestException({
@@ -97,7 +166,6 @@ export class MediaService implements OnModuleInit {
       });
     }
 
-    // 3. Validate MIME type
     const isAllowedMime =
       ALLOWED_MIME_TYPES.includes(dto.mimeType as any) ||
       dto.mimeType.startsWith('image/') ||
@@ -111,7 +179,6 @@ export class MediaService implements OnModuleInit {
       });
     }
 
-    // 4. Generate unique object name in Backblaze B2 bucket
     const sanitizedFileName = path.basename(dto.fileName).replace(/[^a-zA-Z0-9._-]/g, '_');
     const objectName = `encrypted_media/${Date.now()}_${sanitizedFileName}`;
 
@@ -168,6 +235,59 @@ export class MediaService implements OnModuleInit {
   }
 
   /**
+   * Directly upload a buffer to Backblaze B2 bucket using native REST API
+   */
+  async uploadBuffer(buffer: Buffer, key: string, contentType = 'image/jpeg'): Promise<string> {
+    try {
+      const auth = await this.getB2Auth();
+      if (auth) {
+        // Request dedicated upload URL from Backblaze B2
+        const getUploadUrlRes = await fetch(`${auth.apiUrl}/b2api/v2/b2_get_upload_url`, {
+          method: 'POST',
+          headers: {
+            Authorization: auth.token,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ bucketId: auth.bucketId }),
+        });
+
+        if (getUploadUrlRes.ok) {
+          const uploadUrlData = await getUploadUrlRes.json();
+          const sha1 = crypto.createHash('sha1').update(buffer).digest('hex');
+          const cleanKey = key.startsWith('/') ? key.slice(1) : key;
+
+          const uploadRes = await fetch(uploadUrlData.uploadUrl, {
+            method: 'POST',
+            headers: {
+              Authorization: uploadUrlData.authorizationToken,
+              'X-Bz-File-Name': encodeURIComponent(cleanKey),
+              'Content-Type': contentType,
+              'Content-Length': String(buffer.length),
+              'X-Bz-Content-Sha1': sha1,
+            },
+            body: buffer as any,
+          });
+
+          if (uploadRes.ok) {
+            const uploadData = await uploadRes.json();
+            this.logger.log(
+              `Backblaze B2 Upload SUCCESS: ${cleanKey} (fileId: ${uploadData.fileId})`,
+            );
+            return `${auth.downloadUrl}/file/${this.bucketName}/${cleanKey}`;
+          } else {
+            const errText = await uploadRes.text();
+            this.logger.warn(`Backblaze B2 upload error HTTP ${uploadRes.status}: ${errText}`);
+          }
+        }
+      }
+    } catch (err: any) {
+      this.logger.warn(`Backblaze B2 uploadBuffer exception: ${err?.message}`);
+    }
+
+    return '';
+  }
+
+  /**
    * Direct base64/buffer upload for fast local and cloud media sharing
    */
   async uploadDirectFile(dto: { base64Data: string; fileName?: string; mimeType?: string }) {
@@ -184,10 +304,15 @@ export class MediaService implements OnModuleInit {
     const filePath = path.join(uploadsDir, filename);
     fs.writeFileSync(filePath, buffer);
 
+    // Sync directly to Backblaze B2 Cloud Object Storage
+    const b2Key = `media/${filename}`;
+    const b2Url = await this.uploadBuffer(buffer, b2Key, dto.mimeType || 'image/jpeg');
+
     const relativeUrl = `/uploads/images/${filename}`;
     return {
       success: true,
       url: relativeUrl,
+      b2Url: b2Url || undefined,
       fileName: filename,
       size: buffer.length,
     };

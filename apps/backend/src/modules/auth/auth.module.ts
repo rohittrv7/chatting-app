@@ -11,6 +11,7 @@ import { AuthGateway } from './auth.gateway';
 import { OtpRedisService } from './otp-redis.service';
 import { JwtStrategy } from './jwt.strategy';
 import { PrismaService } from '../../database/prisma.service';
+import { MediaModule } from '../media/media.module';
 
 import { createRedisClient } from '../../common/utils/redis-factory';
 
@@ -24,6 +25,7 @@ const REDIS_CLIENT_PROVIDER = {
 
 @Module({
   imports: [
+    MediaModule,
     PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.registerAsync({
       imports: [ConfigModule],

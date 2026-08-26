@@ -981,6 +981,32 @@ export const apiService = {
       return { success: false, message: e?.message };
     }
   },
+
+  async uploadMediaFile(
+    token: string,
+    base64Data: string,
+    fileName?: string,
+    mimeType = 'image/jpeg',
+  ): Promise<{ success: boolean; url?: string; message?: string }> {
+    const url = `${getApiBaseUrl()}/media/upload`;
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ base64Data, fileName, mimeType }),
+      });
+      if (response.ok) {
+        const json = await response.json();
+        return { success: true, url: json.url || json.data?.url };
+      }
+      return { success: false, message: `HTTP ${response.status}` };
+    } catch (e: any) {
+      return { success: false, message: e?.message };
+    }
+  },
 };
 
 (apiService as any).getResolvedMediaUrl = _resolveMediaUrl;

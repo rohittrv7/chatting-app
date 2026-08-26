@@ -13,7 +13,7 @@ export const LIVE_API_URL = 'https://chatting-app-rme6.onrender.com/api/v1';
 export const LIVE_SOCKET_URL = 'https://chatting-app-rme6.onrender.com';
 
 class ServerConfigService {
-  private currentEnv: ServerEnvironment = 'local';
+  private currentEnv: ServerEnvironment = 'live';
   private localIp: string = DEFAULT_LOCAL_IP;
   private listeners: Set<(env: ServerEnvironment, ip: string) => void> = new Set();
   private isLoaded = false;
@@ -28,7 +28,7 @@ class ServerConfigService {
       if (storedEnv === 'live' || storedEnv === 'local') {
         this.currentEnv = storedEnv;
       } else {
-        this.currentEnv = 'local'; // default to local PC backend
+        this.currentEnv = 'live'; // default to live cloud backend
       }
 
       const storedIp = await safeStorage.getItem(SERVER_CUSTOM_IP_KEY);
@@ -38,7 +38,7 @@ class ServerConfigService {
         this.localIp = DEFAULT_LOCAL_IP;
       }
     } catch (e) {
-      this.currentEnv = 'local';
+      this.currentEnv = 'live';
       this.localIp = DEFAULT_LOCAL_IP;
     }
     this.isLoaded = true;

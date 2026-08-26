@@ -43,6 +43,8 @@ function normalizePhoneNumber(raw: string): string {
   return digits;
 }
 
+import { MediaService } from '../media/media.service';
+
 @Injectable()
 export class AuthService {
   constructor(
@@ -50,6 +52,7 @@ export class AuthService {
     private readonly otpRedis: OtpRedisService,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
+    @Optional() private readonly mediaService: MediaService,
     @Optional() private readonly authGateway: AuthGateway,
   ) {}
 
@@ -325,12 +328,22 @@ export class AuthService {
     const filePath = path.join(avatarsDir, filename);
     fs.writeFileSync(filePath, buffer);
 
+    // Sync to Backblaze B2 bucket
+    const b2Key = `avatars/${filename}`;
+    let b2Url: string | undefined;
+    if (this.mediaService) {
+      try {
+        b2Url = await this.mediaService.uploadBuffer(buffer, b2Key, 'image/jpeg');
+      } catch {}
+    }
+
     const avatarUrl = `/uploads/avatars/${filename}`;
     const updatedUser = await this.authRepository.updateUserProfile(userId, { avatarUrl });
     return {
       success: true,
       message: 'Avatar updated successfully',
       avatarUrl,
+      b2Url: b2Url || undefined,
       user: updatedUser,
     };
   }
