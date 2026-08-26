@@ -7,6 +7,26 @@ import { serverConfig } from './serverConfig';
 
 export const getApiBaseUrl = () => serverConfig.getApiBaseUrl();
 
+function _resolveMediaUrl(url?: string | null): string {
+  if (!url || typeof url !== 'string') return '';
+  if (
+    url.startsWith('http://') ||
+    url.startsWith('https://') ||
+    url.startsWith('file://') ||
+    url.startsWith('blob:') ||
+    url.startsWith('data:')
+  ) {
+    return url;
+  }
+  const base = getApiBaseUrl()
+    .replace(/\/api\/v1\/?$/, '')
+    .replace(/\/+$/, '');
+  const cleanPath = url.startsWith('/') ? url : `/${url}`;
+  return `${base}${cleanPath}`;
+}
+
+export const getResolvedMediaUrl = _resolveMediaUrl;
+
 export interface RequestOtpResponse {
   success: boolean;
   message: string;
@@ -17,6 +37,7 @@ export interface VerifyOtpResponse {
   success: boolean;
   accessToken: string;
   refreshToken: string;
+  userId?: string;
   isNewUser: boolean;
   user: UserProfile;
 }
@@ -26,6 +47,43 @@ let sessionExpiredHandler: SessionExpiredCallback | null = null;
 
 export const setSessionExpiredHandler = (cb: SessionExpiredCallback) => {
   sessionExpiredHandler = cb;
+};
+
+/**
+ * Extract sub / userId from JWT token
+ */
+export function extractUserIdFromToken(token?: string | null): string | null {
+  if (!token || typeof token !== 'string') return null;
+  try {
+    const parts = token.split('.');
+    if (parts.length >= 2) {
+      let b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+      while (b64.length % 4) b64 += '=';
+      let jsonStr = '';
+      if (typeof atob === 'function') {
+        jsonStr = atob(b64);
+      } else if (typeof Buffer !== 'undefined') {
+        jsonStr = Buffer.from(b64, 'base64').toString('utf8');
+      }
+      if (jsonStr) {
+        const payload = JSON.parse(jsonStr);
+        return payload.sub || payload.userId || payload.id || null;
+      }
+    }
+  } catch {}
+  return null;
+}
+
+/**
+ * Called after a successful token refresh so that Redux store is updated
+ * and the socket reconnects with the new token.
+ * Registered once from ChatContext / App root.
+ */
+type TokensRefreshedCallback = (accessToken: string, refreshToken: string) => void;
+let tokensRefreshedHandler: TokensRefreshedCallback | null = null;
+
+export const setTokensRefreshedHandler = (cb: TokensRefreshedCallback) => {
+  tokensRefreshedHandler = cb;
 };
 
 export const handleSessionExpired = async () => {
@@ -139,10 +197,16 @@ export const apiService = {
         const isNewUser = data.isNewUser ?? (!userObj.displayName && !userObj.username);
         const accessToken = data.accessToken || `token_${Date.now()}`;
         const refreshToken = data.refreshToken || `refresh_${Date.now()}`;
+        // Persist deviceId so token refresh can send it back
+        const deviceId = data.device?.id || String(reqBody.deviceId);
+        // Persist DB UUID — used as socket userId for reliable echo guard
+        const dbUserId: string = userObj.id || '';
 
         // Save tokens immediately in persistent storage
         await safeStorage.setItem(AUTH_STORAGE_KEYS.TOKEN, accessToken);
         await safeStorage.setItem(AUTH_STORAGE_KEYS.REFRESH_TOKEN, refreshToken);
+        await safeStorage.setItem(AUTH_STORAGE_KEYS.DEVICE_ID, deviceId);
+        if (dbUserId) await safeStorage.setItem(AUTH_STORAGE_KEYS.USER_ID, dbUserId);
 
         devInspector.logApi({
           url,
@@ -158,6 +222,7 @@ export const apiService = {
           success: true,
           accessToken,
           refreshToken,
+          userId: dbUserId || undefined,
           isNewUser,
           user: {
             name: userObj.displayName || userObj.name || '',
@@ -220,19 +285,23 @@ export const apiService = {
   },
 
   /**
-   * Rotate Refresh Token and get a new Access Token seamlessly
+   * Rotate Refresh Token and get a new Access Token seamlessly.
+   * Sends both refreshToken AND deviceId (required by backend RefreshTokenDto).
    */
   async refreshAuthToken(): Promise<{ accessToken: string; refreshToken: string } | null> {
     try {
       const storedRefreshToken = await safeStorage.getItem(AUTH_STORAGE_KEYS.REFRESH_TOKEN);
       if (!storedRefreshToken) return null;
 
+      // deviceId must match what was sent during OTP verify
+      const storedDeviceId = (await safeStorage.getItem(AUTH_STORAGE_KEYS.DEVICE_ID)) || '1';
+
       const startTime = Date.now();
       const url = `${getApiBaseUrl()}/auth/token/refresh`;
       const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refreshToken: storedRefreshToken }),
+        body: JSON.stringify({ refreshToken: storedRefreshToken, deviceId: storedDeviceId }),
       });
       const durationMs = Date.now() - startTime;
 
@@ -249,10 +318,15 @@ export const apiService = {
           await safeStorage.setItem(AUTH_STORAGE_KEYS.REFRESH_TOKEN, newRefreshToken);
         }
 
+        // Notify Redux store so the socket reconnects with the fresh token
+        if (newAccessToken && newRefreshToken && tokensRefreshedHandler) {
+          tokensRefreshedHandler(newAccessToken, newRefreshToken);
+        }
+
         devInspector.logApi({
           url,
           method: 'POST',
-          requestData: { refreshToken: '***' },
+          requestData: { refreshToken: '***', deviceId: storedDeviceId },
           responseData: { accessTokenRotated: true },
           status: 200,
           durationMs,
@@ -264,7 +338,7 @@ export const apiService = {
         devInspector.logApi({
           url,
           method: 'POST',
-          requestData: { refreshToken: '***' },
+          requestData: { refreshToken: '***', deviceId: storedDeviceId },
           responseData: { error: 'Refresh token expired / invalid' },
           status: response.status,
           durationMs,
@@ -344,6 +418,7 @@ export const apiService = {
     token: string | null;
     refreshToken: string | null;
     phoneNumber: string | null;
+    userId: string | null;
     userProfile: UserProfile | null;
     isNewUser: boolean;
   }> {
@@ -351,28 +426,24 @@ export const apiService = {
       const token = await safeStorage.getItem(AUTH_STORAGE_KEYS.TOKEN);
       const refreshToken = await safeStorage.getItem(AUTH_STORAGE_KEYS.REFRESH_TOKEN);
       const phoneNumber = await safeStorage.getItem(AUTH_STORAGE_KEYS.PHONE_NUMBER);
+      const userId = await safeStorage.getItem(
+        AUTH_STORAGE_KEYS.USER_ID ?? '@whatsapp_connect_user_id',
+      );
       const isNewUserJson = await safeStorage.getItem(AUTH_STORAGE_KEYS.IS_NEW_USER);
       const userProfileJson = await safeStorage.getItem(AUTH_STORAGE_KEYS.USER_PROFILE);
 
       let userProfile: UserProfile | null = null;
-      if (userProfileJson) {
-        userProfile = JSON.parse(userProfileJson);
-      }
-
+      if (userProfileJson) userProfile = JSON.parse(userProfileJson);
       const isNewUser = isNewUserJson ? JSON.parse(isNewUserJson) : false;
+      const resolvedUserId = userId || extractUserIdFromToken(token);
 
-      return {
-        token,
-        refreshToken,
-        phoneNumber,
-        userProfile,
-        isNewUser,
-      };
-    } catch (e) {
+      return { token, refreshToken, phoneNumber, userId: resolvedUserId, userProfile, isNewUser };
+    } catch {
       return {
         token: null,
         refreshToken: null,
         phoneNumber: null,
+        userId: null,
         userProfile: null,
         isNewUser: true,
       };
@@ -486,7 +557,7 @@ export const apiService = {
   },
 
   /**
-   * Search registered users across the platform by username or display name
+   * Search registered users across the platform by username, phone number, or display name
    */
   async searchUsers(
     token: string,
@@ -496,6 +567,7 @@ export const apiService = {
       id: string;
       name: string;
       username?: string;
+      phoneNumber?: string;
       about?: string;
       avatarUrl?: string;
       isRegistered: boolean;
@@ -526,24 +598,48 @@ export const apiService = {
 
       if (response.ok) {
         const json = await response.json();
-        const payload = json.data || json;
-        const users = payload.users || [];
+        let rawList: any[] = [];
+        if (Array.isArray(json.data)) {
+          rawList = json.data;
+        } else if (json.data && Array.isArray(json.data.users)) {
+          rawList = json.data.users;
+        } else if (Array.isArray(json.users)) {
+          rawList = json.users;
+        } else if (Array.isArray(json)) {
+          rawList = json;
+        }
+
+        const mapped = rawList.map((u) => ({
+          id: u.id,
+          name: u.displayName || u.name || u.username || u.phoneNumber || 'User',
+          username: u.username
+            ? u.username.startsWith('@')
+              ? u.username
+              : `@${u.username.replace(/^@+/, '')}`
+            : undefined,
+          phoneNumber: u.phoneNumber,
+          avatarUrl: u.avatarUrl ? this.getResolvedMediaUrl(u.avatarUrl) : undefined,
+          about: u.about || 'Available on WhatsApp',
+          isRegistered: true,
+        }));
 
         devInspector.logApi({
           url,
           method: 'GET',
-          responseData: payload,
+          requestData: { query },
+          responseData: { count: mapped.length, sample: mapped[0] },
           status: response.status,
           durationMs,
           fromRedisCache: false,
         });
 
-        return users;
+        return mapped;
       }
     } catch (e: any) {
       devInspector.logApi({
         url,
         method: 'GET',
+        requestData: { query },
         responseData: [],
         status: 0,
         durationMs: Date.now() - startTime,
@@ -553,4 +649,338 @@ export const apiService = {
     }
     return [];
   },
+
+  /**
+   * Resolves relative media and avatar URLs to absolute URLs with active backend IP / host
+   */
+  getResolvedMediaUrl(pathOrUrl?: string): string | undefined {
+    if (!pathOrUrl || typeof pathOrUrl !== 'string') return undefined;
+    if (
+      pathOrUrl.startsWith('http://') ||
+      pathOrUrl.startsWith('https://') ||
+      pathOrUrl.startsWith('data:') ||
+      pathOrUrl.startsWith('file:')
+    ) {
+      return pathOrUrl;
+    }
+    const base = getApiBaseUrl().replace(/\/api\/v1\/?$/, '');
+    const cleanPath = pathOrUrl.startsWith('/') ? pathOrUrl : `/${pathOrUrl}`;
+    return `${base}${cleanPath}`;
+  },
+
+  /**
+   * Upload image/media with simulated & real upload progress tracking (0% -> 100%).
+   * Requires an auth token — the backend /media/upload endpoint is now protected.
+   */
+  async uploadMedia(
+    base64Data: string,
+    onProgress?: (percent: number) => void,
+    token?: string,
+  ): Promise<{ success: boolean; url: string; fullUrl: string }> {
+    const startTime = Date.now();
+    const url = `${getApiBaseUrl()}/media/upload`;
+
+    if (onProgress) onProgress(15);
+
+    try {
+      const progressTimer = setInterval(() => {
+        if (onProgress) onProgress(Math.min(85, Math.floor(25 + Math.random() * 55)));
+      }, 150);
+
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ base64Data }),
+      });
+
+      clearInterval(progressTimer);
+      if (onProgress) onProgress(100);
+
+      const durationMs = Date.now() - startTime;
+      if (response.ok) {
+        const json = await response.json();
+        const payload = json.data || json;
+        const relativeUrl = payload.url || `/uploads/images/img_${Date.now()}.jpg`;
+        const fullUrl = this.getResolvedMediaUrl(relativeUrl) || relativeUrl;
+
+        devInspector.logApi({
+          url,
+          method: 'POST',
+          requestData: { uploadSize: base64Data.length },
+          responseData: payload,
+          status: response.status,
+          durationMs,
+          fromRedisCache: false,
+        });
+
+        return { success: true, url: relativeUrl, fullUrl };
+      }
+
+      if (response.status === 401 && token) {
+        // Token expired mid-upload — refresh and retry once
+        const refreshed = await this.refreshAuthToken();
+        if (refreshed?.accessToken) {
+          return this.uploadMedia(base64Data, onProgress, refreshed.accessToken);
+        }
+        await handleSessionExpired();
+      }
+    } catch {}
+
+    if (onProgress) onProgress(100);
+    // Fallback: embed as data URL so the message still shows the image
+    const dataUrl = base64Data.startsWith('data:')
+      ? base64Data
+      : `data:image/jpeg;base64,${base64Data}`;
+    return { success: true, url: dataUrl, fullUrl: dataUrl };
+  },
+
+  /**
+   * Upload avatar image and save to user profile
+   */
+  async uploadAvatar(
+    token: string,
+    base64Data: string,
+  ): Promise<{ success: boolean; avatarUrl?: string }> {
+    const url = `${getApiBaseUrl()}/auth/avatar`;
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ base64Data }),
+      });
+      if (response.ok) {
+        const json = await response.json();
+        const payload = json.data || json;
+        const fullAvatar = this.getResolvedMediaUrl(payload.avatarUrl) || payload.avatarUrl;
+        return { success: true, avatarUrl: fullAvatar };
+      }
+    } catch (e) {}
+
+    const dataUrl = base64Data.startsWith('data:')
+      ? base64Data
+      : `data:image/jpeg;base64,${base64Data}`;
+    return { success: true, avatarUrl: dataUrl };
+  },
+
+  /**
+   * Fetch active conversations for the current user from backend database.
+   * Auto-refreshes the access token on 401.
+   */
+  async fetchUserConversations(token: string): Promise<any[]> {
+    const url = `${getApiBaseUrl()}/conversations`;
+    try {
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (response.status === 401) {
+        const refreshed = await this.refreshAuthToken();
+        if (refreshed?.accessToken) {
+          return this.fetchUserConversations(refreshed.accessToken);
+        }
+        await handleSessionExpired();
+        return [];
+      }
+
+      if (response.ok) {
+        const json = await response.json();
+        return json.data || json || [];
+      }
+    } catch (e) {}
+    return [];
+  },
+
+  /**
+   * Fetch historical messages for a conversation from backend database.
+   * Auto-refreshes the access token on 401.
+   */
+  async fetchHistoricalMessages(token: string, conversationId: string): Promise<any[]> {
+    const url = `${getApiBaseUrl()}/messages/${conversationId}?limit=50`;
+    try {
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (response.status === 401) {
+        const refreshed = await this.refreshAuthToken();
+        if (refreshed?.accessToken) {
+          return this.fetchHistoricalMessages(refreshed.accessToken, conversationId);
+        }
+        await handleSessionExpired();
+        return [];
+      }
+
+      if (response.ok) {
+        const json = await response.json();
+        return json.data || json || [];
+      }
+    } catch (e) {}
+    return [];
+  },
+
+  /**
+   * Delete conversation on the backend database for the current user.
+   */
+  async deleteConversation(
+    token: string,
+    conversationId: string,
+  ): Promise<{ success: boolean; message?: string }> {
+    const startTime = Date.now();
+    const url = `${getApiBaseUrl()}/conversations/${encodeURIComponent(conversationId)}`;
+    try {
+      const response = await fetch(url, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+      const durationMs = Date.now() - startTime;
+
+      if (response.status === 401) {
+        const refreshed = await this.refreshAuthToken();
+        if (refreshed?.accessToken) {
+          return this.deleteConversation(refreshed.accessToken, conversationId);
+        }
+        await handleSessionExpired();
+        return { success: false, message: 'Session expired' };
+      }
+
+      const json = await response.json().catch(() => ({}));
+      devInspector.logApi({
+        url,
+        method: 'DELETE',
+        requestData: { conversationId },
+        responseData: json,
+        status: response.status,
+        durationMs,
+        fromRedisCache: false,
+      });
+
+      return { success: response.ok, message: json.message || 'Deleted' };
+    } catch (e: any) {
+      const durationMs = Date.now() - startTime;
+      devInspector.logApi({
+        url,
+        method: 'DELETE',
+        requestData: { conversationId },
+        responseData: {},
+        status: 0,
+        durationMs,
+        fromRedisCache: false,
+        error: e?.message || 'Network error',
+      });
+      return { success: false, message: e?.message };
+    }
+  },
+
+  /**
+   * Get or create a 1:1 direct conversation on the backend.
+   * Returns the real UUID conversationId from the DB.
+   * Called before sending the first message to a contact if we only have a local ID.
+   */
+  async getOrCreateDirectConversation(
+    token: string,
+    targetUserId: string,
+  ): Promise<{ id: string; recipientDbId: string } | null> {
+    const url = `${getApiBaseUrl()}/conversations`;
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ type: 'DIRECT', targetUserId }),
+      });
+
+      if (response.status === 401) {
+        const refreshed = await this.refreshAuthToken();
+        if (refreshed?.accessToken) {
+          return this.getOrCreateDirectConversation(refreshed.accessToken, targetUserId);
+        }
+        await handleSessionExpired();
+        return null;
+      }
+
+      if (response.ok) {
+        const json = await response.json();
+        const conv = json.data || json;
+        return { id: conv.id, recipientDbId: targetUserId };
+      }
+    } catch {}
+    return null;
+  },
+
+  /**
+   * Clear all messages in a conversation on backend for current user.
+   */
+  async clearChat(
+    token: string,
+    conversationId: string,
+  ): Promise<{ success: boolean; message?: string }> {
+    const startTime = Date.now();
+    const url = `${getApiBaseUrl()}/messages/conversation/${encodeURIComponent(conversationId)}/clear`;
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+      const durationMs = Date.now() - startTime;
+
+      if (response.status === 401) {
+        const refreshed = await this.refreshAuthToken();
+        if (refreshed?.accessToken) {
+          return this.clearChat(refreshed.accessToken, conversationId);
+        }
+        await handleSessionExpired();
+        return { success: false, message: 'Session expired' };
+      }
+
+      const json = await response.json().catch(() => ({}));
+      devInspector.logApi({
+        url,
+        method: 'POST',
+        requestData: { conversationId },
+        responseData: json,
+        status: response.status,
+        durationMs,
+        fromRedisCache: false,
+      });
+
+      return { success: response.ok, message: json.message || 'Cleared' };
+    } catch (e: any) {
+      const durationMs = Date.now() - startTime;
+      devInspector.logApi({
+        url,
+        method: 'POST',
+        requestData: { conversationId },
+        responseData: {},
+        status: 0,
+        durationMs,
+        fromRedisCache: false,
+        error: e?.message || 'Network error',
+      });
+      return { success: false, message: e?.message };
+    }
+  },
 };
+
+(apiService as any).getResolvedMediaUrl = _resolveMediaUrl;

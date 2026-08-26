@@ -52,12 +52,20 @@ export class RequestUploadUrlDto {
 
 @ApiTags('Media')
 @Controller('media')
-@UseGuards(JwtAuthGuard)
-@ApiBearerAuth()
 export class MediaController {
   constructor(private readonly mediaService: MediaService) {}
 
+  @Post('upload')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Direct media upload for chat photos & attachments (requires auth)' })
+  async uploadDirect(@Body() dto: { base64Data: string; fileName?: string; mimeType?: string }) {
+    return this.mediaService.uploadDirectFile(dto);
+  }
+
   @Post('upload-url')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
   @ApiOperation({
     summary:
       'Request presigned Backblaze B2 URL for uploading client-side encrypted media blob (Max 10MB)',
@@ -67,6 +75,8 @@ export class MediaController {
   }
 
   @Get('download-url/:objectKey(*)')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
   @ApiOperation({
     summary: 'Request presigned Backblaze B2 URL for downloading encrypted media blob',
   })

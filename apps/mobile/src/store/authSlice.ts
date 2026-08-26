@@ -6,6 +6,8 @@ export interface AuthState {
   token: string | null;
   refreshToken: string | null;
   phoneNumber: string | null;
+  /** DB UUID of the authenticated user — used as socket userId for reliable echo guard */
+  userId: string | null;
   userProfile: UserProfile | null;
   isNewUser: boolean;
   isAuthenticated: boolean;
@@ -16,6 +18,7 @@ const initialState: AuthState = {
   token: null,
   refreshToken: null,
   phoneNumber: null,
+  userId: null,
   userProfile: null,
   isNewUser: false,
   isAuthenticated: false,
@@ -28,6 +31,8 @@ export const AUTH_STORAGE_KEYS = {
   USER_PROFILE: '@whatsapp_connect_user_profile',
   PHONE_NUMBER: '@whatsapp_connect_phone',
   IS_NEW_USER: '@whatsapp_connect_is_new_user',
+  DEVICE_ID: '@whatsapp_connect_device_id',
+  USER_ID: '@whatsapp_connect_user_id',
 };
 
 const authSlice = createSlice({
@@ -43,6 +48,7 @@ const authSlice = createSlice({
         token: string;
         refreshToken?: string;
         phoneNumber: string;
+        userId?: string;
         userProfile: UserProfile | null;
         isNewUser: boolean;
       }>,
@@ -50,6 +56,7 @@ const authSlice = createSlice({
       state.token = action.payload.token;
       state.refreshToken = action.payload.refreshToken || null;
       state.phoneNumber = action.payload.phoneNumber;
+      state.userId = action.payload.userId || null;
       state.userProfile = action.payload.userProfile;
       state.isNewUser = action.payload.isNewUser;
       state.isAuthenticated = true;
@@ -59,10 +66,16 @@ const authSlice = createSlice({
       if (action.payload.refreshToken) {
         safeStorage.setItem(AUTH_STORAGE_KEYS.REFRESH_TOKEN, action.payload.refreshToken);
       }
+      if (action.payload.userId) {
+        safeStorage.setItem(AUTH_STORAGE_KEYS.USER_ID, action.payload.userId);
+      }
       safeStorage.setItem(AUTH_STORAGE_KEYS.PHONE_NUMBER, action.payload.phoneNumber);
       safeStorage.setItem(AUTH_STORAGE_KEYS.IS_NEW_USER, JSON.stringify(action.payload.isNewUser));
       if (action.payload.userProfile) {
-        safeStorage.setItem(AUTH_STORAGE_KEYS.USER_PROFILE, JSON.stringify(action.payload.userProfile));
+        safeStorage.setItem(
+          AUTH_STORAGE_KEYS.USER_PROFILE,
+          JSON.stringify(action.payload.userProfile),
+        );
       }
     },
     tokensRefreshed: (
@@ -93,6 +106,7 @@ const authSlice = createSlice({
         token: string;
         refreshToken?: string | null;
         phoneNumber: string;
+        userId?: string | null;
         userProfile: UserProfile | null;
         isNewUser: boolean;
       }>,
@@ -100,6 +114,7 @@ const authSlice = createSlice({
       state.token = action.payload.token;
       state.refreshToken = action.payload.refreshToken || null;
       state.phoneNumber = action.payload.phoneNumber;
+      state.userId = action.payload.userId || null;
       state.userProfile = action.payload.userProfile;
       state.isNewUser = action.payload.isNewUser;
       state.isAuthenticated = true;
@@ -109,6 +124,7 @@ const authSlice = createSlice({
       state.token = null;
       state.refreshToken = null;
       state.phoneNumber = null;
+      state.userId = null;
       state.userProfile = null;
       state.isNewUser = false;
       state.isAuthenticated = false;
@@ -119,6 +135,7 @@ const authSlice = createSlice({
       safeStorage.removeItem(AUTH_STORAGE_KEYS.USER_PROFILE);
       safeStorage.removeItem(AUTH_STORAGE_KEYS.PHONE_NUMBER);
       safeStorage.removeItem(AUTH_STORAGE_KEYS.IS_NEW_USER);
+      safeStorage.removeItem(AUTH_STORAGE_KEYS.USER_ID);
     },
   },
 });

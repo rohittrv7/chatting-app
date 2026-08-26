@@ -16,6 +16,7 @@ import {
   Animated,
   RefreshControl,
   Modal,
+  Image,
 } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useFocusEffect } from '@react-navigation/native';
@@ -35,6 +36,8 @@ import {
   BellOff,
   MessageSquare,
   Phone,
+  Video,
+  Info,
   Settings as SettingsIcon,
   Lock,
   PhoneCall,
@@ -55,8 +58,11 @@ import {
   LogOut,
   Trash2,
   Eraser,
+  Check,
   CheckCheck,
+  Clock,
   MoreVertical,
+  UserX,
 } from 'lucide-react-native';
 import {
   fetchDeviceContacts,
@@ -66,12 +72,45 @@ import {
   requestContactsPermission,
   getDeterministicConversationId,
   getResolvedDisplayName,
+  getResolvedContact,
 } from '../services/contactsService';
 import { requestAllAppPermissions } from '../services/permissionsService';
 import { AppLogo } from '../components/AppLogo';
 import { apiService } from '../services/apiService';
 import { devInspector } from '../services/devInspectorService';
 import { LogoutConfirmModal } from '../components/LogoutConfirmModal';
+import { TypingDots } from '../components/TypingIndicator';
+import { safeStorage } from '../services/storageHelper';
+import { AUTH_STORAGE_KEYS } from '../store/authSlice';
+
+const formatChatTime = (timeStr?: string) => {
+  if (!timeStr) return '';
+  if (/^\d{1,2}:\d{2}$/.test(timeStr)) {
+    const [h, m] = timeStr.split(':').map(Number);
+    const ampm = h >= 12 ? 'pm' : 'am';
+    const h12 = h % 12 || 12;
+    return `${h12}:${m.toString().padStart(2, '0')} ${ampm}`;
+  }
+  try {
+    const d = new Date(timeStr);
+    if (!isNaN(d.getTime())) {
+      const now = new Date();
+      const isToday = d.toDateString() === now.toDateString();
+      const yesterday = new Date(now);
+      yesterday.setDate(yesterday.getDate() - 1);
+      const isYesterday = d.toDateString() === yesterday.toDateString();
+
+      if (isToday) {
+        return d
+          .toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true })
+          .toLowerCase();
+      }
+      if (isYesterday) return 'Yesterday';
+      return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+    }
+  } catch {}
+  return timeStr;
+};
 
 type Props = NativeStackScreenProps<RootStackParamList, 'MainTabs'>;
 
@@ -85,11 +124,14 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
     markConversationRead,
     userProfile,
     isUserOnline,
+    isUserTyping,
     queryPresence,
+    syncServerConversations,
   } = useChat();
   const { themeMode, colors, setThemeMode } = useTheme();
   const { showToast } = useToast();
   const token = useSelector((state: RootState) => state.auth.token);
+  const messagesMap = useSelector((state: RootState) => state.chat.messagesMap);
   const [showLogoutModal, setShowLogoutModal] = useState<boolean>(false);
   const [selectedChatForAction, setSelectedChatForAction] = useState<ConversationItem | null>(null);
   const [showDeleteConfirmModal, setShowDeleteConfirmModal] = useState<boolean>(false);
@@ -99,11 +141,19 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
   const shimmerAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    const handles = conversations.map((c) => c.username || c.title || c.id).filter(Boolean);
-    if (handles.length > 0) {
-      queryPresence(handles);
-    }
-  }, [conversations.length]);
+    const queryAllPresences = () => {
+      const handles = conversations.flatMap((c) =>
+        [c.recipientDbId, c.id, c.username].filter(Boolean),
+      ) as string[];
+      if (handles.length > 0) {
+        queryPresence(handles);
+      }
+    };
+
+    queryAllPresences();
+    const interval = setInterval(queryAllPresences, 10_000);
+    return () => clearInterval(interval);
+  }, [conversations, queryPresence]);
 
   const handleConfirmLogout = () => {
     setShowLogoutModal(false);
@@ -117,6 +167,7 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
 
   const handleRefreshChats = () => {
     setIsRefreshingChats(true);
+    syncServerConversations().catch(() => {});
     Animated.timing(slideAnim, {
       toValue: 1,
       duration: 250,
@@ -163,6 +214,7 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
   const [selectedFilter, setSelectedFilter] = useState<string>('All'); // 'All', 'Unread'
   const [isSearching, setIsSearching] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [selectedAvatarProfile, setSelectedAvatarProfile] = useState<ConversationItem | null>(null);
 
   const [registeredContacts, setRegisteredContacts] = useState<DeviceContact[]>([]);
   const [unregisteredContacts, setUnregisteredContacts] = useState<DeviceContact[]>([]);
@@ -218,15 +270,44 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
   };
 
   useEffect(() => {
-    // Only load contacts once when user first opens People tab
+    // Auto-load and sync contacts on launch / whenever token is ready
+    if (token) {
+      loadContacts(true);
+    }
+  }, [token]);
+
+  useEffect(() => {
+    // When user switches to People tab, ensure contacts are synced
     if (selectedBottomNav === 2 && registeredContacts.length === 0 && !contactsLoading) {
-      loadContacts(false);
+      loadContacts(true);
     }
   }, [selectedBottomNav]);
 
+  const isNavigatedToChatRef = useRef(false);
+  const isSearchingRef = useRef(isSearching);
+  isSearchingRef.current = isSearching;
+  const searchQueryRef = useRef(searchQuery);
+  searchQueryRef.current = searchQuery;
+
   useFocusEffect(
     useCallback(() => {
+      // Auto-clear search ONLY when returning back from Chat or Contacts
+      if (isNavigatedToChatRef.current) {
+        setSearchQuery('');
+        setIsSearching(false);
+        setChatsServerUsers([]);
+        isNavigatedToChatRef.current = false;
+      }
+
+      syncServerConversations().catch(() => {});
+
       const onBackPress = () => {
+        if (isSearchingRef.current || searchQueryRef.current) {
+          setSearchQuery('');
+          setIsSearching(false);
+          setChatsServerUsers([]);
+          return true;
+        }
         if (selectedBottomNav !== 0) {
           handleTabPress(0);
           return true;
@@ -247,21 +328,191 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
   };
 
   const handleStartChatWithContact = (contact: DeviceContact) => {
+    isNavigatedToChatRef.current = true;
     const myIdentifier = userProfile.username || userProfile.phone || 'me';
     const targetIdentifier = contact.username || contact.phone || contact.userId || contact.name;
     const convId = getDeterministicConversationId(myIdentifier, targetIdentifier);
-    addConversation(contact.name, contact.username || contact.phone, convId);
-    navigation.navigate('Chat', { conversationId: convId, title: contact.name });
+    addConversation(
+      contact.name,
+      contact.username || contact.phone,
+      convId,
+      contact.userId,
+      contact.avatarUrl,
+      contact.phone,
+    );
+    navigation.navigate('Chat', {
+      conversationId: convId,
+      title: contact.name,
+      username: contact.username,
+      avatarUrl: contact.avatarUrl,
+      phone: contact.phone,
+      recipientDbId: contact.userId,
+    });
   };
+
+  const handleDirectStartChat = (queryOrUser: string | any) => {
+    isNavigatedToChatRef.current = true;
+
+    const isObj = typeof queryOrUser === 'object' && queryOrUser !== null;
+    const targetName = isObj
+      ? queryOrUser.name || queryOrUser.displayName || 'User'
+      : queryOrUser.replace(/^@+/, '');
+    const targetUsername = isObj
+      ? queryOrUser.username
+      : queryOrUser.startsWith('@')
+        ? queryOrUser
+        : `@${queryOrUser}`;
+    const targetPhone = isObj ? queryOrUser.phoneNumber : undefined;
+    const targetAvatar = isObj ? queryOrUser.avatarUrl : undefined;
+    const targetDbId = isObj ? queryOrUser.id : undefined;
+    const targetAbout = isObj ? queryOrUser.about : undefined;
+
+    // If conversation already exists, navigate to it directly
+    const existing = conversations.find((c) => {
+      if (targetDbId && (c.id === targetDbId || c.recipientDbId === targetDbId)) return true;
+      if (
+        targetUsername &&
+        c.username &&
+        c.username.toLowerCase().replace(/^@+/, '') ===
+          targetUsername.toLowerCase().replace(/^@+/, '')
+      )
+        return true;
+      if (
+        targetPhone &&
+        c.phone &&
+        c.phone.replace(/\D/g, '').slice(-10) === targetPhone.replace(/\D/g, '').slice(-10)
+      )
+        return true;
+      return false;
+    });
+
+    if (existing) {
+      if (targetDbId && !existing.recipientDbId) {
+        addConversation(
+          existing.title || targetName,
+          existing.username || targetUsername,
+          existing.id,
+          targetDbId,
+          targetAvatar || existing.avatarUrl,
+          targetPhone || existing.phone,
+          targetAbout || existing.about,
+        );
+      }
+      navigation.navigate('Chat', {
+        conversationId: existing.id,
+        title: existing.title || targetName,
+        username: existing.username || targetUsername,
+        avatarUrl: existing.avatarUrl || targetAvatar,
+        phone: existing.phone || targetPhone,
+        recipientDbId: targetDbId || existing.recipientDbId,
+      });
+      return;
+    }
+
+    const myIdentifier = (userProfile.username || userProfile.phone || 'me').replace(/^@+/, '');
+    const convId = getDeterministicConversationId(myIdentifier, targetUsername || targetName);
+
+    addConversation(
+      targetName,
+      targetUsername,
+      convId,
+      targetDbId,
+      targetAvatar,
+      targetPhone,
+      targetAbout,
+    );
+    navigation.navigate('Chat', {
+      conversationId: convId,
+      title: targetName,
+      username: targetUsername,
+      avatarUrl: targetAvatar,
+      phone: targetPhone,
+      recipientDbId: targetDbId,
+    });
+  };
+
+  const [chatsServerUsers, setChatsServerUsers] = useState<
+    Array<{
+      id: string;
+      name: string;
+      username?: string;
+      phoneNumber?: string;
+      about?: string;
+      avatarUrl?: string;
+      isRegistered: boolean;
+    }>
+  >([]);
+  const [isSearchingChatsServer, setIsSearchingChatsServer] = useState<boolean>(false);
+
+  // Helper to render sent/delivered/read status ticks on outside chat cards
+  const renderMessageStatusIcon = (item: ConversationItem) => {
+    const msgs = messagesMap[item.id] || [];
+    const lastMsg = msgs.length > 0 ? msgs[msgs.length - 1] : undefined;
+    const isMe = item.lastMessageIsMe !== undefined ? item.lastMessageIsMe : lastMsg?.isMe;
+    if (!isMe) return null;
+
+    const status = item.lastMessageStatus || lastMsg?.status || 'SENT';
+
+    if (status === 'SENDING') {
+      return <Clock size={13} color={colors.textSecondary} style={{ marginRight: 4 }} />;
+    }
+    if (status === 'READ') {
+      return <CheckCheck size={15} color="#38BDF8" style={{ marginRight: 4 }} />;
+    }
+    if (status === 'DELIVERED') {
+      return <CheckCheck size={15} color={colors.textSecondary} style={{ marginRight: 4 }} />;
+    }
+    // SENT or SERVER_RECEIVED
+    return <Check size={15} color={colors.textSecondary} style={{ marginRight: 4 }} />;
+  };
+
+  useEffect(() => {
+    const q = searchQuery.trim();
+    if (!q || q.length < 1) {
+      setChatsServerUsers([]);
+      setIsSearchingChatsServer(false);
+      return;
+    }
+
+    // Check if query matches any existing local conversation first
+    const hasLocalMatch = conversations.some((item) => {
+      const cleanQ = q.toLowerCase().replace(/^@+/, '');
+      const cleanPhone = cleanQ.replace(/\D/g, '');
+      return (
+        item.title.toLowerCase().includes(cleanQ) ||
+        (item.username && item.username.toLowerCase().replace(/^@+/, '').includes(cleanQ)) ||
+        (cleanPhone && item.phone && item.phone.replace(/\D/g, '').includes(cleanPhone))
+      );
+    });
+
+    setIsSearchingChatsServer(true);
+    // If no local match, run DB search faster (220ms), otherwise with gentle debounce (450ms)
+    const delay = hasLocalMatch ? 450 : 220;
+    const timer = setTimeout(async () => {
+      try {
+        const currentToken = token || (await safeStorage.getItem(AUTH_STORAGE_KEYS.TOKEN)) || '';
+        const results = await apiService.searchUsers(currentToken, q);
+        setChatsServerUsers(results);
+      } catch (e) {
+        setChatsServerUsers([]);
+      } finally {
+        setIsSearchingChatsServer(false);
+      }
+    }, delay);
+
+    return () => clearTimeout(timer);
+  }, [searchQuery, token, conversations]);
 
   const filteredConversations = useMemo(() => {
     return conversations.filter((item) => {
       if (selectedFilter === 'Unread' && item.unread === '0') return false;
       if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase();
+        const q = searchQuery.toLowerCase().trim().replace(/^@+/, '');
+        const cleanPhone = q.replace(/\D/g, '');
         return (
           item.title.toLowerCase().includes(q) ||
-          (item.username && item.username.toLowerCase().includes(q))
+          (item.username && item.username.toLowerCase().replace(/^@+/, '').includes(q)) ||
+          (cleanPhone && item.phone && item.phone.replace(/\D/g, '').includes(cleanPhone))
         );
       }
       return true;
@@ -278,6 +529,7 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
       id: string;
       name: string;
       username?: string;
+      phoneNumber?: string;
       about?: string;
       avatarUrl?: string;
       isRegistered: boolean;
@@ -363,16 +615,23 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
       {/* Top Header Bar */}
       <View style={styles.topHeaderRow}>
         <TouchableOpacity style={styles.avatarWrapper} onPress={() => setSelectedBottomNav(3)}>
-          <View
-            style={[
-              styles.headerAvatar,
-              { backgroundColor: colors.surface, borderColor: colors.cardBorder },
-            ]}
-          >
-            <Text style={[styles.headerAvatarLetter, { color: colors.primaryIndigo }]}>
-              {userProfile.name ? userProfile.name[0].toUpperCase() : 'R'}
-            </Text>
-          </View>
+          {userProfile.avatarUrl ? (
+            <Image
+              source={{ uri: apiService.getResolvedMediaUrl(userProfile.avatarUrl) }}
+              style={styles.headerAvatarImage}
+            />
+          ) : (
+            <View
+              style={[
+                styles.headerAvatar,
+                { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+              ]}
+            >
+              <Text style={[styles.headerAvatarLetter, { color: colors.primaryIndigo }]}>
+                {userProfile.name ? userProfile.name[0].toUpperCase() : 'R'}
+              </Text>
+            </View>
+          )}
           <View style={[styles.onlineBadge, { borderColor: colors.bg }]} />
         </TouchableOpacity>
 
@@ -510,8 +769,318 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
         </View>
       </Animated.View>
 
-      {/* Conversation List */}
-      {filteredConversations.length === 0 ? (
+      {/* Conversation List & Global Search Results */}
+      {searchQuery.trim().length > 0 ? (
+        <ScrollView
+          contentContainerStyle={styles.listContainer}
+          keyboardShouldPersistTaps="handled"
+        >
+          {/* Server / Global Users Searching Indicator */}
+          {isSearchingChatsServer && (
+            <View style={styles.searchLoadingRow}>
+              <ActivityIndicator
+                size="small"
+                color={colors.primaryIndigo}
+                style={{ marginRight: 8 }}
+              />
+              <Text style={{ color: colors.textSecondary, fontSize: 13 }}>
+                Searching registered users...
+              </Text>
+            </View>
+          )}
+
+          {/* 1. Server / Global Registered Users Found in Database */}
+          {chatsServerUsers.length > 0 && (
+            <View style={{ marginBottom: 14 }}>
+              <Text style={[styles.searchSectionHeader, { color: colors.primaryIndigo }]}>
+                REGISTERED USERS ({chatsServerUsers.length})
+              </Text>
+              {chatsServerUsers.map((user) => (
+                <TouchableOpacity
+                  key={user.id}
+                  style={[
+                    styles.chatCard,
+                    { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+                  ]}
+                  activeOpacity={0.85}
+                  onPress={() => handleDirectStartChat(user)}
+                >
+                  <View style={styles.cardAvatarWrapper}>
+                    {user.avatarUrl ? (
+                      <Image
+                        source={{ uri: user.avatarUrl }}
+                        style={styles.cardAvatarImage}
+                        resizeMode="cover"
+                      />
+                    ) : (
+                      <View style={[styles.cardAvatar, { backgroundColor: colors.cardBorder }]}>
+                        <Text style={[styles.avatarLetter, { color: colors.primaryIndigo }]}>
+                          {(user.name || 'U')[0].toUpperCase()}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+
+                  <View style={styles.cardContent}>
+                    <View style={styles.cardHeaderRow}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={[styles.cardTitle, { color: colors.textPrimary }]}>
+                          {user.name}
+                        </Text>
+                        {user.username && (
+                          <Text style={[styles.cardUsername, { color: colors.primaryIndigo }]}>
+                            {user.username}
+                          </Text>
+                        )}
+                      </View>
+                      {(() => {
+                        const myUser = (userProfile.username || '')
+                          .toLowerCase()
+                          .replace(/^@+/, '');
+                        const myPhone = (userProfile.phone || '').replace(/\D/g, '').slice(-10);
+                        const uClean = (user.username || '').toLowerCase().replace(/^@+/, '');
+                        const uPhone = (user.phoneNumber || '').replace(/\D/g, '').slice(-10);
+                        const isMe =
+                          (uClean && myUser && uClean === myUser) ||
+                          (uPhone && myPhone && uPhone === myPhone);
+
+                        return isMe ? (
+                          <View
+                            style={[
+                              styles.directSearchBadge,
+                              { backgroundColor: '#475569', marginLeft: 8 },
+                            ]}
+                          >
+                            <Text style={styles.directSearchBadgeText}>You</Text>
+                          </View>
+                        ) : (
+                          <TouchableOpacity
+                            style={[
+                              styles.directSearchBadge,
+                              { backgroundColor: '#10B981', marginLeft: 8 },
+                            ]}
+                            onPress={() => handleDirectStartChat(user)}
+                          >
+                            <Text style={styles.directSearchBadgeText}>Chat</Text>
+                          </TouchableOpacity>
+                        );
+                      })()}
+                    </View>
+                    <Text
+                      style={[styles.cardSubtitle, { color: colors.textSecondary, marginTop: 4 }]}
+                      numberOfLines={1}
+                    >
+                      {user.about || 'Available on WhatsApp'}
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+              ))}
+            </View>
+          )}
+
+          {/* Local Conversations Found */}
+          {filteredConversations.length > 0 && (
+            <View>
+              <Text style={[styles.searchSectionHeader, { color: colors.textSecondary }]}>
+                EXISTING CONVERSATIONS ({filteredConversations.length})
+              </Text>
+              {filteredConversations.map((item) => {
+                const isUnread = item.unread !== '0';
+                const isMuted = item.isMuted === true;
+                const isTyping = Boolean(
+                  isUserTyping(item.id, item.recipientDbId) ||
+                  (item.username && isUserTyping(undefined, item.username.replace(/^@+/, ''))),
+                );
+
+                return (
+                  <TouchableOpacity
+                    key={item.id}
+                    style={[
+                      styles.chatCard,
+                      { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+                    ]}
+                    activeOpacity={0.8}
+                    onPress={() => {
+                      isNavigatedToChatRef.current = true;
+                      navigation.navigate('Chat', {
+                        conversationId: item.id,
+                        title: item.title,
+                        username: item.username,
+                        avatarUrl: item.avatarUrl,
+                        phone: item.phone,
+                        recipientDbId: item.recipientDbId,
+                      });
+                    }}
+                    onLongPress={() => setSelectedChatForAction(item)}
+                    delayLongPress={280}
+                  >
+                    <TouchableOpacity
+                      style={styles.cardAvatarWrapper}
+                      activeOpacity={0.7}
+                      onPress={(e) => {
+                        e.stopPropagation();
+                        setSelectedAvatarProfile(item);
+                      }}
+                    >
+                      {item.avatarUrl ? (
+                        <Image
+                          source={{ uri: apiService.getResolvedMediaUrl(item.avatarUrl) }}
+                          style={styles.cardAvatarImage}
+                          resizeMode="cover"
+                        />
+                      ) : (
+                        <View
+                          style={[
+                            styles.cardAvatar,
+                            { backgroundColor: item.groupBg || colors.cardBorder },
+                          ]}
+                        >
+                          <Text style={[styles.avatarLetter, { color: colors.primaryIndigo }]}>
+                            {item.avatar}
+                          </Text>
+                        </View>
+                      )}
+                      {isUserOnline(item.recipientDbId) ||
+                      isUserOnline(item.username) ||
+                      isUserOnline(item.id) ||
+                      isUserOnline(item.title) ? (
+                        <View
+                          style={[
+                            styles.onlineBadgeCard,
+                            { backgroundColor: '#10B981', borderColor: colors.surface },
+                          ]}
+                        />
+                      ) : (
+                        <View
+                          style={[
+                            styles.offlineBadgeCard,
+                            { backgroundColor: '#374151', borderColor: colors.surface },
+                          ]}
+                        />
+                      )}
+                    </TouchableOpacity>
+
+                    <View style={styles.cardContent}>
+                      <View style={styles.cardHeaderRow}>
+                        <View style={{ flex: 1, marginRight: 8 }}>
+                          <Text
+                            style={[styles.cardTitle, { color: colors.textPrimary }]}
+                            numberOfLines={1}
+                          >
+                            {getResolvedDisplayName(
+                              { username: item.username, name: item.title },
+                              item.title,
+                            )}
+                          </Text>
+                          {item.username && (
+                            <Text style={[styles.cardUsername, { color: colors.primaryIndigo }]}>
+                              {item.username}
+                            </Text>
+                          )}
+                        </View>
+                        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                          <Text
+                            style={[
+                              styles.cardTime,
+                              { color: colors.textSecondary, marginRight: 4 },
+                            ]}
+                          >
+                            {formatChatTime(item.time)}
+                          </Text>
+                          <TouchableOpacity
+                            style={styles.cardMenuBtn}
+                            hitSlop={{ top: 12, bottom: 12, left: 10, right: 10 }}
+                            onPress={() => setSelectedChatForAction(item)}
+                          >
+                            <MoreVertical size={16} color={colors.textSecondary} />
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+
+                      <View style={styles.cardSubtitleRow}>
+                        {isTyping ? (
+                          <View
+                            style={{
+                              flexDirection: 'row',
+                              alignItems: 'center',
+                              flex: 1,
+                              marginRight: 8,
+                            }}
+                          >
+                            <Text
+                              style={{
+                                color: '#10B981',
+                                fontSize: 13,
+                                fontWeight: '700',
+                                marginRight: 4,
+                              }}
+                            >
+                              typing...
+                            </Text>
+                            <TypingDots color="#10B981" dotSize={4} />
+                          </View>
+                        ) : (
+                          <View
+                            style={{
+                              flexDirection: 'row',
+                              alignItems: 'center',
+                              flex: 1,
+                              marginRight: 8,
+                            }}
+                          >
+                            {renderMessageStatusIcon(item)}
+                            <Text
+                              style={[
+                                styles.cardSubtitle,
+                                { color: colors.textSecondary, flex: 1, marginRight: 0 },
+                              ]}
+                              numberOfLines={1}
+                            >
+                              {item.lastMessage}
+                            </Text>
+                          </View>
+                        )}
+                        {isMuted ? (
+                          <BellOff size={16} color={colors.textSecondary} />
+                        ) : isUnread ? (
+                          <View style={[styles.unreadBadge, { minWidth: 20 }]}>
+                            <Text style={styles.unreadText}>
+                              {parseInt(item.unread, 10) > 99 ? '99+' : item.unread}
+                            </Text>
+                          </View>
+                        ) : null}
+                      </View>
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          )}
+
+          {/* 3. Empty State When No Registered Users or Chats Match Query */}
+          {filteredConversations.length === 0 &&
+            chatsServerUsers.length === 0 &&
+            !isSearchingChatsServer && (
+              <View style={styles.emptySearchContainer}>
+                <View
+                  style={[
+                    styles.emptySearchIconCircle,
+                    { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+                  ]}
+                >
+                  <UserX size={34} color={colors.textSecondary} />
+                </View>
+                <Text style={[styles.emptySearchTitle, { color: colors.textPrimary }]}>
+                  No user found
+                </Text>
+                <Text style={[styles.emptySearchDesc, { color: colors.textSecondary }]}>
+                  No registered account matches "{searchQuery.trim()}". Make sure the username or
+                  phone number is correct.
+                </Text>
+              </View>
+            )}
+        </ScrollView>
+      ) : filteredConversations.length === 0 ? (
         <ScrollView
           contentContainerStyle={styles.emptyChatsContainer}
           refreshControl={
@@ -562,6 +1131,10 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
           renderItem={({ item }) => {
             const isUnread = item.unread !== '0';
             const isMuted = item.isMuted === true;
+            const isTyping = Boolean(
+              isUserTyping(item.id, item.recipientDbId) ||
+              (item.username && isUserTyping(undefined, item.username.replace(/^@+/, ''))),
+            );
 
             return (
               <TouchableOpacity
@@ -570,24 +1143,48 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                   { backgroundColor: colors.surface, borderColor: colors.cardBorder },
                 ]}
                 activeOpacity={0.8}
-                onPress={() =>
-                  navigation.navigate('Chat', { conversationId: item.id, title: item.title })
-                }
+                onPress={() => {
+                  isNavigatedToChatRef.current = true;
+                  navigation.navigate('Chat', {
+                    conversationId: item.id,
+                    title: item.title,
+                    username: item.username,
+                    avatarUrl: item.avatarUrl,
+                    phone: item.phone,
+                    recipientDbId: item.recipientDbId,
+                  });
+                }}
                 onLongPress={() => setSelectedChatForAction(item)}
                 delayLongPress={280}
               >
-                <View style={styles.cardAvatarWrapper}>
-                  <View
-                    style={[
-                      styles.cardAvatar,
-                      { backgroundColor: item.groupBg || colors.cardBorder },
-                    ]}
-                  >
-                    <Text style={[styles.avatarLetter, { color: colors.primaryIndigo }]}>
-                      {item.avatar}
-                    </Text>
-                  </View>
-                  {isUserOnline(item.username) ||
+                <TouchableOpacity
+                  style={styles.cardAvatarWrapper}
+                  activeOpacity={0.7}
+                  onPress={(e) => {
+                    e.stopPropagation();
+                    setSelectedAvatarProfile(item);
+                  }}
+                >
+                  {item.avatarUrl ? (
+                    <Image
+                      source={{ uri: apiService.getResolvedMediaUrl(item.avatarUrl) }}
+                      style={styles.cardAvatarImage}
+                      resizeMode="cover"
+                    />
+                  ) : (
+                    <View
+                      style={[
+                        styles.cardAvatar,
+                        { backgroundColor: item.groupBg || colors.cardBorder },
+                      ]}
+                    >
+                      <Text style={[styles.avatarLetter, { color: colors.primaryIndigo }]}>
+                        {item.avatar}
+                      </Text>
+                    </View>
+                  )}
+                  {isUserOnline(item.recipientDbId) ||
+                  isUserOnline(item.username) ||
                   isUserOnline(item.id) ||
                   isUserOnline(item.title) ? (
                     <View
@@ -600,17 +1197,11 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                     <View
                       style={[
                         styles.offlineBadgeCard,
-                        { backgroundColor: '#475569', borderColor: colors.surface },
+                        { backgroundColor: '#374151', borderColor: colors.surface },
                       ]}
-                    >
-                      <Text
-                        style={{ color: '#FFF', fontSize: 6, fontWeight: '900', lineHeight: 7 }}
-                      >
-                        ✕
-                      </Text>
-                    </View>
+                    />
                   )}
-                </View>
+                </TouchableOpacity>
 
                 <View style={styles.cardContent}>
                   <View style={styles.cardHeaderRow}>
@@ -634,7 +1225,7 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                       <Text
                         style={[styles.cardTime, { color: colors.textSecondary, marginRight: 4 }]}
                       >
-                        {item.time}
+                        {formatChatTime(item.time)}
                       </Text>
                       <TouchableOpacity
                         style={styles.cardMenuBtn}
@@ -647,17 +1238,55 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                   </View>
 
                   <View style={styles.cardSubtitleRow}>
-                    <Text
-                      style={[styles.cardSubtitle, { color: colors.textSecondary }]}
-                      numberOfLines={1}
-                    >
-                      {item.lastMessage}
-                    </Text>
+                    {isTyping ? (
+                      <View
+                        style={{
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          flex: 1,
+                          marginRight: 8,
+                        }}
+                      >
+                        <Text
+                          style={{
+                            color: '#10B981',
+                            fontSize: 13,
+                            fontWeight: '700',
+                            marginRight: 4,
+                          }}
+                        >
+                          typing...
+                        </Text>
+                        <TypingDots color="#10B981" dotSize={4} />
+                      </View>
+                    ) : (
+                      <View
+                        style={{
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          flex: 1,
+                          marginRight: 8,
+                        }}
+                      >
+                        {renderMessageStatusIcon(item)}
+                        <Text
+                          style={[
+                            styles.cardSubtitle,
+                            { color: colors.textSecondary, flex: 1, marginRight: 0 },
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {item.lastMessage}
+                        </Text>
+                      </View>
+                    )}
                     {isMuted ? (
                       <BellOff size={16} color={colors.textSecondary} />
                     ) : isUnread ? (
-                      <View style={styles.unreadBadge}>
-                        <Text style={styles.unreadText}>{item.unread}</Text>
+                      <View style={[styles.unreadBadge, { minWidth: 20 }]}>
+                        <Text style={styles.unreadText}>
+                          {parseInt(item.unread, 10) > 99 ? '99+' : item.unread}
+                        </Text>
                       </View>
                     ) : null}
                   </View>
@@ -914,13 +1543,7 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                       {isUserOnline(user.username) || isUserOnline(user.id) ? (
                         <View style={[styles.activeDot, { backgroundColor: '#10B981' }]} />
                       ) : (
-                        <View style={[styles.offlineDotSmall, { backgroundColor: '#475569' }]}>
-                          <Text
-                            style={{ color: '#FFF', fontSize: 6, fontWeight: '900', lineHeight: 7 }}
-                          >
-                            ✕
-                          </Text>
-                        </View>
+                        <View style={[styles.activeDot, { backgroundColor: '#374151' }]} />
                       )}
                     </View>
                     <Text
@@ -966,11 +1589,19 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                   activeOpacity={0.8}
                   onPress={() => handleStartChatWithContact(contact)}
                 >
-                  <View style={[styles.avatarBox, { backgroundColor: colors.primaryIndigo }]}>
-                    <Text style={[styles.avatarLetter, { color: '#FFF' }]}>
-                      {contact.name ? contact.name[0].toUpperCase() : '?'}
-                    </Text>
-                  </View>
+                  {contact.avatarUrl ? (
+                    <Image
+                      source={{ uri: contact.avatarUrl }}
+                      style={styles.cardAvatarImage}
+                      resizeMode="cover"
+                    />
+                  ) : (
+                    <View style={[styles.avatarBox, { backgroundColor: colors.primaryIndigo }]}>
+                      <Text style={[styles.avatarLetter, { color: '#FFF' }]}>
+                        {contact.name ? contact.name[0].toUpperCase() : '?'}
+                      </Text>
+                    </View>
+                  )}
                   <View style={{ flex: 1, marginLeft: 12 }}>
                     <View style={styles.nameRow}>
                       <Text
@@ -985,13 +1616,7 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                       isUserOnline(contact.name) ? (
                         <View style={[styles.activeDot, { backgroundColor: '#10B981' }]} />
                       ) : (
-                        <View style={[styles.offlineDotSmall, { backgroundColor: '#475569' }]}>
-                          <Text
-                            style={{ color: '#FFF', fontSize: 6, fontWeight: '900', lineHeight: 7 }}
-                          >
-                            ✕
-                          </Text>
-                        </View>
+                        <View style={[styles.activeDot, { backgroundColor: '#374151' }]} />
                       )}
                     </View>
                     <Text
@@ -1087,11 +1712,18 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
           onPress={() => navigation.navigate('EditProfile')}
         >
           <View style={styles.profileAvatarWrapper}>
-            <View style={[styles.profileAvatar, { backgroundColor: colors.primaryIndigo }]}>
-              <Text style={styles.profileAvatarText}>
-                {userProfile.name ? userProfile.name[0].toUpperCase() : 'R'}
-              </Text>
-            </View>
+            {userProfile.avatarUrl ? (
+              <Image
+                source={{ uri: apiService.getResolvedMediaUrl(userProfile.avatarUrl) }}
+                style={styles.profileAvatarImage}
+              />
+            ) : (
+              <View style={[styles.profileAvatar, { backgroundColor: colors.primaryIndigo }]}>
+                <Text style={styles.profileAvatarText}>
+                  {userProfile.name ? userProfile.name[0].toUpperCase() : 'R'}
+                </Text>
+              </View>
+            )}
             <View
               style={[
                 styles.cameraBadge,
@@ -1512,6 +2144,152 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
         </View>
       </Modal>
 
+      {/* 🖼️ WhatsApp Quick Profile Picture Modal on Avatar Click */}
+      <Modal
+        visible={!!selectedAvatarProfile}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSelectedAvatarProfile(null)}
+      >
+        <TouchableOpacity
+          style={styles.avatarModalBackdrop}
+          activeOpacity={1}
+          onPress={() => setSelectedAvatarProfile(null)}
+        >
+          <View
+            style={[
+              styles.avatarModalCard,
+              { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+            ]}
+            onStartShouldSetResponder={() => true}
+          >
+            {/* Header with Name */}
+            <View style={styles.avatarModalHeader}>
+              <Text
+                style={[styles.avatarModalTitle, { color: colors.textPrimary }]}
+                numberOfLines={1}
+              >
+                {selectedAvatarProfile
+                  ? getResolvedDisplayName(
+                      {
+                        username: selectedAvatarProfile.username,
+                        name: selectedAvatarProfile.title,
+                        phone: selectedAvatarProfile.phone,
+                      },
+                      selectedAvatarProfile.title,
+                    )
+                  : ''}
+              </Text>
+              <TouchableOpacity
+                onPress={() => setSelectedAvatarProfile(null)}
+                style={styles.avatarModalCloseBtn}
+              >
+                <X size={20} color={colors.textSecondary} />
+              </TouchableOpacity>
+            </View>
+
+            {/* Big Profile Photo */}
+            <View style={styles.avatarModalImageContainer}>
+              {selectedAvatarProfile?.avatarUrl ? (
+                <Image
+                  source={{ uri: selectedAvatarProfile.avatarUrl }}
+                  style={styles.avatarModalImage}
+                  resizeMode="cover"
+                />
+              ) : (
+                <View
+                  style={[
+                    styles.avatarModalPlaceholder,
+                    { backgroundColor: selectedAvatarProfile?.groupBg || colors.primaryIndigo },
+                  ]}
+                >
+                  <Text style={styles.avatarModalPlaceholderLetter}>
+                    {selectedAvatarProfile
+                      ? (
+                          getResolvedDisplayName(
+                            {
+                              username: selectedAvatarProfile.username,
+                              name: selectedAvatarProfile.title,
+                            },
+                            selectedAvatarProfile.title,
+                          )[0] || 'U'
+                        ).toUpperCase()
+                      : 'U'}
+                  </Text>
+                </View>
+              )}
+            </View>
+
+            {/* Quick WhatsApp Action Buttons */}
+            <View style={[styles.avatarModalActions, { borderTopColor: colors.cardBorder }]}>
+              <TouchableOpacity
+                style={styles.avatarModalActionBtn}
+                onPress={() => {
+                  const p = selectedAvatarProfile;
+                  setSelectedAvatarProfile(null);
+                  if (p) navigation.navigate('Chat', { conversationId: p.id, title: p.title });
+                }}
+              >
+                <MessageSquare size={22} color={colors.primaryIndigo} />
+                <Text style={[styles.avatarModalActionText, { color: colors.primaryIndigo }]}>
+                  Message
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.avatarModalActionBtn}
+                onPress={() => {
+                  const p = selectedAvatarProfile;
+                  setSelectedAvatarProfile(null);
+                  if (p)
+                    navigation.navigate('Call', {
+                      callId: `call_${Date.now()}`,
+                      targetUserId: p.title,
+                      isCaller: true,
+                      isVideo: false,
+                    });
+                }}
+              >
+                <Phone size={22} color="#10B981" />
+                <Text style={[styles.avatarModalActionText, { color: '#10B981' }]}>Audio</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.avatarModalActionBtn}
+                onPress={() => {
+                  const p = selectedAvatarProfile;
+                  setSelectedAvatarProfile(null);
+                  if (p)
+                    navigation.navigate('Call', {
+                      callId: `call_${Date.now()}`,
+                      targetUserId: p.title,
+                      isCaller: true,
+                      isVideo: true,
+                    });
+                }}
+              >
+                <Video size={22} color="#8B5CF6" />
+                <Text style={[styles.avatarModalActionText, { color: '#8B5CF6' }]}>Video</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.avatarModalActionBtn}
+                onPress={() => {
+                  const p = selectedAvatarProfile;
+                  setSelectedAvatarProfile(null);
+                  if (p) setSelectedChatForAction(p);
+                }}
+              >
+                <Info size={22} color={colors.textSecondary} />
+                <Text style={[styles.avatarModalActionText, { color: colors.textSecondary }]}>
+                  Info
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
       {/* Dynamic Bottom Navigation Bar */}
       <View
         style={[
@@ -1584,6 +2362,11 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 1,
+  },
+  headerAvatarImage: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
   },
   headerAvatarLetter: {
     fontSize: 16,
@@ -1690,22 +2473,18 @@ const styles = StyleSheet.create({
   },
   offlineBadgeCard: {
     position: 'absolute',
-    right: -2,
-    bottom: -2,
-    width: 13,
-    height: 13,
-    borderRadius: 6.5,
-    borderWidth: 1.5,
-    justifyContent: 'center',
-    alignItems: 'center',
+    right: 0,
+    bottom: 0,
+    width: 11,
+    height: 11,
+    borderRadius: 5.5,
+    borderWidth: 2,
   },
   offlineDotSmall: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
     marginLeft: 6,
-    justifyContent: 'center',
-    alignItems: 'center',
   },
   cardContent: {
     flex: 1,
@@ -1974,6 +2753,11 @@ const styles = StyleSheet.create({
     borderRadius: 28,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  profileAvatarImage: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
   },
   profileAvatarText: {
     fontSize: 22,
@@ -2334,5 +3118,161 @@ const styles = StyleSheet.create({
     color: '#FFF',
     fontSize: 14,
     fontWeight: '700',
+  },
+  cardAvatarImage: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+  },
+  avatarModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.65)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  avatarModalCard: {
+    width: '100%',
+    maxWidth: 320,
+    borderRadius: 20,
+    overflow: 'hidden',
+    borderWidth: 1,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.35,
+    shadowRadius: 20,
+    elevation: 10,
+  },
+  avatarModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  avatarModalTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+    flex: 1,
+    marginRight: 8,
+  },
+  avatarModalCloseBtn: {
+    padding: 4,
+  },
+  avatarModalImageContainer: {
+    width: '100%',
+    height: 280,
+    backgroundColor: '#0F172A',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  avatarModalImage: {
+    width: '100%',
+    height: '100%',
+  },
+  avatarModalPlaceholder: {
+    width: '100%',
+    height: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  avatarModalPlaceholderLetter: {
+    fontSize: 84,
+    fontWeight: '800',
+    color: '#FFF',
+  },
+  avatarModalActions: {
+    flexDirection: 'row',
+    borderTopWidth: 1,
+    paddingVertical: 10,
+    justifyContent: 'space-around',
+  },
+  avatarModalActionBtn: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+  },
+  avatarModalActionText: {
+    fontSize: 11,
+    fontWeight: '600',
+    marginTop: 4,
+  },
+  directSearchCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 20,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    marginBottom: 14,
+    borderWidth: 1.5,
+  },
+  directSearchIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  directSearchTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  directSearchSubtitle: {
+    fontSize: 12,
+    marginTop: 2,
+  },
+  directSearchBadge: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 14,
+    marginLeft: 8,
+  },
+  directSearchBadgeText: {
+    color: '#FFF',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  searchSectionHeader: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.6,
+    marginBottom: 8,
+    marginTop: 10,
+    marginLeft: 4,
+  },
+  searchLoadingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 6,
+    marginBottom: 8,
+  },
+  emptySearchContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 48,
+    paddingHorizontal: 24,
+  },
+  emptySearchIconCircle: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    marginBottom: 16,
+  },
+  emptySearchTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+    marginBottom: 6,
+    textAlign: 'center',
+  },
+  emptySearchDesc: {
+    fontSize: 13,
+    lineHeight: 20,
+    textAlign: 'center',
+    maxWidth: 280,
   },
 });

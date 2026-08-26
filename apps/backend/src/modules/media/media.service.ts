@@ -14,6 +14,7 @@ import {
   BANNED_EXTENSIONS,
 } from '@chat/shared-contracts';
 import * as path from 'path';
+import * as fs from 'fs';
 
 @Injectable()
 export class MediaService implements OnModuleInit {
@@ -163,6 +164,32 @@ export class MediaService implements OnModuleInit {
       downloadUrl,
       objectKey: cleanKey,
       expiresInSeconds: 3600,
+    };
+  }
+
+  /**
+   * Direct base64/buffer upload for fast local and cloud media sharing
+   */
+  async uploadDirectFile(dto: { base64Data: string; fileName?: string; mimeType?: string }) {
+    if (!dto.base64Data) {
+      throw new BadRequestException('base64Data is required');
+    }
+    const cleanBase64 = dto.base64Data.replace(/^data:[^;]+;base64,/, '');
+    const buffer = Buffer.from(cleanBase64, 'base64');
+    const ext = dto.mimeType ? dto.mimeType.split('/')[1] || 'jpg' : 'jpg';
+    const filename = `img_${Date.now()}_${Math.random().toString(36).substring(2, 7)}.${ext}`;
+    const uploadsDir = path.join(process.cwd(), 'uploads', 'images');
+    if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+
+    const filePath = path.join(uploadsDir, filename);
+    fs.writeFileSync(filePath, buffer);
+
+    const relativeUrl = `/uploads/images/${filename}`;
+    return {
+      success: true,
+      url: relativeUrl,
+      fileName: filename,
+      size: buffer.length,
     };
   }
 }

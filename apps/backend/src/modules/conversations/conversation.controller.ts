@@ -1,4 +1,4 @@
-import { Controller, Post, Get, Param, Body, UseGuards } from '@nestjs/common';
+import { Controller, Post, Get, Delete, Param, Body, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { ConversationService } from './conversation.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -58,5 +58,13 @@ export class ConversationController {
   @ApiOperation({ summary: 'Get details of a specific conversation' })
   async getConversation(@Param('id') id: string) {
     return this.conversationService.getConversationById(id);
+  }
+
+  @Delete(':id')
+  @ApiOperation({
+    summary: 'Delete conversation for current user (Soft delete & remove membership)',
+  })
+  async deleteConversation(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
+    return this.conversationService.deleteConversation(user.userId, id);
   }
 }

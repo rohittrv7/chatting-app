@@ -79,26 +79,34 @@ export const chatSlice = createSlice({
       if (!state.messagesMap[conversationId]) {
         state.messagesMap[conversationId] = [];
       }
-      // Check if message already exists
-      const existingIdx = state.messagesMap[conversationId].findIndex((m) => m.id === message.id);
-      if (existingIdx >= 0) {
-        state.messagesMap[conversationId][existingIdx] = message;
-      } else {
-        state.messagesMap[conversationId].push(message);
+      const msgs = state.messagesMap[conversationId];
+
+      // Dedup: skip if exact same id already exists
+      const exactIdx = msgs.findIndex((m) => m.id === message.id);
+      if (exactIdx >= 0) {
+        // Update existing (e.g. status change)
+        msgs[exactIdx] = { ...msgs[exactIdx], ...message };
+        safeStorage.setItem(CHAT_STORAGE_KEYS.MESSAGES, JSON.stringify(state.messagesMap));
+        safeStorage.setItem(CHAT_STORAGE_KEYS.CONVERSATIONS, JSON.stringify(state.conversations));
+        return;
       }
 
-      // Keep only the most recent 50 messages per room to optimize storage and memory
-      if (state.messagesMap[conversationId].length > 50) {
-        state.messagesMap[conversationId] = state.messagesMap[conversationId].slice(-50);
+      msgs.push(message);
+
+      // Keep only the most recent 100 messages per room
+      if (msgs.length > 100) {
+        state.messagesMap[conversationId] = msgs.slice(-100);
       }
 
-      // Update lastMessage in conversations
-      const conv = state.conversations.find(
-        (c) => c.id === conversationId || c.title === conversationId,
-      );
+      // Update lastMessage in conversation list
+      const conv = state.conversations.find((c) => c.id === conversationId);
       if (conv) {
-        conv.lastMessage = message.text || (message.imagePath ? '📷 Photo' : 'Message');
+        conv.lastMessage =
+          message.text ||
+          (message.imagePath ? '📷 Photo' : message.location ? '📍 Location' : 'Message');
         conv.time = message.time;
+        conv.lastMessageStatus = message.status;
+        conv.lastMessageIsMe = message.isMe;
       }
 
       safeStorage.setItem(CHAT_STORAGE_KEYS.MESSAGES, JSON.stringify(state.messagesMap));
@@ -110,22 +118,61 @@ export const chatSlice = createSlice({
         conversationId?: string;
         messageId: string;
         clientMessageId?: string;
-        status: 'SENDING' | 'SENT' | 'DELIVERED' | 'READ' | 'SERVER_RECEIVED';
+        status: 'SENDING' | 'SENT' | 'DELIVERED' | 'READ' | 'SERVER_RECEIVED' | 'FAILED';
       }>,
     ) => {
       const { messageId, clientMessageId, status } = action.payload;
 
-      // Always update across all conversation buckets to guarantee consistency
+      for (const cId of Object.keys(state.messagesMap)) {
+        const msgs = state.messagesMap[cId];
+        if (!msgs) continue;
+        for (let i = 0; i < msgs.length; i++) {
+          const msg = msgs[i];
+          const matchById = msg.id === messageId;
+          const matchByClient = clientMessageId && msg.id === clientMessageId;
+          if (matchById || matchByClient) {
+            // If we got a real serverMessageId, replace the optimistic clientMessageId
+            // This prevents a duplicate bubble when message:new also arrives
+            if (clientMessageId && messageId && messageId !== clientMessageId) {
+              msgs[i] = { ...msg, id: messageId, status };
+            } else {
+              msgs[i] = { ...msg, status };
+            }
+          }
+        }
+      }
+
+      // Update lastMessageStatus in conversation
+      for (const c of state.conversations) {
+        const msgs = state.messagesMap[c.id];
+        if (!msgs || msgs.length === 0) continue;
+        const lastMsg = msgs[msgs.length - 1];
+        if (lastMsg.id === messageId || (clientMessageId && lastMsg.id === clientMessageId)) {
+          c.lastMessageStatus = status;
+        }
+      }
+
+      safeStorage.setItem(CHAT_STORAGE_KEYS.MESSAGES, JSON.stringify(state.messagesMap));
+      safeStorage.setItem(CHAT_STORAGE_KEYS.CONVERSATIONS, JSON.stringify(state.conversations));
+    },
+    updateMessageProgress: (
+      state,
+      action: PayloadAction<{
+        messageId: string;
+        uploadProgress: number;
+        isUploading: boolean;
+        imagePath?: string;
+      }>,
+    ) => {
+      const { messageId, uploadProgress, isUploading, imagePath } = action.payload;
       for (const cId of Object.keys(state.messagesMap)) {
         const msgs = state.messagesMap[cId];
         if (msgs && Array.isArray(msgs)) {
           for (const msg of msgs) {
-            if (
-              msg.id === messageId ||
-              (clientMessageId && msg.id === clientMessageId) ||
-              (messageId && msg.id && (msg.id.includes(messageId) || messageId.includes(msg.id)))
-            ) {
-              msg.status = status;
+            if (msg.id === messageId) {
+              msg.uploadProgress = uploadProgress;
+              msg.isUploading = isUploading;
+              if (imagePath) msg.imagePath = imagePath;
             }
           }
         }
@@ -230,6 +277,7 @@ export const {
   setMessagesForConversation,
   appendMessage,
   updateMessageStatus,
+  updateMessageProgress,
   markAllMessagesRead,
   toggleStarMessage,
   removeConversation,

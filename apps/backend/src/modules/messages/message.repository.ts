@@ -1,13 +1,23 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
-import { SendMessageDto, DeliveryStatus } from '@chat/shared-contracts';
+import { DeliveryStatus, ConversationType } from '@chat/shared-contracts';
 import { Prisma } from '@prisma/client';
+
+/** Minimal shape expected by createMessage — decoupled from shared-contracts DTO */
+interface CreateMessageInput {
+  clientMessageId?: string;
+  conversationId: string;
+  receiverId?: string;
+  type: 'TEXT' | 'IMAGE' | 'LOCATION' | 'VIDEO' | 'AUDIO' | 'DOCUMENT' | 'SYSTEM';
+  ciphertexts: Prisma.JsonObject;
+  replyToId?: string;
+}
 
 @Injectable()
 export class MessageRepository {
   constructor(private readonly prisma: PrismaService) {}
 
-  async createMessage(senderUserId: string, senderDeviceId: string, dto: SendMessageDto) {
+  async createMessage(senderUserId: string, senderDeviceId: string, dto: CreateMessageInput) {
     // 1. Resolve or ensure sender User exists in DB
     const cleanUsernameOrPhone = (senderUserId || '').replace(/^@+/, '');
     const clean10 = cleanUsernameOrPhone.replace(/\D/g, '').slice(-10);
@@ -95,7 +105,7 @@ export class MessageRepository {
         where: {
           OR: [
             { id: receiverRaw },
-            { username: cleanRec },
+            { username: { equals: cleanRec, mode: 'insensitive' } },
             ...(rec10 ? [{ phoneNumber: rec10 }, { phoneNumber: `+91${rec10}` }] : []),
             { phoneNumber: cleanRec },
           ],
@@ -120,9 +130,46 @@ export class MessageRepository {
       }
     }
 
+    // 4c. Extract participants from direct_a_b conversationId format
+    if (dto.conversationId.includes('direct_')) {
+      const rawParts = dto.conversationId.replace('room_', '').replace('direct_', '').split('_');
+      for (const part of rawParts) {
+        if (!part || part === 'me') continue;
+        const cleanP = part.replace(/^@+/, '');
+        const p10 = cleanP.replace(/\D/g, '').slice(-10);
+        const pUser = await this.prisma.user.findFirst({
+          where: {
+            OR: [
+              { id: part },
+              { username: { equals: cleanP, mode: 'insensitive' } },
+              ...(p10 ? [{ phoneNumber: p10 }, { phoneNumber: `+91${p10}` }] : []),
+              { phoneNumber: cleanP },
+            ],
+          },
+        });
+        if (pUser) {
+          await this.prisma.conversationMember.upsert({
+            where: {
+              conversationId_userId: {
+                conversationId: dto.conversationId,
+                userId: pUser.id,
+              },
+            },
+            create: {
+              conversationId: dto.conversationId,
+              userId: pUser.id,
+              role: 'MEMBER',
+            },
+            update: {},
+          });
+        }
+      }
+    }
+
     // 5. Create Message in PostgreSQL
     return this.prisma.message.create({
       data: {
+        clientMessageId: dto.clientMessageId,
         conversationId: dto.conversationId,
         senderId: user.id,
         senderDeviceId: device.id,
@@ -204,17 +251,65 @@ export class MessageRepository {
 
   /**
    * Clear Chat History for a specific user:
-   * Sets clearedHistoryAt on ConversationMember.
+   * Sets clearedHistoryAt on ConversationMember and marks messages deleted for user.
    */
   async clearConversationHistory(conversationId: string, userId: string) {
-    return this.prisma.conversationMember.update({
+    const clean = (userId || '').replace(/^@+/, '');
+    const clean10 = clean.replace(/\D/g, '').slice(-10);
+    const dbUser = await this.prisma.user.findFirst({
       where: {
-        conversationId_userId: { conversationId, userId },
+        OR: [
+          { id: userId },
+          { username: { equals: clean, mode: 'insensitive' } },
+          ...(clean10
+            ? [
+                { phoneNumber: clean10 },
+                { phoneNumber: `+91${clean10}` },
+                { phoneNumber: `+${clean10}` },
+                { phoneNumber: `91${clean10}` },
+              ]
+            : []),
+          { phoneNumber: clean },
+        ],
+      },
+    });
+
+    const targetUserId = dbUser?.id || userId;
+    const cleanConv = conversationId.replace('room_', '');
+    const convCandidates = Array.from(new Set([conversationId, cleanConv, `room_${cleanConv}`]));
+
+    // 1. Update clearedHistoryAt on ConversationMember
+    await this.prisma.conversationMember.updateMany({
+      where: {
+        conversationId: { in: convCandidates },
+        userId: targetUserId,
       },
       data: {
         clearedHistoryAt: new Date(),
       },
     });
+
+    // 2. Mark existing messages as deleted for this user
+    const msgs = await this.prisma.message.findMany({
+      where: {
+        conversationId: { in: convCandidates },
+      },
+      select: { id: true, deletedForUserIds: true },
+    });
+
+    for (const msg of msgs) {
+      const currentList = msg.deletedForUserIds || [];
+      if (!currentList.includes(targetUserId)) {
+        await this.prisma.message.update({
+          where: { id: msg.id },
+          data: {
+            deletedForUserIds: [...currentList, targetUserId],
+          },
+        });
+      }
+    }
+
+    return { success: true, message: 'Chat history cleared successfully' };
   }
 
   /**
@@ -226,12 +321,50 @@ export class MessageRepository {
     limit = 50,
     cursor?: string,
   ) {
+    const cleanConv = conversationId.replace('room_', '');
+    const candidateIds = new Set<string>([conversationId, cleanConv, `room_${cleanConv}`]);
+
+    if (conversationId.includes('direct_')) {
+      const parts = conversationId.replace('room_', '').replace('direct_', '').split('_');
+      if (parts.length >= 2) {
+        const u1 = parts[0];
+        const u2 = parts[1];
+        const dbUsers = await this.prisma.user.findMany({
+          where: {
+            OR: [
+              { username: { in: [u1, u2], mode: 'insensitive' } },
+              { id: { in: [u1, u2] } },
+              { phoneNumber: { in: [u1, u2] } },
+            ],
+          },
+          select: { id: true },
+        });
+        if (dbUsers.length >= 2) {
+          const directConvs = await this.prisma.conversation.findMany({
+            where: {
+              type: ConversationType.DIRECT,
+              members: {
+                every: {
+                  userId: { in: [dbUsers[0].id, dbUsers[1].id] },
+                },
+              },
+            },
+            select: { id: true },
+          });
+          for (const dc of directConvs) {
+            candidateIds.add(dc.id);
+          }
+        }
+      }
+    }
+
     let clearedHistoryAt: Date | null = null;
 
     if (requestingUserId) {
-      const membership = await this.prisma.conversationMember.findUnique({
+      const membership = await this.prisma.conversationMember.findFirst({
         where: {
-          conversationId_userId: { conversationId, userId: requestingUserId },
+          conversationId: { in: Array.from(candidateIds) },
+          userId: requestingUserId,
         },
         select: { clearedHistoryAt: true },
       });
@@ -240,7 +373,7 @@ export class MessageRepository {
 
     const messages = await this.prisma.message.findMany({
       where: {
-        conversationId,
+        conversationId: { in: Array.from(candidateIds) },
         ...(clearedHistoryAt ? { createdAt: { gt: clearedHistoryAt } } : {}),
         ...(requestingUserId
           ? {

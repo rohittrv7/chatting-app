@@ -79,20 +79,19 @@ export const getDeterministicConversationId = (userA: string, userB: string): st
 };
 
 /**
- * Resolves contact display name according to user rule:
- * 1. If saved in user's mobile device contacts -> use the saved name.
- * 2. If not saved in mobile contacts -> use the profile name written by the user.
+ * Resolves full contact details from cached device contacts & sync results
  */
-export const getResolvedDisplayName = (
-  identifier: { phone?: string; username?: string; userId?: string; name?: string },
-  fallbackName?: string,
-): string => {
+export const getResolvedContact = (identifier: {
+  phone?: string;
+  username?: string;
+  userId?: string;
+  name?: string;
+}): DeviceContact | null => {
   const contacts = cachedSyncResult?.allSorted || cachedDeviceContacts || [];
   const cleanUsername = (identifier.username || '').replace(/^@+/, '').toLowerCase();
   const cleanPhone = (identifier.phone || '').replace(/\D/g, '').slice(-10);
   const userId = identifier.userId || '';
 
-  // 1. Check user's saved phonebook contacts
   for (const c of contacts) {
     const cPhone = (c.phone || '').replace(/\D/g, '').slice(-10);
     const cUser = (c.username || '').replace(/^@+/, '').toLowerCase();
@@ -101,10 +100,29 @@ export const getResolvedDisplayName = (
       (cleanUsername && cUser && cleanUsername === cUser) ||
       (userId && c.userId && userId === c.userId)
     ) {
-      if (c.name && c.name.trim() && !/^\d{10,}$/.test(c.name)) {
-        return c.name.trim(); // Saved name in user's phone!
-      }
+      return c;
     }
+  }
+  return null;
+};
+
+/**
+ * Resolves contact display name according to user rule:
+ * 1. If saved in user's mobile device contacts -> use the saved phone contact name.
+ * 2. If not saved in mobile contacts -> use the profile name written by the user.
+ */
+export const getResolvedDisplayName = (
+  identifier: { phone?: string; username?: string; userId?: string; name?: string },
+  fallbackName?: string,
+): string => {
+  const matchedContact = getResolvedContact(identifier);
+  if (
+    matchedContact &&
+    matchedContact.name &&
+    matchedContact.name.trim() &&
+    !/^\d{10,}$/.test(matchedContact.name)
+  ) {
+    return matchedContact.name.trim(); // 📱 Saved name in user's phone contacts!
   }
 
   // 2. If not in user's phonebook, use what the user wrote in their profile
@@ -116,6 +134,7 @@ export const getResolvedDisplayName = (
   }
 
   // 3. Fallback to clean username
+  const cleanUsername = (identifier.username || '').replace(/^@+/, '').toLowerCase();
   if (cleanUsername) {
     return cleanUsername;
   }
@@ -275,14 +294,23 @@ export const syncContactsWithServer = async (
             ? `@${contact.username.replace(/^@+/, '')}`
             : `@user_${clean10.slice(-4)}`;
 
+        const isDeviceNameValid =
+          contact.name && contact.name.trim() && !/^\d{10,}$/.test(contact.name);
+        const resolvedName = isDeviceNameValid
+          ? contact.name.trim()
+          : matchedUser.displayName || contact.name;
+
         const regContact: DeviceContact = {
           ...contact,
           phone: clean10 || contact.phone,
           isRegistered: true,
           userId: matchedUser.id,
-          name: matchedUser.displayName || contact.name,
+          name: resolvedName,
           username: cleanUserHandle,
-          avatarUrl: matchedUser.avatarUrl || undefined,
+          avatarUrl:
+            apiService.getResolvedMediaUrl(matchedUser.avatarUrl) ||
+            matchedUser.avatarUrl ||
+            undefined,
           about: matchedUser.about || 'Available | Ready to connect',
         };
         registeredList.push(regContact);

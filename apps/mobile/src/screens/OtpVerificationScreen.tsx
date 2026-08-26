@@ -139,6 +139,7 @@ export const OtpVerificationScreen: React.FC<Props> = ({ route, navigation }) =>
           token: verifyRes.accessToken,
           refreshToken: verifyRes.refreshToken,
           phoneNumber,
+          userId: verifyRes.userId,
           userProfile: verifyRes.user,
           isNewUser: verifyRes.isNewUser,
         }),

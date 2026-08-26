@@ -10,7 +10,10 @@ export class ConversationService {
       throw new BadRequestException('Cannot create a direct conversation with yourself');
     }
 
-    const existing = await this.conversationRepository.findDirectConversation(currentUserId, targetUserId);
+    const existing = await this.conversationRepository.findDirectConversation(
+      currentUserId,
+      targetUserId,
+    );
     if (existing) return existing;
 
     return this.conversationRepository.createDirectConversation(currentUserId, targetUserId);
@@ -20,7 +23,11 @@ export class ConversationService {
     if (!title || title.trim().length === 0) {
       throw new BadRequestException('Group title is required');
     }
-    return this.conversationRepository.createGroupConversation(creatorUserId, title, participantUserIds);
+    return this.conversationRepository.createGroupConversation(
+      creatorUserId,
+      title,
+      participantUserIds,
+    );
   }
 
   async listUserConversations(userId: string) {
@@ -29,5 +36,9 @@ export class ConversationService {
 
   async getConversationById(conversationId: string) {
     return this.conversationRepository.findConversationById(conversationId);
+  }
+
+  async deleteConversation(userId: string, conversationId: string) {
+    return this.conversationRepository.deleteUserConversation(userId, conversationId);
   }
 }

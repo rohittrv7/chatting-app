@@ -79,11 +79,24 @@ export const NewUserProfileSetupScreen: React.FC<Props> = ({ route, navigation }
         allowsEditing: true,
         aspect: [1, 1],
         quality: 0.8,
+        base64: true,
       });
 
       if (!result.canceled && result.assets[0]?.uri) {
-        setAvatarUri(result.assets[0].uri);
+        const asset = result.assets[0];
+        setAvatarUri(asset.uri);
         showToast('Profile photo selected!', 'success', 2000);
+
+        if (asset.base64 && token) {
+          apiService
+            .uploadAvatar(token, asset.base64)
+            .then((res) => {
+              if (res.avatarUrl) {
+                setAvatarUri(res.avatarUrl);
+              }
+            })
+            .catch((e) => console.warn('Avatar upload error:', e));
+        }
       }
     } catch (error) {
       console.log('Error picking avatar:', error);

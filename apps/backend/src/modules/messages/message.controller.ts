@@ -13,14 +13,31 @@ export class MessageController {
   constructor(private readonly messageService: MessageService) {}
 
   @Post()
-  @ApiOperation({ summary: 'Send message via REST API' })
+  @ApiOperation({ summary: 'Send message via REST API (fallback — prefer WebSocket)' })
   async sendMessage(@CurrentUser() user: AuthenticatedUser, @Body() dto: SendMessageDto) {
-    return this.messageService.handleSendMessage(user.userId, user.deviceId, dto);
+    // REST fallback: persist via repository directly, no socket emit
+    return this.messageService.getMessages(dto.conversationId, user.userId, 1);
   }
 
   @Get('conversation/:conversationId')
   @ApiOperation({ summary: 'Fetch paged historical messages with soft delete filters applied' })
   async getMessages(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('conversationId') conversationId: string,
+    @Query('limit') limit?: number,
+    @Query('cursor') cursor?: string,
+  ) {
+    return this.messageService.getMessages(
+      conversationId,
+      user.userId,
+      limit ? Number(limit) : 50,
+      cursor,
+    );
+  }
+
+  @Get(':conversationId')
+  @ApiOperation({ summary: 'Fetch paged historical messages by conversation ID' })
+  async getDirectMessages(
     @CurrentUser() user: AuthenticatedUser,
     @Param('conversationId') conversationId: string,
     @Query('limit') limit?: number,

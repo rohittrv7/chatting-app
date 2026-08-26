@@ -13,6 +13,8 @@ import { AuthRepository } from './auth.repository';
 import { OtpRedisService } from './otp-redis.service';
 import { AuthGateway } from './auth.gateway';
 import { RequestOtpDto, VerifyOtpDto, RefreshTokenDto, SocketEvent } from '@chat/shared-contracts';
+import * as fs from 'fs';
+import * as path from 'path';
 
 /** argon2id options per Requirement 1.2 and design spec (time ≥2, memory 65536 KB) */
 const ARGON2_OPTIONS = {
@@ -211,7 +213,11 @@ export class AuthService {
         ),
       });
 
-      const device = await this.authRepository.findDeviceById(dto.deviceId);
+      const deviceId = dto.deviceId || (payload as any).deviceId;
+      let device = await this.authRepository.findDeviceById(deviceId);
+      if (!device && payload.sub) {
+        device = await this.authRepository.findDeviceByUserId(payload.sub);
+      }
       if (!device) {
         throw new UnauthorizedException('Device not found or session terminated');
       }
@@ -308,6 +314,27 @@ export class AuthService {
     };
   }
 
+  async uploadAvatar(userId: string, dto: { base64Data: string; fileName?: string }) {
+    if (!dto.base64Data) throw new BadRequestException('base64Data is required');
+    const cleanBase64 = dto.base64Data.replace(/^data:[^;]+;base64,/, '');
+    const buffer = Buffer.from(cleanBase64, 'base64');
+    const filename = `avatar_${userId}_${Date.now()}.jpg`;
+    const avatarsDir = path.join(process.cwd(), 'uploads', 'avatars');
+    if (!fs.existsSync(avatarsDir)) fs.mkdirSync(avatarsDir, { recursive: true });
+
+    const filePath = path.join(avatarsDir, filename);
+    fs.writeFileSync(filePath, buffer);
+
+    const avatarUrl = `/uploads/avatars/${filename}`;
+    const updatedUser = await this.authRepository.updateUserProfile(userId, { avatarUrl });
+    return {
+      success: true,
+      message: 'Avatar updated successfully',
+      avatarUrl,
+      user: updatedUser,
+    };
+  }
+
   /**
    * Sync phone contacts and discover who is registered on the platform.
    * Registered users are prioritized with full profiles.
@@ -399,17 +426,15 @@ export class AuthService {
 
   async searchUsers(currentUserId: string, query: string) {
     const results = await this.authRepository.searchUsers(currentUserId, query);
-    return {
-      success: true,
-      users: results.map((u) => ({
-        id: u.id,
-        name: u.displayName || u.username || 'User',
-        username: u.username ? `@${u.username.replace(/^@+/, '')}` : undefined,
-        about: u.about || 'Available',
-        avatarUrl: u.avatarUrl || undefined,
-        isRegistered: true,
-      })),
-    };
+    return results.map((u) => ({
+      id: u.id,
+      displayName: u.displayName || u.username || u.phoneNumber || 'User',
+      name: u.displayName || u.username || u.phoneNumber || 'User',
+      username: u.username ? `@${u.username.replace(/^@+/, '')}` : undefined,
+      phoneNumber: u.phoneNumber,
+      about: u.about || 'Available',
+      avatarUrl: u.avatarUrl || undefined,
+      isRegistered: true,
+    }));
   }
 }
-

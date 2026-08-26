@@ -1,14 +1,15 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
+import { JwtModule } from '@nestjs/jwt';
 import Redis from 'ioredis';
 import { MessageService } from './message.service';
 import { MessageController } from './message.controller';
-import { MessageGateway } from './message.gateway';
+import { ChatGateway } from './message.gateway';
 import { MessageRepository } from './message.repository';
 import { MessageRedisService } from './message-redis.service';
 import { PrismaService } from '../../database/prisma.service';
-
 import { createRedisClient } from '../../common/utils/redis-factory';
+import { ConversationModule } from '../conversations/conversation.module';
 
 const REDIS_CLIENT_PROVIDER = {
   provide: 'REDIS_CLIENT',
@@ -19,15 +20,27 @@ const REDIS_CLIENT_PROVIDER = {
 };
 
 @Module({
-  imports: [ConfigModule],
+  imports: [
+    ConfigModule,
+    JwtModule.registerAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (cs: ConfigService) => ({
+        secret: cs.get<string>('JWT_SECRET', 'super_secret_jwt_access_key_12345'),
+        signOptions: { expiresIn: '15m' },
+      }),
+    }),
+    forwardRef(() => ConversationModule),
+  ],
   controllers: [MessageController],
   providers: [
     REDIS_CLIENT_PROVIDER,
     MessageService,
-    MessageGateway,
+    ChatGateway,
     MessageRepository,
     MessageRedisService,
+    PrismaService,
   ],
-  exports: [MessageService, MessageGateway, MessageRepository, MessageRedisService],
+  exports: [MessageService, ChatGateway, MessageRepository, MessageRedisService],
 })
 export class MessageModule {}

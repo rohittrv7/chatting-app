@@ -1,300 +1,358 @@
-import { Platform } from 'react-native';
+/**
+ * RealtimeSocketService — single app-wide socket instance.
+ *
+ * Rules enforced here:
+ *  1. ONE socket connection for the entire app lifetime — created on login, destroyed on logout.
+ *  2. JWT token sent in handshake.auth (not query param) so backend can verify it.
+ *  3. lastMessageId sent on connect so backend delivers missed messages from offline gap.
+ *  4. All listeners are registered once in _setup() and torn down in _teardown().
+ *     No component ever registers its own socket.on() — zero duplicate-handler risk.
+ *  5. Reconnection is built-in — socket.io-client handles it automatically.
+ */
+
 import { io, Socket } from 'socket.io-client';
-import { devInspector } from './devInspectorService';
 import { serverConfig } from './serverConfig';
+import { safeStorage } from './storageHelper';
+import { AUTH_STORAGE_KEYS } from '../store/authSlice';
+import { apiService, handleSessionExpired } from './apiService';
 
-export const getSocketUrl = () => serverConfig.getSocketUrl();
+// ─── Event constants (must match backend message.gateway.ts) ─────────────────
+export const EVT_MESSAGE_SEND = 'message:send';
+export const EVT_MESSAGE_NEW = 'message:new';
+export const EVT_MESSAGE_ACK = 'message:ack';
+export const EVT_MESSAGE_RECEIPT = 'message:receipt';
+export const EVT_TYPING = 'typing';
+export const EVT_TYPING_UPDATE = 'typing:update';
+export const EVT_PRESENCE_QUERY = 'presence:query';
+export const EVT_PRESENCE_UPDATE = 'presence:update';
+export const EVT_PRESENCE_RESULT = 'presence:result';
+export const EVT_CHAT_OPEN = 'chat:open';
+export const EVT_CHAT_CLOSE = 'chat:close';
+export const EVT_MESSAGE_DELETED = 'message:deleted';
+export const EVT_MISSED_MESSAGES = 'messages:missed';
 
-export interface SocketMessagePayload {
-  serverMessageId?: string;
+// ─── Payload types ────────────────────────────────────────────────────────────
+
+export interface IncomingMessage {
+  serverMessageId: string;
   clientMessageId?: string;
   conversationId: string;
-  senderId?: string;
+  senderId: string;
+  receiverId: string;
   senderName?: string;
-  receiverId?: string;
-  text?: string;
+  senderUsername?: string;
+  senderAvatarUrl?: string;
+  senderPhone?: string;
+  text: string;
   imagePath?: string;
-  status?: 'SENDING' | 'SENT' | 'DELIVERED' | 'READ' | 'SERVER_RECEIVED';
-  createdAt?: string;
+  location?: { lat: number; lng: number; label?: string };
+  type: string;
+  status: string;
+  createdAt: string;
+  isMissed?: boolean;
 }
 
-export interface SocketReceiptPayload {
-  messageId: string;
+export interface MessageAck {
+  clientMessageId: string;
+  serverMessageId: string;
+  conversationId: string;
+  status: string;
+  createdAt: string;
+  error?: string;
+}
+
+export interface ReceiptUpdate {
+  serverMessageId: string;
   clientMessageId?: string;
-  conversationId?: string;
-  userId?: string;
-  status: 'DELIVERED' | 'READ';
+  conversationId: string;
+  status: 'SENT' | 'DELIVERED' | 'READ';
+  byUserId?: string;
 }
 
-export interface SocketPresenceUpdate {
+export interface PresenceUpdate {
   userId: string;
-  username?: string;
   isOnline: boolean;
-  lastSeen?: string;
+  lastSeen: string | null;
 }
+
+export interface TypingUpdate {
+  conversationId: string;
+  senderId: string;
+  isTyping: boolean;
+}
+
+export interface SocketCallbacks {
+  onMessageNew?: (msg: IncomingMessage) => void;
+  onMessageAck?: (ack: MessageAck) => void;
+  onReceiptUpdate?: (receipt: ReceiptUpdate) => void;
+  onPresenceUpdate?: (presence: PresenceUpdate) => void;
+  onPresenceResult?: (data: {
+    presences: Record<string, { isOnline: boolean; lastSeen: string | null }>;
+  }) => void;
+  onTypingUpdate?: (data: TypingUpdate) => void;
+  onMessageDeleted?: (data: { messageId: string; conversationId: string }) => void;
+  onConnect?: () => void;
+  onDisconnect?: (reason: string) => void;
+}
+
+// ─── Service ──────────────────────────────────────────────────────────────────
 
 class RealtimeSocketService {
   private socket: Socket | null = null;
-  private currentUserId: string = '';
-  private callbacks?: {
-    onMessageReceived?: (payload: SocketMessagePayload) => void;
-    onMessageAck?: (ack: { clientMessageId: string; serverMessageId: string; status: any }) => void;
-    onReceiptUpdate?: (receipt: SocketReceiptPayload) => void;
-    onPresenceUpdate?: (presence: SocketPresenceUpdate) => void;
-    onPresenceResult?: (data: {
-      presences: Record<string, { isOnline: boolean; lastSeen?: string }>;
-    }) => void;
-  };
+  private callbacks: SocketCallbacks = {};
+  private currentUserId = '';
+  private currentToken = '';
 
   constructor() {
-    // Listen for environment toggle (Local <-> Live) and auto-reconnect
+    // Reconnect when server URL toggles (Local ↔ Live in dev)
     serverConfig.subscribe(() => {
-      if (this.currentUserId) {
-        this.reconnect();
-      }
+      if (this.currentToken) this._reconnect();
     });
   }
 
-  public isConnected(): boolean {
-    return Boolean(this.socket && this.socket.connected);
+  // ─── Public API ────────────────────────────────────────────────────────────
+
+  isConnected(): boolean {
+    return Boolean(this.socket?.connected);
   }
 
-  public getSocketId(): string | null {
-    return this.socket?.id || null;
+  getSocketId(): string | undefined {
+    return this.socket?.id;
   }
 
-  public reconnect() {
-    if (this.socket) {
-      this.socket.disconnect();
-      this.socket.removeAllListeners();
-      this.socket = null;
-    }
-    if (this.currentUserId) {
-      this.connect(this.currentUserId);
-    }
+  /**
+   * Connect (or reconnect) the socket.
+   * Call once after login with the JWT token + userId.
+   * Safe to call again if token rotates — tears down old socket and creates fresh one.
+   */
+  async connect(opts: {
+    token: string;
+    userId: string;
+    callbacks?: SocketCallbacks;
+  }): Promise<void> {
+    if (opts.callbacks) this.callbacks = opts.callbacks;
+
+    const tokenChanged = opts.token !== this.currentToken;
+    const userChanged = opts.userId !== this.currentUserId;
+
+    this.currentToken = opts.token;
+    this.currentUserId = opts.userId;
+
+    // Reuse existing live socket if identity has not changed
+    if (this.socket?.connected && !tokenChanged && !userChanged) return;
+
+    this._teardown();
+    await this._setup();
   }
 
-  public connect(
-    userId?: string,
-    callbacks?: {
-      onMessageReceived?: (payload: SocketMessagePayload) => void;
-      onMessageAck?: (ack: {
-        clientMessageId: string;
-        serverMessageId: string;
-        status: any;
-      }) => void;
-      onReceiptUpdate?: (receipt: SocketReceiptPayload) => void;
-      onPresenceUpdate?: (presence: SocketPresenceUpdate) => void;
-      onPresenceResult?: (data: {
-        presences: Record<string, { isOnline: boolean; lastSeen?: string }>;
-      }) => void;
-    },
-  ) {
-    if (callbacks) {
-      this.callbacks = callbacks;
-    }
+  /** Hard disconnect — call on logout. */
+  disconnect(): void {
+    this._teardown();
+    this.currentToken = '';
+    this.currentUserId = '';
+    this.callbacks = {};
+  }
 
-    const newUserId = userId || this.currentUserId || `user_${Date.now()}`;
-    const userChanged = this.currentUserId && this.currentUserId !== newUserId;
-    this.currentUserId = newUserId;
+  /**
+   * Update token on the live socket without full reconnect.
+   * Called by ChatContext when tokensRefreshedAction fires.
+   * If socket is currently disconnected it will reconnect with the new token.
+   */
+  updateToken(newToken: string): void {
+    if (newToken === this.currentToken) return;
+    this.currentToken = newToken;
+    // Always reconnect — socket.io auth is set at connect-time only
+    this._teardown();
+    this._setup();
+  }
 
-    if (this.socket && this.socket.connected && !userChanged) {
-      return;
-    }
+  /**
+   * Send a message.
+   * receiverId MUST be the recipient's DB UUID — backend uses user:<receiverId> room.
+   */
+  sendMessage(payload: {
+    clientMessageId: string;
+    conversationId: string;
+    receiverId: string;
+    text?: string;
+    imagePath?: string;
+    location?: { lat: number; lng: number; label?: string };
+    type?: string;
+  }): void {
+    if (!this.socket?.connected) return;
+    this.socket.emit(EVT_MESSAGE_SEND, payload);
+  }
 
-    if (this.socket) {
-      this.socket.disconnect();
-      this.socket.removeAllListeners();
-      this.socket = null;
-    }
+  /** Send DELIVERED or READ receipt. */
+  sendReceipt(serverMessageId: string, conversationId: string, status: 'DELIVERED' | 'READ'): void {
+    if (!this.socket?.connected) return;
+    this.socket.emit(EVT_MESSAGE_RECEIPT, { serverMessageId, conversationId, status });
+  }
 
-    const activeSocketUrl = getSocketUrl();
+  /** Send typing indicator to a specific conversation/recipient. */
+  sendTyping(conversationId: string, receiverId: string, isTyping: boolean): void {
+    if (!this.socket?.connected) return;
+    this.socket.emit(EVT_TYPING, { conversationId, receiverId, isTyping });
+  }
+
+  /** Notify server this conversation is currently open (enables auto-READ). */
+  openChat(conversationId: string): void {
+    if (!this.socket?.connected) return;
+    this.socket.emit(EVT_CHAT_OPEN, { conversationId });
+  }
+
+  /** Notify server this conversation was closed. */
+  closeChat(conversationId: string): void {
+    if (!this.socket?.connected) return;
+    this.socket.emit(EVT_CHAT_CLOSE, { conversationId });
+  }
+
+  /** Batch-query online status + lastSeen for a list of userIds. */
+  queryPresence(userIds: string[]): void {
+    if (!this.socket?.connected || userIds.length === 0) return;
+    this.socket.emit(EVT_PRESENCE_QUERY, { userIds });
+  }
+
+  // ─── Private ───────────────────────────────────────────────────────────────
+
+  private async _setup(): Promise<void> {
+    const url = serverConfig.getSocketUrl();
+
+    // Load the id of the last message we have locally — sent to server on connect
+    // so it can push any messages we missed while offline.
+    const lastMessageId = (await safeStorage.getItem('@chat_last_message_id')) ?? undefined;
 
     try {
-      this.socket = io(activeSocketUrl, {
+      this.socket = io(url, {
         transports: ['websocket'],
         autoConnect: true,
         reconnection: true,
         reconnectionAttempts: Infinity,
         reconnectionDelay: 1000,
         reconnectionDelayMax: 5000,
-        query: {
-          userId: this.currentUserId,
-          deviceId: '1',
+        // JWT goes in auth — backend reads from handshake.auth.token
+        auth: {
+          token: this.currentToken,
+          lastMessageId: lastMessageId ?? null,
         },
       });
 
-      this.socket.on('connect', () => {
-        devInspector.logSocket('connect', 'incoming', {
-          socketId: this.socket?.id,
-          userId: this.currentUserId,
-          serverUrl: activeSocketUrl,
-        });
-      });
+      this._registerListeners();
+    } catch (err: any) {
+      console.warn('[Socket] setup error:', err?.message);
+    }
+  }
 
-      // 📩 Incoming Message Handlers
-      const handleReceive = (data: any) => {
-        if (data && typeof data === 'object') {
-          const convId = data.conversationId?.toString() || 'conv_1';
-          const sender = data.senderName?.toString() || 'Friend';
-          const text = data.text?.toString() || '';
-          const serverMsgId =
-            data.serverMessageId?.toString() || data.id?.toString() || `msg_${Date.now()}`;
+  private _registerListeners(): void {
+    if (!this.socket) return;
 
-          devInspector.logSocket('message:receive', 'incoming', {
-            serverMsgId,
-            convId,
-            sender,
-            text,
+    this.socket.on('connect', () => {
+      this.callbacks.onConnect?.();
+    });
+
+    this.socket.on('disconnect', (reason: string) => {
+      this.callbacks.onDisconnect?.(reason);
+
+      if (reason === 'io server disconnect') {
+        // Server rejected our token — attempt token refresh and reconnect with new token
+        apiService
+          .refreshAuthToken()
+          .then((refreshed) => {
+            if (refreshed?.accessToken) {
+              this.currentToken = refreshed.accessToken;
+              this._teardown();
+              this._setup();
+            } else {
+              this._teardown();
+              handleSessionExpired();
+            }
+          })
+          .catch(() => {
+            this._teardown();
           });
+      }
+    });
 
-          if (this.callbacks?.onMessageReceived) {
-            this.callbacks.onMessageReceived({
-              serverMessageId: serverMsgId,
-              conversationId: convId,
-              senderName: sender,
-              senderId: data.senderId,
-              text,
-              imagePath: data.imagePath,
-              status: 'DELIVERED',
-              createdAt: data.createdAt || new Date().toISOString(),
-            });
-          }
-        }
-      };
+    this.socket.on('connect_error', (err: any) => {
+      const msg = (err?.message || '').toLowerCase();
+      if (msg.includes('token') || msg.includes('auth') || msg.includes('unauthorized')) {
+        apiService
+          .refreshAuthToken()
+          .then((refreshed) => {
+            if (refreshed?.accessToken) {
+              this.currentToken = refreshed.accessToken;
+              this._teardown();
+              this._setup();
+            } else {
+              this._teardown();
+            }
+          })
+          .catch(() => {
+            this._teardown();
+          });
+      }
+    });
 
-      this.socket.off('v1.message.receive');
-      this.socket.off('message:receive');
-      this.socket.on('v1.message.receive', handleReceive);
-      this.socket.on('message:receive', handleReceive);
+    // ── New message arriving (receiver side) ─────────────────────────────
+    this.socket.on(EVT_MESSAGE_NEW, (data: IncomingMessage) => {
+      if (!data?.serverMessageId) return;
+      this.callbacks.onMessageNew?.(data);
+    });
 
-      // ✅ Single Tick ✓ (SERVER_RECEIVED Ack)
-      const handleAck = (ack: any) => {
-        if (ack) {
-          devInspector.logSocket('message:ack', 'incoming', ack);
-          if (this.callbacks?.onMessageAck) {
-            this.callbacks.onMessageAck({
-              clientMessageId: ack.clientMessageId,
-              serverMessageId: ack.serverMessageId,
-              status: ack.status || 'SERVER_RECEIVED',
-            });
-          }
-        }
-      };
-      this.socket.off('v1.message.ack');
-      this.socket.off('message:ack');
-      this.socket.on('v1.message.ack', handleAck);
-      this.socket.on('message:ack', handleAck);
+    // ── Server ack (sender side — DB confirmed, single tick → double tick) ─
+    this.socket.on(EVT_MESSAGE_ACK, (ack: MessageAck) => {
+      if (!ack?.clientMessageId) return;
+      // Persist the last confirmed serverMessageId for gap-fill on next connect
+      if (ack.serverMessageId) {
+        safeStorage.setItem('@chat_last_message_id', ack.serverMessageId).catch(() => {});
+      }
+      this.callbacks.onMessageAck?.(ack);
+    });
 
-      // 👁️ Double Tick (DELIVERED) & Violet Tick (READ) Receipts
-      const handleReceipt = (receipt: any) => {
-        if (receipt) {
-          devInspector.logSocket('message:receipt', 'incoming', receipt);
-          if (this.callbacks?.onReceiptUpdate) {
-            this.callbacks.onReceiptUpdate({
-              messageId: receipt.messageId,
-              clientMessageId: receipt.clientMessageId,
-              conversationId: receipt.conversationId,
-              userId: receipt.userId,
-              status: receipt.status || 'READ',
-            });
-          }
-        }
-      };
-      this.socket.off('v1.message.receipt');
-      this.socket.off('message:receipt');
-      this.socket.on('v1.message.receipt', handleReceipt);
-      this.socket.on('message:receipt', handleReceipt);
+    // ── Receipt update (DELIVERED / READ tick change) ─────────────────────
+    this.socket.on(EVT_MESSAGE_RECEIPT, (receipt: ReceiptUpdate) => {
+      if (!receipt?.serverMessageId) return;
+      this.callbacks.onReceiptUpdate?.(receipt);
+    });
 
-      // 🟢/🔴 Real-time User Presence (Online / Offline)
-      const handlePresenceUpdate = (presence: SocketPresenceUpdate) => {
-        if (presence) {
-          devInspector.logSocket('presence:update', 'incoming', presence);
-          if (this.callbacks?.onPresenceUpdate) {
-            this.callbacks.onPresenceUpdate(presence);
-          }
-        }
-      };
-      this.socket.off('presence:update');
-      this.socket.on('presence:update', handlePresenceUpdate);
+    // ── Presence online/offline broadcast ─────────────────────────────────
+    this.socket.on(EVT_PRESENCE_UPDATE, (data: PresenceUpdate) => {
+      if (!data?.userId) return;
+      this.callbacks.onPresenceUpdate?.(data);
+    });
 
-      const handlePresenceResult = (data: any) => {
-        if (data?.presences) {
-          devInspector.logSocket('presence:result', 'incoming', data);
-          if (this.callbacks?.onPresenceResult) {
-            this.callbacks.onPresenceResult(data);
-          }
-        }
-      };
-      this.socket.off('presence:result');
-      this.socket.on('presence:result', handlePresenceResult);
+    // ── Presence query result ─────────────────────────────────────────────
+    this.socket.on(EVT_PRESENCE_RESULT, (data: any) => {
+      if (!data?.presences) return;
+      this.callbacks.onPresenceResult?.(data);
+    });
 
-      this.socket.on('disconnect', (reason) => {
-        devInspector.logSocket('disconnect', 'incoming', { reason });
-      });
-    } catch (e: any) {
-      devInspector.logSocket('error', 'incoming', { error: e?.message });
-    }
+    // ── Typing indicator ──────────────────────────────────────────────────
+    this.socket.on(EVT_TYPING_UPDATE, (data: TypingUpdate) => {
+      if (!data?.senderId) return;
+      this.callbacks.onTypingUpdate?.(data);
+    });
+
+    // ── Delete-for-everyone broadcast ─────────────────────────────────────
+    this.socket.on(EVT_MESSAGE_DELETED, (data: any) => {
+      if (!data?.messageId) return;
+      this.callbacks.onMessageDeleted?.(data);
+    });
   }
 
-  public queryPresence(userIds: string[]) {
-    if (this.socket && this.socket.connected && userIds.length > 0) {
-      devInspector.logSocket('presence:query', 'outgoing', { userIds });
-      this.socket.emit('presence:query', { userIds });
-    }
-  }
-
-  public openChat(conversationId: string) {
-    if (this.socket && this.socket.connected) {
-      devInspector.logSocket('chat:open', 'outgoing', { conversationId });
-      this.socket.emit('chat:open', { conversationId });
-    }
-  }
-
-  public closeChat(conversationId: string) {
-    if (this.socket && this.socket.connected) {
-      devInspector.logSocket('chat:close', 'outgoing', { conversationId });
-      this.socket.emit('chat:close', { conversationId });
-    }
-  }
-
-  public sendMessage(payload: {
-    conversationId: string;
-    clientMessageId: string;
-    senderName: string;
-    receiverId?: string;
-    text: string;
-    imagePath?: string;
-  }) {
-    if (this.socket && this.socket.connected) {
-      const socketPayload = {
-        ...payload,
-        senderId: this.currentUserId,
-        timestamp: new Date().toISOString(),
-      };
-      devInspector.logSocket('message:send', 'outgoing', socketPayload);
-      this.socket.emit('message:send', socketPayload);
-    }
-  }
-
-  public sendReceipt(messageId: string, conversationId: string, status: 'DELIVERED' | 'READ') {
-    if (this.socket && this.socket.connected) {
-      const payload = {
-        messageId,
-        conversationId,
-        status,
-      };
-      devInspector.logSocket('message:receipt', 'outgoing', payload);
-      this.socket.emit('message:receipt', payload);
-    }
-  }
-
-  public disconnect() {
+  private _teardown(): void {
     if (this.socket) {
+      this.socket.removeAllListeners();
       this.socket.disconnect();
       this.socket = null;
     }
   }
+
+  private _reconnect(): void {
+    this._teardown();
+    if (this.currentToken) this._setup();
+  }
 }
 
+// Single app-wide singleton — imported everywhere
 export const socketService = new RealtimeSocketService();

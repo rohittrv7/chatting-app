@@ -55,6 +55,16 @@ export class AuthController {
     return this.authService.updateProfile(user.userId, dto);
   }
 
+  @Post('avatar')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Upload and set user avatar profile picture' })
+  async uploadAvatar(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: { base64Data: string; fileName?: string },
+  ) {
+    return this.authService.uploadAvatar(user.userId, dto);
+  }
+
   @Post('contacts/sync')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Sync phone contacts and discover registered users' })
@@ -68,11 +78,7 @@ export class AuthController {
   @Get('users/search')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Search registered users across the platform by username or name' })
-  async searchUsers(
-    @CurrentUser() user: AuthenticatedUser,
-    @Query('q') query: string,
-  ) {
+  async searchUsers(@CurrentUser() user: AuthenticatedUser, @Query('q') query: string) {
     return this.authService.searchUsers(user.userId, query || '');
   }
 }
-

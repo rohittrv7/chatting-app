@@ -11,6 +11,9 @@ import { SystemDiagnosticsService } from './common/services/system-diagnostics.s
 import Redis from 'ioredis';
 
 import { ColorfulLogger } from './common/services/colorful-logger.service';
+import * as express from 'express';
+import * as path from 'path';
+import * as fs from 'fs';
 
 // Safely absorb unhandled ioredis error events (from BullMQ/ioredis) when local Redis is offline
 const originalRedisEmit = Redis.prototype.emit;
@@ -73,6 +76,18 @@ async function bootstrap() {
   app.useGlobalFilters(new HttpExceptionFilter());
 
   app.enableCors({ origin: '*' });
+
+  // Ensure uploads directories exist for static media and avatars
+  const uploadsDir = path.join(process.cwd(), 'uploads');
+  const avatarsDir = path.join(uploadsDir, 'avatars');
+  const imagesDir = path.join(uploadsDir, 'images');
+  if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+  if (!fs.existsSync(avatarsDir)) fs.mkdirSync(avatarsDir, { recursive: true });
+  if (!fs.existsSync(imagesDir)) fs.mkdirSync(imagesDir, { recursive: true });
+
+  app.use('/uploads', express.static(uploadsDir));
+  app.use(express.json({ limit: '25mb' }));
+  app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
   const config = new DocumentBuilder()
     .setTitle('WhatsApp-Style Messaging & Calling API')

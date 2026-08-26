@@ -194,12 +194,17 @@ export const ContactsScreen: React.FC<Props> = ({ navigation }) => {
     | { type: 'header_server'; count: number }
     | {
         type: 'contact_server';
-        data: { id: string; name: string; username?: string; about?: string };
+        data: { id: string; name: string; username?: string; about?: string; avatarUrl?: string };
       }
     | { type: 'header_unregistered'; count: number }
     | { type: 'contact_unregistered'; data: DeviceContact };
 
   const listItems: ContactListItem[] = [];
+  if (serverSearchResults.length > 0) {
+    listItems.push({ type: 'header_server', count: serverSearchResults.length });
+    serverSearchResults.forEach((u) => listItems.push({ type: 'contact_server', data: u }));
+  }
+
   if (filteredRegistered.length > 0) {
     listItems.push({ type: 'header_registered', count: filteredRegistered.length });
     filteredRegistered.forEach((c) => listItems.push({ type: 'contact_registered', data: c }));
@@ -402,14 +407,22 @@ export const ContactsScreen: React.FC<Props> = ({ navigation }) => {
                       phone: '',
                       isRegistered: true,
                       userId: user.id,
+                      avatarUrl: user.avatarUrl,
                     })
                   }
                 >
-                  <View style={[styles.avatar, { backgroundColor: colors.primaryIndigo }]}>
-                    <Text style={[styles.avatarLetter, { color: '#FFF' }]}>
-                      {user.name ? user.name[0].toUpperCase() : '?'}
-                    </Text>
-                  </View>
+                  {user.avatarUrl ? (
+                    <Image
+                      source={{ uri: apiService.getResolvedMediaUrl(user.avatarUrl) }}
+                      style={styles.avatarImg}
+                    />
+                  ) : (
+                    <View style={[styles.avatar, { backgroundColor: colors.primaryIndigo }]}>
+                      <Text style={[styles.avatarLetter, { color: '#FFF' }]}>
+                        {user.name ? user.name[0].toUpperCase() : '?'}
+                      </Text>
+                    </View>
+                  )}
 
                   <View style={{ flex: 1, marginLeft: 14 }}>
                     <View style={styles.nameRow}>
@@ -449,6 +462,7 @@ export const ContactsScreen: React.FC<Props> = ({ navigation }) => {
                         phone: '',
                         isRegistered: true,
                         userId: user.id,
+                        avatarUrl: user.avatarUrl,
                       })
                     }
                   >
@@ -472,7 +486,10 @@ export const ContactsScreen: React.FC<Props> = ({ navigation }) => {
                   onPress={() => handleStartChat(contact)}
                 >
                   {contact.avatarUrl ? (
-                    <Image source={{ uri: contact.avatarUrl }} style={styles.avatarImg} />
+                    <Image
+                      source={{ uri: apiService.getResolvedMediaUrl(contact.avatarUrl) }}
+                      style={styles.avatarImg}
+                    />
                   ) : (
                     <View style={[styles.avatar, { backgroundColor: colors.primaryIndigo }]}>
                       <Text style={[styles.avatarLetter, { color: '#FFF' }]}>

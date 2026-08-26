@@ -69,6 +69,13 @@ export class AuthRepository {
     });
   }
 
+  async findDeviceByUserId(userId: string): Promise<Device | null> {
+    return this.prisma.device.findFirst({
+      where: { userId },
+      orderBy: { lastActiveAt: 'desc' },
+    });
+  }
+
   async listDevicesByUserId(userId: string): Promise<Device[]> {
     return this.prisma.device.findMany({
       where: { userId },
@@ -218,28 +225,31 @@ export class AuthRepository {
   async searchUsers(currentUserId: string, query: string) {
     const cleanQuery = query.trim().replace(/^@+/, '');
     if (!cleanQuery) return [];
+    const cleanDigits = cleanQuery.replace(/\D/g, '');
+    const isPhoneQuery = /^[\d+\s()-]+$/.test(cleanQuery);
+
+    const orConditions: any[] = [
+      { username: { contains: cleanQuery, mode: 'insensitive' } },
+      { displayName: { contains: cleanQuery, mode: 'insensitive' } },
+    ];
+
+    if (isPhoneQuery && cleanDigits.length >= 3) {
+      orConditions.push({ phoneNumber: { contains: cleanDigits } });
+    }
 
     return this.prisma.user.findMany({
       where: {
-        AND: [
-          { id: { not: currentUserId } },
-          {
-            OR: [
-              { username: { contains: cleanQuery, mode: 'insensitive' } },
-              { displayName: { contains: cleanQuery, mode: 'insensitive' } },
-            ],
-          },
-        ],
+        OR: orConditions,
       },
       select: {
         id: true,
         displayName: true,
         username: true,
+        phoneNumber: true,
         avatarUrl: true,
         about: true,
       },
-      take: 25,
+      take: 30,
     });
   }
 }
-

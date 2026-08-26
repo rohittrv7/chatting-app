@@ -17,6 +17,9 @@ import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types';
 import { useChat } from '../context/ChatContext';
 import { useTheme } from '../context/ThemeContext';
+import { useSelector } from 'react-redux';
+import { RootState } from '../store';
+import { apiService } from '../services/apiService';
 import * as ImagePicker from 'expo-image-picker';
 import { ArrowLeft, Camera, User, AtSign, Info, Phone, Check, QrCode } from 'lucide-react-native';
 
@@ -25,6 +28,7 @@ type Props = NativeStackScreenProps<RootStackParamList, 'EditProfile'>;
 export const EditProfileScreen: React.FC<Props> = ({ navigation }) => {
   const { userProfile, updateUserProfile } = useChat();
   const { themeMode, colors } = useTheme();
+  const token = useSelector((state: RootState) => state.auth.token);
 
   const [name, setName] = useState(userProfile.name);
   const [username, setUsername] = useState(userProfile.username);
@@ -46,10 +50,23 @@ export const EditProfileScreen: React.FC<Props> = ({ navigation }) => {
         quality: 0.8,
         allowsEditing: true,
         aspect: [1, 1],
+        base64: true,
       });
 
       if (!result.canceled && result.assets && result.assets.length > 0) {
-        setAvatarUri(result.assets[0].uri);
+        const asset = result.assets[0];
+        setAvatarUri(asset.uri);
+        if (asset.base64 && token) {
+          apiService
+            .uploadAvatar(token, asset.base64)
+            .then((res) => {
+              if (res.avatarUrl) {
+                setAvatarUri(res.avatarUrl);
+                updateUserProfile({ avatarUrl: res.avatarUrl });
+              }
+            })
+            .catch((e) => console.warn('Avatar upload error:', e));
+        }
       }
     } catch (e) {
       console.warn('Error selecting profile picture:', e);
@@ -60,13 +77,21 @@ export const EditProfileScreen: React.FC<Props> = ({ navigation }) => {
     const cleanHandle = username.trim().replace(/^@+/, '');
     const cleanUsername = `@${cleanHandle}`;
 
-    updateUserProfile({
+    const updatedProfile = {
       name: name.trim() || userProfile.name,
       username: cleanUsername,
       status: status.trim() || userProfile.status,
       phone: phone.trim() || userProfile.phone,
-      avatarUrl: avatarUri,
-    });
+      avatarUrl: avatarUri || userProfile.avatarUrl,
+    };
+
+    updateUserProfile(updatedProfile);
+
+    if (token) {
+      apiService
+        .updateProfile(token, updatedProfile)
+        .catch((e) => console.warn('Profile save API error:', e));
+    }
 
     setIsSaved(true);
     setTimeout(() => {

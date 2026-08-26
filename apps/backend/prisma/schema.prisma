@@ -184,6 +184,8 @@ model ConversationMember {
 
 model Message {
   id                String         @id @default(uuid())
+  /// Client-generated idempotency key — unique per sender to prevent duplicate inserts on retry
+  clientMessageId   String?
   conversationId    String
   senderId          String
   senderDeviceId    String
@@ -207,6 +209,7 @@ model Message {
   reactions         Reaction[]
   receipts          Receipt[]
 
+  @@unique([senderId, clientMessageId])
   @@index([conversationId, createdAt])
   @@index([senderId])
   @@index([deletedAt])

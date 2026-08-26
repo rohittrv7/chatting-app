@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -12,6 +12,8 @@ import {
   Platform,
   Share,
   ActivityIndicator,
+  Animated,
+  PanResponder,
 } from 'react-native';
 import {
   devInspector,
@@ -98,7 +100,9 @@ export const DevInspectorModal: React.FC = () => {
       if (res && res.ok) {
         setPingStatus(`🟢 ${serverEnv.toUpperCase()} Server Online (${elapsed}ms)`);
       } else {
-        setPingStatus(`🟡 ${serverEnv.toUpperCase()} Responded in ${elapsed}ms (status ${res?.status || 'OK'})`);
+        setPingStatus(
+          `🟡 ${serverEnv.toUpperCase()} Responded in ${elapsed}ms (status ${res?.status || 'OK'})`,
+        );
       }
     } catch (e: any) {
       setPingStatus(`🔴 ${serverEnv.toUpperCase()} Offline: ${e?.message || 'Unreachable'}`);
@@ -150,34 +154,71 @@ export const DevInspectorModal: React.FC = () => {
 
   const isLocal = serverEnv === 'local';
 
+  // 🚀 Draggable PanResponder so user can swap / move the Dev Monitor badge anywhere on the screen
+  const pan = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
+  const isDraggingRef = useRef(false);
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => false,
+      onMoveShouldSetPanResponder: (_, gestureState) => {
+        return Math.abs(gestureState.dx) > 4 || Math.abs(gestureState.dy) > 4;
+      },
+      onPanResponderGrant: () => {
+        isDraggingRef.current = true;
+        pan.extractOffset();
+      },
+      onPanResponderMove: Animated.event([null, { dx: pan.x, dy: pan.y }], {
+        useNativeDriver: false,
+      }),
+      onPanResponderRelease: () => {
+        pan.flattenOffset();
+        setTimeout(() => {
+          isDraggingRef.current = false;
+        }, 100);
+      },
+      onPanResponderTerminate: () => {
+        pan.flattenOffset();
+        isDraggingRef.current = false;
+      },
+    }),
+  ).current;
+
   return (
     <>
-      {/* Floating Developer Badge (Always visible on top right) */}
+      {/* Floating Developer Badge (Draggable / Swipeable anywhere on the screen) */}
       {showFloatingPill && (
-        <View style={styles.floatingBadgeContainer}>
+        <Animated.View
+          style={[
+            styles.floatingBadgeContainer,
+            {
+              transform: [{ translateX: pan.x }, { translateY: pan.y }],
+            },
+          ]}
+          {...panResponder.panHandlers}
+        >
           <TouchableOpacity
-            style={[
-              styles.floatingBadge,
-              { backgroundColor: isLocal ? '#059669' : '#2563EB' },
-            ]}
+            style={[styles.floatingBadge, { backgroundColor: isLocal ? '#059669' : '#2563EB' }]}
             activeOpacity={0.85}
-            onPress={() => devInspector.setVisible(true)}
+            onPress={() => {
+              if (!isDraggingRef.current) {
+                devInspector.setVisible(true);
+              }
+            }}
           >
             {isLocal ? (
               <Laptop size={13} color="#FFF" style={{ marginRight: 5 }} />
             ) : (
               <Cloud size={13} color="#FFF" style={{ marginRight: 5 }} />
             )}
-            <Text style={styles.floatingBadgeText}>
-              {isLocal ? 'LOCAL:3000' : 'LIVE:RENDER'}
-            </Text>
+            <Text style={styles.floatingBadgeText}>{isLocal ? 'LOCAL:3000' : 'LIVE:RENDER'}</Text>
             {apiLogs.length > 0 && (
               <View style={styles.badgeCounter}>
                 <Text style={styles.badgeCounterText}>{apiLogs.length}</Text>
               </View>
             )}
           </TouchableOpacity>
-        </View>
+        </Animated.View>
       )}
 
       {/* Developer Diagnostics Fullscreen Modal */}
@@ -199,7 +240,11 @@ export const DevInspectorModal: React.FC = () => {
               <View style={{ marginLeft: 10 }}>
                 <Text style={styles.modalHeaderTitle}>Developer Live Monitor</Text>
                 <Text style={styles.modalHeaderSubtitle}>
-                  Active Backend: <Text style={{ color: isLocal ? '#10B981' : '#38BDF8', fontWeight: '800' }}>{serverEnv.toUpperCase()}</Text> • Telemetry & Sockets
+                  Active Backend:{' '}
+                  <Text style={{ color: isLocal ? '#10B981' : '#38BDF8', fontWeight: '800' }}>
+                    {serverEnv.toUpperCase()}
+                  </Text>{' '}
+                  • Telemetry & Sockets
                 </Text>
               </View>
             </View>
@@ -263,7 +308,11 @@ export const DevInspectorModal: React.FC = () => {
             <View
               style={[
                 styles.pingStatusAlert,
-                { backgroundColor: pingStatus.includes('Offline') ? 'rgba(239, 68, 68, 0.2)' : 'rgba(16, 185, 129, 0.2)' },
+                {
+                  backgroundColor: pingStatus.includes('Offline')
+                    ? 'rgba(239, 68, 68, 0.2)'
+                    : 'rgba(16, 185, 129, 0.2)',
+                },
               ]}
             >
               <Text
@@ -644,7 +693,9 @@ export const DevInspectorModal: React.FC = () => {
                 <TouchableOpacity style={styles.systemBtn} onPress={handleToggleServer}>
                   <Zap size={16} color="#FFF" style={{ marginRight: 8 }} />
                   <Text style={styles.systemBtnText}>
-                    {isLocal ? '⚡ Switch to LIVE Cloud (Render)' : '💻 Switch to LOCAL Backend (PC)'}
+                    {isLocal
+                      ? '⚡ Switch to LIVE Cloud (Render)'
+                      : '💻 Switch to LOCAL Backend (PC)'}
                   </Text>
                 </TouchableOpacity>
 
