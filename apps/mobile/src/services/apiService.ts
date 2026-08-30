@@ -98,7 +98,86 @@ export const handleSessionExpired = async () => {
   }
 };
 
+let refreshInFlight: Promise<{ accessToken: string; refreshToken: string } | null> | null = null;
+
 export const apiService = {
+  /**
+   * Rotate Refresh Token and get a new Access Token seamlessly.
+   * Concurrent-safe: multiple callers await the same in-flight promise.
+   */
+  async refreshAuthToken(): Promise<{ accessToken: string; refreshToken: string } | null> {
+    if (refreshInFlight) {
+      return refreshInFlight;
+    }
+
+    refreshInFlight = (async () => {
+      try {
+        const storedRefreshToken = await safeStorage.getItem(AUTH_STORAGE_KEYS.REFRESH_TOKEN);
+        if (!storedRefreshToken) return null;
+
+        // deviceId must match what was sent during OTP verify
+        const storedDeviceId = (await safeStorage.getItem(AUTH_STORAGE_KEYS.DEVICE_ID)) || '1';
+
+        const startTime = Date.now();
+        const url = `${getApiBaseUrl()}/auth/token/refresh`;
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refreshToken: storedRefreshToken, deviceId: storedDeviceId }),
+        });
+        const durationMs = Date.now() - startTime;
+
+        if (response.ok) {
+          const json = await response.json();
+          const data = json.data || json;
+          const newAccessToken = data.accessToken;
+          const newRefreshToken = data.refreshToken;
+
+          if (newAccessToken) {
+            await safeStorage.setItem(AUTH_STORAGE_KEYS.TOKEN, newAccessToken);
+          }
+          if (newRefreshToken) {
+            await safeStorage.setItem(AUTH_STORAGE_KEYS.REFRESH_TOKEN, newRefreshToken);
+          }
+
+          // Notify Redux store so the socket reconnects with the fresh token
+          if (newAccessToken && newRefreshToken && tokensRefreshedHandler) {
+            tokensRefreshedHandler(newAccessToken, newRefreshToken);
+          }
+
+          devInspector.logApi({
+            url,
+            method: 'POST',
+            requestData: { refreshToken: '***', deviceId: storedDeviceId },
+            responseData: { accessTokenRotated: true },
+            status: 200,
+            durationMs,
+            fromRedisCache: false,
+          });
+
+          return { accessToken: newAccessToken, refreshToken: newRefreshToken };
+        } else {
+          devInspector.logApi({
+            url,
+            method: 'POST',
+            requestData: { refreshToken: '***', deviceId: storedDeviceId },
+            responseData: { error: 'Refresh token expired / invalid' },
+            status: response.status,
+            durationMs,
+            fromRedisCache: false,
+            error: 'Refresh Token Expired',
+          });
+          return null;
+        }
+      } catch (e: any) {
+        return null;
+      } finally {
+        refreshInFlight = null;
+      }
+    })();
+
+    return refreshInFlight;
+  },
   /**
    * Request OTP from backend API
    */
@@ -282,74 +361,6 @@ export const apiService = {
         phone: phoneNumber,
       },
     };
-  },
-
-  /**
-   * Rotate Refresh Token and get a new Access Token seamlessly.
-   * Sends both refreshToken AND deviceId (required by backend RefreshTokenDto).
-   */
-  async refreshAuthToken(): Promise<{ accessToken: string; refreshToken: string } | null> {
-    try {
-      const storedRefreshToken = await safeStorage.getItem(AUTH_STORAGE_KEYS.REFRESH_TOKEN);
-      if (!storedRefreshToken) return null;
-
-      // deviceId must match what was sent during OTP verify
-      const storedDeviceId = (await safeStorage.getItem(AUTH_STORAGE_KEYS.DEVICE_ID)) || '1';
-
-      const startTime = Date.now();
-      const url = `${getApiBaseUrl()}/auth/token/refresh`;
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refreshToken: storedRefreshToken, deviceId: storedDeviceId }),
-      });
-      const durationMs = Date.now() - startTime;
-
-      if (response.ok) {
-        const json = await response.json();
-        const data = json.data || json;
-        const newAccessToken = data.accessToken;
-        const newRefreshToken = data.refreshToken;
-
-        if (newAccessToken) {
-          await safeStorage.setItem(AUTH_STORAGE_KEYS.TOKEN, newAccessToken);
-        }
-        if (newRefreshToken) {
-          await safeStorage.setItem(AUTH_STORAGE_KEYS.REFRESH_TOKEN, newRefreshToken);
-        }
-
-        // Notify Redux store so the socket reconnects with the fresh token
-        if (newAccessToken && newRefreshToken && tokensRefreshedHandler) {
-          tokensRefreshedHandler(newAccessToken, newRefreshToken);
-        }
-
-        devInspector.logApi({
-          url,
-          method: 'POST',
-          requestData: { refreshToken: '***', deviceId: storedDeviceId },
-          responseData: { accessTokenRotated: true },
-          status: 200,
-          durationMs,
-          fromRedisCache: false,
-        });
-
-        return { accessToken: newAccessToken, refreshToken: newRefreshToken };
-      } else {
-        devInspector.logApi({
-          url,
-          method: 'POST',
-          requestData: { refreshToken: '***', deviceId: storedDeviceId },
-          responseData: { error: 'Refresh token expired / invalid' },
-          status: response.status,
-          durationMs,
-          fromRedisCache: false,
-          error: 'Refresh Token Expired',
-        });
-        return null;
-      }
-    } catch (e: any) {
-      return null;
-    }
   },
 
   /**
@@ -743,7 +754,7 @@ export const apiService = {
   async uploadAvatar(
     token: string,
     base64Data: string,
-  ): Promise<{ success: boolean; avatarUrl?: string }> {
+  ): Promise<{ success: boolean; avatarUrl?: string; b2Url?: string }> {
     const url = `${getApiBaseUrl()}/auth/avatar`;
     try {
       const response = await fetch(url, {
@@ -758,7 +769,7 @@ export const apiService = {
         const json = await response.json();
         const payload = json.data || json;
         const fullAvatar = this.getResolvedMediaUrl(payload.avatarUrl) || payload.avatarUrl;
-        return { success: true, avatarUrl: fullAvatar };
+        return { success: true, avatarUrl: fullAvatar, b2Url: payload.b2Url || fullAvatar };
       }
     } catch (e) {}
 

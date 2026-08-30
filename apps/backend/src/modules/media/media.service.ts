@@ -311,7 +311,7 @@ export class MediaService implements OnModuleInit {
     const relativeUrl = `/uploads/images/${filename}`;
     return {
       success: true,
-      url: relativeUrl,
+      url: b2Url || relativeUrl,
       b2Url: b2Url || undefined,
       fileName: filename,
       size: buffer.length,

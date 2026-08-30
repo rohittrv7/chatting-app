@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import {
   View,
   Text,
@@ -48,24 +48,34 @@ export const EditProfileScreen: React.FC<Props> = ({ navigation }) => {
   const [status, setStatus] = useState(userProfile.status);
   const [phone, setPhone] = useState(userProfile.phone);
   const [avatarUri, setAvatarUri] = useState<string | undefined>(userProfile.avatarUrl);
+  const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
   const [isSaved, setIsSaved] = useState(false);
   const [showAvatarMenuModal, setShowAvatarMenuModal] = useState(false);
   const [showFullScreenAvatar, setShowFullScreenAvatar] = useState(false);
+  const uploadedServerAvatarRef = useRef<string | undefined>(
+    userProfile.avatarUrl && !userProfile.avatarUrl.startsWith('file://')
+      ? userProfile.avatarUrl
+      : undefined,
+  );
 
   const _processPickedImage = async (result: ImagePicker.ImagePickerResult) => {
     if (!result.canceled && result.assets && result.assets.length > 0) {
       const asset = result.assets[0];
       setAvatarUri(asset.uri);
       if (asset.base64 && token) {
+        setIsUploadingAvatar(true);
         apiService
           .uploadAvatar(token, asset.base64)
           .then((res) => {
             if (res.avatarUrl) {
-              setAvatarUri(res.avatarUrl);
-              updateUserProfile({ avatarUrl: res.avatarUrl });
+              const fullUrl = res.b2Url || apiService.getResolvedMediaUrl(res.avatarUrl);
+              uploadedServerAvatarRef.current = fullUrl;
+              setAvatarUri(fullUrl);
+              updateUserProfile({ avatarUrl: fullUrl });
             }
           })
-          .catch((e) => console.warn('Avatar upload error:', e));
+          .catch((e) => console.warn('Avatar upload error:', e))
+          .finally(() => setIsUploadingAvatar(false));
       }
     }
   };
@@ -81,7 +91,7 @@ export const EditProfileScreen: React.FC<Props> = ({ navigation }) => {
 
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['images'],
-        quality: 0.8,
+        quality: 0.7,
         allowsEditing: true,
         aspect: [1, 1],
         base64: true,
@@ -103,7 +113,7 @@ export const EditProfileScreen: React.FC<Props> = ({ navigation }) => {
 
       const result = await ImagePicker.launchCameraAsync({
         mediaTypes: ['images'],
-        quality: 0.8,
+        quality: 0.7,
         allowsEditing: true,
         aspect: [1, 1],
         base64: true,
@@ -118,12 +128,19 @@ export const EditProfileScreen: React.FC<Props> = ({ navigation }) => {
     const cleanHandle = username.trim().replace(/^@+/, '');
     const cleanUsername = `@${cleanHandle}`;
 
+    const finalAvatar =
+      uploadedServerAvatarRef.current && !uploadedServerAvatarRef.current.startsWith('file://')
+        ? uploadedServerAvatarRef.current
+        : userProfile.avatarUrl && !userProfile.avatarUrl.startsWith('file://')
+          ? userProfile.avatarUrl
+          : undefined;
+
     const updatedProfile = {
       name: name.trim() || userProfile.name,
       username: cleanUsername,
       status: status.trim() || userProfile.status,
       phone: phone.trim() || userProfile.phone,
-      avatarUrl: avatarUri || userProfile.avatarUrl,
+      avatarUrl: finalAvatar,
     };
 
     updateUserProfile(updatedProfile);

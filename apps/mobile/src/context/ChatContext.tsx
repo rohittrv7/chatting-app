@@ -34,6 +34,7 @@ import {
 } from '../store/authSlice';
 import { safeStorage } from '../services/storageHelper';
 import { ConversationItem, ChatMessage, UserProfile } from '../types';
+import { soundService } from '../services/soundService';
 import {
   socketService,
   IncomingMessage,
@@ -103,6 +104,7 @@ interface ChatContextType {
     emoji: string,
     receiverId?: string,
   ) => void;
+  resendMessage: (conversationId: string, messageId: string) => void;
   markConversationRead: (conversationId: string) => void;
   openChatRoom: (conversationId: string) => void;
   closeChatRoom: (conversationId: string) => void;
@@ -136,6 +138,7 @@ const ChatContext = createContext<ChatContextType>({
   updateLastMessage: () => {},
   toggleStarMessage: () => false,
   reactToMessage: () => {},
+  resendMessage: () => {},
   markConversationRead: () => {},
   openChatRoom: () => {},
   closeChatRoom: () => {},
@@ -328,6 +331,84 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return () => clearInterval(interval);
   }, []);
 
+  // ─── conversationId UUID cache ───────────────────────────────────────────
+  const convUUIDCacheRef = useRef<Map<string, string>>(new Map());
+
+  const _resolveConvId = useCallback(
+    async (localConvId: string, recipientDbId?: string): Promise<string | null> => {
+      const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (UUID_RE.test(localConvId)) return localConvId;
+
+      const cached = convUUIDCacheRef.current.get(localConvId);
+      if (cached) return cached;
+
+      if (!recipientDbId || !UUID_RE.test(recipientDbId)) return null;
+
+      const tok = tokenRef.current;
+      if (!tok) return null;
+
+      const result = await apiService.getOrCreateDirectConversation(tok, recipientDbId);
+      if (!result?.id) return null;
+
+      convUUIDCacheRef.current.set(localConvId, result.id);
+
+      const existing = conversationsRef.current.find((c) => c.id === localConvId);
+      if (existing && existing.id !== result.id) {
+        dispatch(addConvRedux({ ...existing, id: result.id, recipientDbId }));
+        dispatch(removeConversation({ conversationId: localConvId }));
+        const msgs = messagesMapRef.current[localConvId] || [];
+        if (msgs.length > 0) {
+          dispatch(setMessagesForConversation({ conversationId: result.id, messages: msgs }));
+        }
+      }
+
+      return result.id;
+    },
+    [dispatch],
+  );
+
+  const flushPendingMessages = useCallback(async () => {
+    const allMsgsMap = messagesMapRef.current;
+    const convs = conversationsRef.current;
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+    for (const [cId, msgs] of Object.entries(allMsgsMap)) {
+      if (!Array.isArray(msgs)) continue;
+      const pending = msgs.filter(
+        (m) => m.isMe && (m.status === 'SENDING' || m.status === 'FAILED'),
+      );
+      if (pending.length === 0) continue;
+
+      const conv = convs.find((c) => c.id === cId);
+      const receiverId = conv?.recipientDbId;
+      if (!receiverId || !UUID_RE.test(receiverId)) continue;
+
+      for (const msg of pending) {
+        try {
+          const realConvId = await _resolveConvId(msg.conversationId || cId, receiverId);
+          if (realConvId) {
+            dispatch(
+              updateMessageStatus({
+                conversationId: cId,
+                messageId: msg.id,
+                clientMessageId: msg.id,
+                status: 'SENDING',
+              }),
+            );
+            socketService.sendMessage({
+              clientMessageId: msg.id,
+              conversationId: realConvId,
+              receiverId,
+              text: msg.text,
+              imagePath: msg.imagePath,
+              location: msg.location,
+            });
+          }
+        } catch {}
+      }
+    }
+  }, [dispatch, _resolveConvId]);
+
   // ─────────────────────────────────────────────────────────────────────────
   // Socket event handlers — registered once, never per-screen
   // ─────────────────────────────────────────────────────────────────────────
@@ -339,7 +420,10 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       .map((c) => c.recipientDbId)
       .filter((id): id is string => !!id && UUID_RE.test(id));
     if (ids.length > 0) socketService.queryPresence(ids);
-  }, []);
+
+    // Auto-retry sending pending/unsent messages on reconnect
+    flushPendingMessages();
+  }, [flushPendingMessages]);
 
   const _handleDisconnect = useCallback((_reason: string) => {}, []);
 
@@ -397,6 +481,15 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     dispatch(appendMessage({ conversationId: convId, message: incomingMsg }));
 
     const isUserLooking = activeConvIdRef.current === convId;
+
+    // 🎵 WhatsApp Style Notification Sounds:
+    // If inside chat -> play gentle in-chat pop sound
+    // If outside chat -> play melodic alert notification ringtone + haptics
+    if (isUserLooking) {
+      soundService.playInChatReceiveSound();
+    } else {
+      soundService.playNotificationTone();
+    }
 
     // Update or create conversation list entry
     const existingConv = conversationsRef.current.find(
@@ -828,55 +921,6 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch {}
   };
 
-  // ─── conversationId UUID cache ───────────────────────────────────────────
-  // Maps local string IDs → real DB UUID conversationIds to avoid repeated API calls.
-  const convUUIDCacheRef = useRef<Map<string, string>>(new Map());
-
-  /**
-   * Resolve a guaranteed DB-UUID conversationId.
-   * If the supplied conversationId is already a UUID → use it.
-   * Otherwise call getOrCreateDirect on the backend to get the real UUID.
-   * Result is cached so subsequent sends are instant.
-   */
-  const _resolveConvId = useCallback(
-    async (localConvId: string, recipientDbId?: string): Promise<string | null> => {
-      const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-      if (UUID_RE.test(localConvId)) return localConvId;
-
-      // Check cache first
-      const cached = convUUIDCacheRef.current.get(localConvId);
-      if (cached) return cached;
-
-      // Need a recipientDbId to create the conversation
-      if (!recipientDbId || !UUID_RE.test(recipientDbId)) return null;
-
-      const tok = tokenRef.current;
-      if (!tok) return null;
-
-      const result = await apiService.getOrCreateDirectConversation(tok, recipientDbId);
-      if (!result?.id) return null;
-
-      // Cache mapping: localConvId → real UUID
-      convUUIDCacheRef.current.set(localConvId, result.id);
-
-      // Also update the conversation in Redux with the real UUID
-      const existing = conversationsRef.current.find((c) => c.id === localConvId);
-      if (existing && existing.id !== result.id) {
-        // Add the UUID-keyed version, remove the old string-keyed one
-        dispatch(addConvRedux({ ...existing, id: result.id, recipientDbId }));
-        dispatch(removeConversation({ conversationId: localConvId }));
-        // Migrate messages
-        const msgs = messagesMapRef.current[localConvId] || [];
-        if (msgs.length > 0) {
-          dispatch(setMessagesForConversation({ conversationId: result.id, messages: msgs }));
-        }
-      }
-
-      return result.id;
-    },
-    [dispatch],
-  );
-
   const isUserOnline = (userId?: string): boolean => {
     if (!userId) return false;
     return Boolean(presenceMap[userId]?.isOnline);
@@ -944,6 +988,10 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
 
     dispatch(appendMessage({ conversationId, message: newMsg }));
+
+    if (isMe) {
+      soundService.playMessageSentSound();
+    }
 
     // Update or create conversation entry
     const existingConv = conversationsRef.current.find((c) => c.id === conversationId);
@@ -1022,6 +1070,22 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
           location,
         });
       });
+
+      // Timeout: if message is still SENDING after 12s, mark it FAILED so user sees Retry button
+      setTimeout(() => {
+        const curMsgs = messagesMapRef.current[conversationId] || [];
+        const cur = curMsgs.find((m) => m.id === clientMessageId);
+        if (cur && cur.status === 'SENDING') {
+          dispatch(
+            updateMessageStatus({
+              conversationId,
+              messageId: clientMessageId,
+              clientMessageId,
+              status: 'FAILED',
+            }),
+          );
+        }
+      }, 12000);
     }
   };
 
@@ -1055,6 +1119,62 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }),
     );
     socketService.sendReaction(conversationId, messageId, emoji, receiverId);
+  };
+
+  const resendMessage = (conversationId: string, messageId: string) => {
+    const msgs = messagesMapRef.current[conversationId] || [];
+    const msg = msgs.find((m) => m.id === messageId);
+    if (!msg) return;
+
+    const conv = conversationsRef.current.find((c) => c.id === conversationId);
+    const receiverId = conv?.recipientDbId;
+    if (!receiverId) return;
+
+    dispatch(
+      updateMessageStatus({
+        conversationId,
+        messageId,
+        clientMessageId: messageId,
+        status: 'SENDING',
+      }),
+    );
+
+    _resolveConvId(conversationId, receiverId).then((realConvId) => {
+      if (realConvId) {
+        socketService.sendMessage({
+          clientMessageId: msg.id,
+          conversationId: realConvId,
+          receiverId,
+          text: msg.text,
+          imagePath: msg.imagePath,
+          location: msg.location,
+        });
+
+        setTimeout(() => {
+          const curMsgs = messagesMapRef.current[conversationId] || [];
+          const cur = curMsgs.find((m) => m.id === messageId);
+          if (cur && cur.status === 'SENDING') {
+            dispatch(
+              updateMessageStatus({
+                conversationId,
+                messageId,
+                clientMessageId: messageId,
+                status: 'FAILED',
+              }),
+            );
+          }
+        }, 12000);
+      } else {
+        dispatch(
+          updateMessageStatus({
+            conversationId,
+            messageId,
+            clientMessageId: messageId,
+            status: 'FAILED',
+          }),
+        );
+      }
+    });
   };
 
   const _updateLastMessageInternal = (
@@ -1254,6 +1374,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         updateLastMessage,
         toggleStarMessage,
         reactToMessage,
+        resendMessage,
         markConversationRead,
         openChatRoom,
         closeChatRoom,

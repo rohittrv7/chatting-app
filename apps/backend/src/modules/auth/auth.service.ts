@@ -306,10 +306,28 @@ export class AuthService {
     dto: { name?: string; username?: string; status?: string; avatarUrl?: string },
   ) {
     const cleanUsername = dto.username ? dto.username.replace(/^@+/, '').trim() : undefined;
-    const user = await this.authRepository.updateUserProfile(userId, {
+    let safeAvatarUrl = dto.avatarUrl;
+    if (
+      safeAvatarUrl &&
+      (safeAvatarUrl.startsWith('file://') ||
+        safeAvatarUrl.startsWith('data:') ||
+        safeAvatarUrl.startsWith('blob:'))
+    ) {
+      // Do not overwrite avatar with local device cache URI
+      safeAvatarUrl = undefined;
+    }
+
+    const payloadToUpdate: any = {
       ...dto,
       username: cleanUsername,
-    });
+    };
+    if (safeAvatarUrl === undefined) {
+      delete payloadToUpdate.avatarUrl;
+    } else {
+      payloadToUpdate.avatarUrl = safeAvatarUrl;
+    }
+
+    const user = await this.authRepository.updateUserProfile(userId, payloadToUpdate);
     return {
       success: true,
       message: 'Profile updated successfully',
@@ -337,7 +355,8 @@ export class AuthService {
       } catch {}
     }
 
-    const avatarUrl = `/uploads/avatars/${filename}`;
+    const relativeUrl = `/uploads/avatars/${filename}`;
+    const avatarUrl = b2Url || relativeUrl;
     const updatedUser = await this.authRepository.updateUserProfile(userId, { avatarUrl });
     return {
       success: true,

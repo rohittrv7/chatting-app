@@ -15,7 +15,6 @@ import { ToastProvider, useToast } from './src/context/ToastContext';
 import { store } from './src/store';
 import { restoreSession, logout } from './src/store/authSlice';
 import { apiService, setSessionExpiredHandler } from './src/services/apiService';
-import { DevInspectorModal } from './src/components/DevInspectorModal';
 
 import { PhoneAuthScreen } from './src/screens/PhoneAuthScreen';
 import { OtpVerificationScreen } from './src/screens/OtpVerificationScreen';
@@ -174,7 +173,6 @@ export default function App() {
         <ChatProvider>
           <ToastProvider>
             <AppNavigator />
-            <DevInspectorModal />
           </ToastProvider>
         </ChatProvider>
       </ThemeProvider>

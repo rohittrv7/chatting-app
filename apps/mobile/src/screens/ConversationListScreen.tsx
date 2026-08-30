@@ -65,6 +65,7 @@ import {
   ShieldCheck,
   MoreVertical,
   UserX,
+  Edit2,
 } from 'lucide-react-native';
 import {
   fetchDeviceContacts,
@@ -78,6 +79,7 @@ import {
 } from '../services/contactsService';
 import { requestAllAppPermissions } from '../services/permissionsService';
 import { AppLogo } from '../components/AppLogo';
+import { SmartAvatar } from '../components/SmartAvatar';
 import { apiService } from '../services/apiService';
 import { devInspector } from '../services/devInspectorService';
 import { LogoutConfirmModal } from '../components/LogoutConfirmModal';
@@ -627,24 +629,26 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
     <View style={{ flex: 1 }}>
       {/* Top Header Bar */}
       <View style={styles.topHeaderRow}>
-        <TouchableOpacity style={styles.avatarWrapper} onPress={() => setSelectedBottomNav(3)}>
-          {userProfile.avatarUrl ? (
-            <Image
-              source={{ uri: apiService.getResolvedMediaUrl(userProfile.avatarUrl) }}
-              style={styles.headerAvatarImage}
-            />
-          ) : (
-            <View
-              style={[
-                styles.headerAvatar,
-                { backgroundColor: colors.surface, borderColor: colors.cardBorder },
-              ]}
-            >
-              <Text style={[styles.headerAvatarLetter, { color: colors.primaryIndigo }]}>
-                {userProfile.name ? userProfile.name[0].toUpperCase() : 'R'}
-              </Text>
-            </View>
-          )}
+        <TouchableOpacity
+          style={styles.avatarWrapper}
+          activeOpacity={0.8}
+          onPress={() => {
+            setSelectedFullScreenAvatar({
+              id: 'my_profile',
+              title: userProfile.name || 'My Profile',
+              username: userProfile.username,
+              phone: userProfile.phone,
+              avatarUrl: userProfile.avatarUrl,
+              groupBg: colors.primaryIndigo,
+            } as any);
+          }}
+        >
+          <SmartAvatar
+            avatarUrl={userProfile.avatarUrl}
+            name={userProfile.name}
+            username={userProfile.username}
+            size={38}
+          />
           <View style={[styles.onlineBadge, { borderColor: colors.bg }]} />
         </TouchableOpacity>
 
@@ -819,19 +823,13 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                   onPress={() => handleDirectStartChat(user)}
                 >
                   <View style={styles.cardAvatarWrapper}>
-                    {user.avatarUrl ? (
-                      <Image
-                        source={{ uri: user.avatarUrl }}
-                        style={styles.cardAvatarImage}
-                        resizeMode="cover"
-                      />
-                    ) : (
-                      <View style={[styles.cardAvatar, { backgroundColor: colors.cardBorder }]}>
-                        <Text style={[styles.avatarLetter, { color: colors.primaryIndigo }]}>
-                          {(user.name || 'U')[0].toUpperCase()}
-                        </Text>
-                      </View>
-                    )}
+                    <SmartAvatar
+                      avatarUrl={user.avatarUrl}
+                      name={user.name}
+                      username={user.username}
+                      size={52}
+                      groupBg={colors.cardBorder}
+                    />
                   </View>
 
                   <View style={styles.cardContent}>
@@ -915,11 +913,23 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                     activeOpacity={0.8}
                     onPress={() => {
                       isNavigatedToChatRef.current = true;
+                      const resolvedContact = getResolvedContact({
+                        userId: item.recipientDbId,
+                        username: item.username,
+                        phone: item.phone,
+                        name: item.title,
+                      });
+                      const rawAvatar = item.avatarUrl || resolvedContact?.avatarUrl;
+                      const effectiveAvatarUrl =
+                        rawAvatar && !rawAvatar.startsWith('file://')
+                          ? apiService.getResolvedMediaUrl(rawAvatar)
+                          : rawAvatar;
+
                       navigation.navigate('Chat', {
                         conversationId: item.id,
                         title: item.title,
                         username: item.username,
-                        avatarUrl: item.avatarUrl,
+                        avatarUrl: effectiveAvatarUrl,
                         phone: item.phone,
                         recipientDbId: item.recipientDbId,
                       });
@@ -935,24 +945,25 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                         setSelectedAvatarProfile(item);
                       }}
                     >
-                      {item.avatarUrl ? (
-                        <Image
-                          source={{ uri: apiService.getResolvedMediaUrl(item.avatarUrl) }}
-                          style={styles.cardAvatarImage}
-                          resizeMode="cover"
-                        />
-                      ) : (
-                        <View
-                          style={[
-                            styles.cardAvatar,
-                            { backgroundColor: item.groupBg || colors.cardBorder },
-                          ]}
-                        >
-                          <Text style={[styles.avatarLetter, { color: colors.primaryIndigo }]}>
-                            {item.avatar}
-                          </Text>
-                        </View>
-                      )}
+                      {(() => {
+                        const resolvedContact = getResolvedContact({
+                          userId: item.recipientDbId,
+                          username: item.username,
+                          phone: item.phone,
+                          name: item.title,
+                        });
+                        const effectiveAvatarUrl = item.avatarUrl || resolvedContact?.avatarUrl;
+
+                        return (
+                          <SmartAvatar
+                            avatarUrl={effectiveAvatarUrl}
+                            name={item.title}
+                            username={item.username}
+                            size={52}
+                            groupBg={item.groupBg}
+                          />
+                        );
+                      })()}
                       {isUserOnline(item.recipientDbId) ||
                       isUserOnline(item.username) ||
                       isUserOnline(item.id) ||
@@ -2212,36 +2223,16 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                   if (p) setSelectedFullScreenAvatar(p);
                 }}
               >
-                {selectedAvatarProfile?.avatarUrl ? (
-                  <Image
-                    source={{
-                      uri: apiService.getResolvedMediaUrl(selectedAvatarProfile.avatarUrl),
-                    }}
-                    style={styles.avatarModalImage}
-                    resizeMode="cover"
-                  />
-                ) : (
-                  <View
-                    style={[
-                      styles.avatarModalPlaceholder,
-                      { backgroundColor: selectedAvatarProfile?.groupBg || colors.primaryIndigo },
-                    ]}
-                  >
-                    <Text style={styles.avatarModalPlaceholderLetter}>
-                      {selectedAvatarProfile
-                        ? (
-                            getResolvedDisplayName(
-                              {
-                                username: selectedAvatarProfile.username,
-                                name: selectedAvatarProfile.title,
-                              },
-                              selectedAvatarProfile.title,
-                            )[0] || 'U'
-                          ).toUpperCase()
-                        : 'U'}
-                    </Text>
-                  </View>
-                )}
+                <SmartAvatar
+                  avatarUrl={selectedAvatarProfile?.avatarUrl}
+                  name={selectedAvatarProfile?.title}
+                  username={selectedAvatarProfile?.username}
+                  size={280}
+                  borderRadius={0}
+                  style={styles.avatarModalImage}
+                  textStyle={styles.avatarModalPlaceholderLetter}
+                  groupBg={selectedAvatarProfile?.groupBg || colors.primaryIndigo}
+                />
               </TouchableOpacity>
             </View>
 
@@ -2324,24 +2315,11 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
       >
         <SafeAreaView style={{ flex: 1, backgroundColor: '#000' }}>
           <StatusBar barStyle="light-content" backgroundColor="#000" />
-          <View
-            style={{
-              flexDirection: 'row',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              paddingHorizontal: 16,
-              paddingVertical: 12,
-              backgroundColor: '#111',
-            }}
-          >
-            <TouchableOpacity
-              onPress={() => setSelectedFullScreenAvatar(null)}
-              style={{ padding: 6 }}
-            >
-              <ArrowLeft size={24} color="#FFF" />
-            </TouchableOpacity>
-            <Text style={{ color: '#FFF', fontSize: 17, fontWeight: '700' }} numberOfLines={1}>
-              {selectedFullScreenAvatar
+          {(() => {
+            const isMyProfile = selectedFullScreenAvatar?.id === 'my_profile';
+            const title = isMyProfile
+              ? 'My Profile Photo'
+              : selectedFullScreenAvatar
                 ? getResolvedDisplayName(
                     {
                       username: selectedFullScreenAvatar.username,
@@ -2350,53 +2328,76 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                     },
                     selectedFullScreenAvatar.title,
                   )
-                : 'Profile Photo'}
-            </Text>
-            <View style={{ width: 36 }} />
-          </View>
-          <View
-            style={{
-              flex: 1,
-              justifyContent: 'center',
-              alignItems: 'center',
-              backgroundColor: '#000',
-            }}
-          >
-            {selectedFullScreenAvatar?.avatarUrl ? (
-              <Image
-                source={{
-                  uri: apiService.getResolvedMediaUrl(selectedFullScreenAvatar.avatarUrl),
-                }}
-                style={{ width: '100%', height: '100%' }}
-                resizeMode="contain"
-              />
-            ) : (
-              <View
-                style={{
-                  width: 220,
-                  height: 220,
-                  borderRadius: 110,
-                  justifyContent: 'center',
-                  alignItems: 'center',
-                  backgroundColor: selectedFullScreenAvatar?.groupBg || colors.primaryIndigo,
-                }}
-              >
-                <Text style={{ fontSize: 72, fontWeight: '800', color: '#FFF' }}>
-                  {selectedFullScreenAvatar
-                    ? (
-                        getResolvedDisplayName(
-                          {
-                            username: selectedFullScreenAvatar.username,
-                            name: selectedFullScreenAvatar.title,
-                          },
-                          selectedFullScreenAvatar.title,
-                        )[0] || 'U'
-                      ).toUpperCase()
-                    : 'U'}
-                </Text>
-              </View>
-            )}
-          </View>
+                : 'Profile Photo';
+
+            return (
+              <>
+                <View
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    paddingHorizontal: 16,
+                    paddingVertical: 12,
+                    backgroundColor: '#111',
+                  }}
+                >
+                  <TouchableOpacity
+                    onPress={() => setSelectedFullScreenAvatar(null)}
+                    style={{ padding: 6 }}
+                  >
+                    <ArrowLeft size={24} color="#FFF" />
+                  </TouchableOpacity>
+                  <Text
+                    style={{
+                      color: '#FFF',
+                      fontSize: 17,
+                      fontWeight: '700',
+                      flex: 1,
+                      textAlign: 'center',
+                      marginHorizontal: 8,
+                    }}
+                    numberOfLines={1}
+                  >
+                    {title}
+                  </Text>
+                  {isMyProfile ? (
+                    <TouchableOpacity
+                      onPress={() => {
+                        setSelectedFullScreenAvatar(null);
+                        navigation.navigate('EditProfile');
+                      }}
+                      style={{ padding: 6 }}
+                    >
+                      <Edit2 size={20} color="#38BDF8" />
+                    </TouchableOpacity>
+                  ) : (
+                    <View style={{ width: 36 }} />
+                  )}
+                </View>
+                <View
+                  style={{
+                    flex: 1,
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                    backgroundColor: '#000',
+                    padding: 16,
+                  }}
+                >
+                  <SmartAvatar
+                    avatarUrl={selectedFullScreenAvatar?.avatarUrl}
+                    name={selectedFullScreenAvatar?.title}
+                    username={selectedFullScreenAvatar?.username}
+                    size={280}
+                    borderRadius={140}
+                    groupBg={selectedFullScreenAvatar?.groupBg || colors.primaryIndigo}
+                    textColor="#FFF"
+                    textStyle={{ fontSize: 96, fontWeight: '800' }}
+                  />
+                </View>
+              </>
+            );
+          })()}
         </SafeAreaView>
       </Modal>
 

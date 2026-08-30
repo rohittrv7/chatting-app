@@ -30,6 +30,7 @@ import { RootState } from '../store';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
+import * as MediaLibrary from 'expo-media-library';
 
 let Location: any = null;
 try {
@@ -38,6 +39,7 @@ try {
 
 import { socketService } from '../services/socket';
 import { apiService } from '../services/apiService';
+import { SmartAvatar } from '../components/SmartAvatar';
 import { getResolvedDisplayName, getResolvedContact } from '../services/contactsService';
 import {
   ArrowLeft,
@@ -63,6 +65,7 @@ import {
   Eraser,
   Image as ImageIcon,
   Reply,
+  RotateCcw,
 } from 'lucide-react-native';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Chat'>;
@@ -198,6 +201,67 @@ const SwipeableBubble: React.FC<SwipeableBubbleProps> = ({
   );
 };
 
+const isSameCalendarDay = (d1: Date, d2: Date) =>
+  d1.getFullYear() === d2.getFullYear() &&
+  d1.getMonth() === d2.getMonth() &&
+  d1.getDate() === d2.getDate();
+
+function formatChatDateSeparator(timestamp?: number | string | Date): string {
+  if (!timestamp) return 'Today';
+  const msgDate = new Date(timestamp);
+  if (isNaN(msgDate.getTime())) return 'Today';
+
+  const today = new Date();
+  if (isSameCalendarDay(msgDate, today)) {
+    return 'Today';
+  }
+
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  if (isSameCalendarDay(msgDate, yesterday)) {
+    return 'Yesterday';
+  }
+
+  const diffTime = today.getTime() - msgDate.getTime();
+  const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+
+  const months = [
+    'January',
+    'February',
+    'March',
+    'April',
+    'May',
+    'June',
+    'July',
+    'August',
+    'September',
+    'October',
+    'November',
+    'December',
+  ];
+
+  if (diffDays >= 2 && diffDays < 7) {
+    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    return days[msgDate.getDay()];
+  }
+
+  if (msgDate.getFullYear() === today.getFullYear()) {
+    return `${msgDate.getDate()} ${months[msgDate.getMonth()]}`;
+  }
+  return `${msgDate.getDate()} ${months[msgDate.getMonth()]} ${msgDate.getFullYear()}`;
+}
+
+function shouldShowDateSeparator(currentMsg: ChatMessage, previousMsg?: ChatMessage): boolean {
+  if (!previousMsg) return true;
+
+  const curDate = new Date(currentMsg.createdAtMs || currentMsg.createdAt || Date.now());
+  const prevDate = new Date(previousMsg.createdAtMs || previousMsg.createdAt || Date.now());
+
+  if (isNaN(curDate.getTime()) || isNaN(prevDate.getTime())) return false;
+
+  return !isSameCalendarDay(curDate, prevDate);
+}
+
 export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
   const { conversationId, title } = route.params;
 
@@ -208,6 +272,7 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
     updateMessageUploadProgress,
     toggleStarMessage,
     reactToMessage,
+    resendMessage,
     deleteConversation,
     clearMessages,
     openChatRoom,
@@ -542,7 +607,7 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['images'],
         allowsMultipleSelection: true,
-        quality: 0.8,
+        quality: 0.7,
         base64: true,
       });
       if (!result.canceled && result.assets?.length > 0) {
@@ -640,27 +705,42 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
     if (!uri) return;
     try {
       let localUri = uri;
-      if (uri.startsWith('http')) {
-        const filename = uri.split('/').pop() || `photo_${Date.now()}.jpg`;
+      if (uri.startsWith('data:image')) {
+        const cleanB64 = uri.replace(/^data:[^;]+;base64,/, '');
+        const tempPath = `${FileSystem.cacheDirectory}photo_${Date.now()}.jpg`;
+        await FileSystem.writeAsStringAsync(tempPath, cleanB64, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        localUri = tempPath;
+      } else if (uri.startsWith('http')) {
+        const rawName = uri.split('/').pop() || `photo_${Date.now()}.jpg`;
+        const cleanFilename = rawName.split('?')[0] || `photo_${Date.now()}.jpg`;
         const res = await FileSystem.downloadAsync(
           uri,
-          `${FileSystem.documentDirectory}${filename}`,
+          `${FileSystem.cacheDirectory}${cleanFilename}`,
         );
         localUri = res.uri;
       }
       try {
-        const ML = require('expo-media-library');
-        if (ML?.requestPermissionsAsync) {
-          const p = await ML.requestPermissionsAsync();
-          if (p.granted) {
-            await ML.saveToLibraryAsync(localUri);
-            showToast('Saved to gallery 📸', 'success');
+        const { status } = await MediaLibrary.requestPermissionsAsync(true);
+        if (status === 'granted') {
+          const asset = await MediaLibrary.createAssetAsync(localUri);
+          if (asset) {
+            showToast('Saved to gallery 📸', 'success', 2500);
             return;
           }
         }
-      } catch {}
+      } catch (mlErr) {
+        console.warn('MediaLibrary save error:', mlErr);
+      }
+
       if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(localUri);
+        await Sharing.shareAsync(localUri, {
+          mimeType: 'image/jpeg',
+          dialogTitle: 'Save Photo to Device',
+        });
+      } else {
+        showToast('Could not save photo to gallery', 'error');
       }
     } catch {
       showToast('Could not save photo', 'error');
@@ -681,8 +761,13 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
 
   // ── Bubble renderer ────────────────────────────────────────────────────────
   const renderBubble = useCallback(
-    ({ item: msg }: { item: ChatMessage }) => {
+    ({ item: msg, index }: { item: ChatMessage; index: number }) => {
       const isMe = msg.isMe;
+      const prevMsg = index > 0 ? roomMessages[index - 1] : undefined;
+      const showDateHeader = shouldShowDateSeparator(msg, prevMsg);
+      const dateHeaderText = showDateHeader
+        ? formatChatDateSeparator(msg.createdAtMs || msg.createdAt)
+        : '';
 
       const statusIcon = () => {
         if (!isMe) return null;
@@ -691,7 +776,18 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
             <ActivityIndicator size={10} color="rgba(255,255,255,0.6)" style={{ marginLeft: 4 }} />
           );
         if (msg.status === 'FAILED')
-          return <Text style={{ color: '#FF6B6B', fontSize: 10, marginLeft: 4 }}>!</Text>;
+          return (
+            <TouchableOpacity
+              activeOpacity={0.7}
+              onPress={() => resendMessage(conversationId, msg.id)}
+              style={{ flexDirection: 'row', alignItems: 'center', marginLeft: 4 }}
+            >
+              <RotateCcw size={12} color="#EF4444" />
+              <Text style={{ color: '#EF4444', fontSize: 10, fontWeight: '700', marginLeft: 2 }}>
+                Retry
+              </Text>
+            </TouchableOpacity>
+          );
         if (msg.status === 'READ')
           return <CheckCheck size={14} color="#38BDF8" style={{ marginLeft: 4 }} />;
         if (msg.status === 'DELIVERED')
@@ -704,186 +800,225 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
         : [];
 
       return (
-        <SwipeableBubble
-          isMe={isMe}
-          onSwipeReply={() => {
-            setReplyTo(msg);
-            textInputRef.current?.focus();
-          }}
-          colors={colors}
-        >
-          <View
-            style={[
-              styles.bubbleWrapper,
-              isMe ? styles.bubbleWrapperMe : styles.bubbleWrapperOther,
-            ]}
-          >
-            <TouchableOpacity
-              activeOpacity={0.85}
-              onLongPress={() => setReactingToMsg(msg)}
-              style={[
-                styles.bubble,
-                isMe
-                  ? styles.bubbleMe
-                  : [
-                      styles.bubbleOther,
-                      { backgroundColor: colors.surface, borderColor: colors.cardBorder },
-                    ],
-                activeReactions.length > 0 && { marginBottom: 12 },
-              ]}
-            >
-              {/* Reply quote */}
-              {msg.replyTo && (
-                <View
-                  style={[
-                    styles.replyQuote,
-                    { borderLeftColor: isMe ? 'rgba(255,255,255,0.6)' : colors.primaryIndigo },
-                  ]}
-                >
-                  <Text
-                    style={[
-                      styles.replyQuoteText,
-                      { color: isMe ? 'rgba(255,255,255,0.8)' : colors.primaryIndigo },
-                    ]}
-                    numberOfLines={1}
-                  >
-                    {msg.replyTo.isMe ? 'You' : resolvedDisplayName}
-                  </Text>
-                  <Text
-                    style={[
-                      styles.replyQuoteBody,
-                      { color: isMe ? 'rgba(255,255,255,0.7)' : colors.textSecondary },
-                    ]}
-                    numberOfLines={2}
-                  >
-                    {msg.replyTo.imagePath ? '📷 Photo' : msg.replyTo.text}
-                  </Text>
-                </View>
-              )}
-
-              {/* Image */}
-              {msg.imagePath ? (
-                <TouchableOpacity
-                  activeOpacity={0.9}
-                  onPress={() => setSelectedPhotoMsg(msg)}
-                  style={styles.imageBubbleWrapper}
-                >
-                  <Image
-                    source={{ uri: msg.imagePath }}
-                    style={styles.chatImageBubble}
-                    resizeMode="cover"
-                  />
-                  {msg.isUploading ? (
-                    <View style={styles.uploadProgressOverlay}>
-                      <ActivityIndicator size="small" color="#FFF" />
-                      <Text style={styles.uploadProgressText}>{msg.uploadProgress ?? 45}%</Text>
-                    </View>
-                  ) : (
-                    <View style={styles.imageOverlayBadge}>
-                      <ZoomIn size={13} color="#FFF" />
-                    </View>
-                  )}
-                </TouchableOpacity>
-              ) : null}
-
-              {/* Location */}
-              {msg.location ? (
-                <TouchableOpacity
-                  style={[
-                    styles.locationBubble,
-                    { backgroundColor: isMe ? 'rgba(255,255,255,0.15)' : colors.cardBorder },
-                  ]}
-                  onPress={() => {
-                    const { lat, lng } = msg.location!;
-                    const url =
-                      Platform.OS === 'ios'
-                        ? `maps://?q=${lat},${lng}`
-                        : `geo:${lat},${lng}?q=${lat},${lng}`;
-                    Linking.openURL(url).catch(() =>
-                      Linking.openURL(`https://maps.google.com/?q=${lat},${lng}`),
-                    );
-                  }}
-                >
-                  <MapPin
-                    size={18}
-                    color={isMe ? '#FFF' : colors.primaryIndigo}
-                    style={{ marginRight: 8 }}
-                  />
-                  <View style={{ flex: 1 }}>
-                    <Text
-                      style={[styles.locationLabel, { color: isMe ? '#FFF' : colors.textPrimary }]}
-                      numberOfLines={2}
-                    >
-                      {msg.location.label ||
-                        `${msg.location.lat.toFixed(4)}, ${msg.location.lng.toFixed(4)}`}
-                    </Text>
-                    <Text
-                      style={[
-                        styles.locationCoords,
-                        { color: isMe ? 'rgba(255,255,255,0.7)' : colors.textSecondary },
-                      ]}
-                    >
-                      Tap to open in Maps
-                    </Text>
-                  </View>
-                </TouchableOpacity>
-              ) : null}
-
-              {/* Text */}
-              {msg.text?.trim() ? (
-                <Text style={[styles.msgText, { color: isMe ? '#FFF' : colors.textPrimary }]}>
-                  {msg.text}
-                </Text>
-              ) : null}
-
-              {/* Footer: time + ticks */}
-              <View style={styles.bubbleFooter}>
-                {msg.isStarred && (
-                  <Star size={11} color="#FBBF24" fill="#FBBF24" style={{ marginRight: 4 }} />
-                )}
+        <View key={msg.id || `msg_${index}`} style={styles.bubbleRowContainer}>
+          {/* 🌟 Dynamic WhatsApp-Style Date Separator Badge */}
+          {showDateHeader ? (
+            <View style={styles.dateDivider}>
+              <View
+                style={[
+                  styles.dateBadgePill,
+                  {
+                    backgroundColor: themeMode === 'dark' ? '#1E293B' : '#E2E8F0',
+                    borderColor: colors.cardBorder,
+                  },
+                ]}
+              >
                 <Text
                   style={[
-                    styles.timeText,
-                    { color: isMe ? 'rgba(255,255,255,0.7)' : colors.textSecondary },
-                  ]}
-                >
-                  {msg.time}
-                </Text>
-                {statusIcon()}
-              </View>
-
-              {/* 🌟 WhatsApp Style Floating Reaction Badge */}
-              {activeReactions.length > 0 && (
-                <TouchableOpacity
-                  activeOpacity={0.85}
-                  onPress={() => setReactingToMsg(msg)}
-                  style={[
-                    styles.whatsappReactionPill,
-                    isMe ? styles.whatsappReactionPillMe : styles.whatsappReactionPillOther,
+                    styles.dateText,
                     {
-                      backgroundColor: colors.surface,
-                      borderColor: colors.cardBorder,
+                      color: themeMode === 'dark' ? '#94A3B8' : '#475569',
                     },
                   ]}
                 >
-                  {activeReactions.map(([emoji]) => (
-                    <Text key={emoji} style={styles.whatsappReactionEmoji}>
-                      {emoji}
+                  {dateHeaderText}
+                </Text>
+              </View>
+            </View>
+          ) : null}
+
+          <SwipeableBubble
+            isMe={isMe}
+            onSwipeReply={() => {
+              setReplyTo(msg);
+              textInputRef.current?.focus();
+            }}
+            colors={colors}
+          >
+            <View
+              style={[
+                styles.bubbleWrapper,
+                isMe ? styles.bubbleWrapperMe : styles.bubbleWrapperOther,
+              ]}
+            >
+              <TouchableOpacity
+                activeOpacity={0.85}
+                onLongPress={() => setReactingToMsg(msg)}
+                style={[
+                  styles.bubble,
+                  isMe
+                    ? styles.bubbleMe
+                    : [
+                        styles.bubbleOther,
+                        { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+                      ],
+                ]}
+              >
+                {/* Reply quote */}
+                {msg.replyTo && (
+                  <View
+                    style={[
+                      styles.replyQuote,
+                      { borderLeftColor: isMe ? 'rgba(255,255,255,0.6)' : colors.primaryIndigo },
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.replyQuoteText,
+                        { color: isMe ? 'rgba(255,255,255,0.8)' : colors.primaryIndigo },
+                      ]}
+                      numberOfLines={1}
+                    >
+                      {msg.replyTo.isMe ? 'You' : resolvedDisplayName}
                     </Text>
-                  ))}
-                  {activeReactions.reduce((acc, [_, count]) => acc + count, 0) > 1 && (
-                    <Text style={[styles.whatsappReactionCount, { color: colors.textSecondary }]}>
-                      {activeReactions.reduce((acc, [_, count]) => acc + count, 0)}
+                    <Text
+                      style={[
+                        styles.replyQuoteBody,
+                        { color: isMe ? 'rgba(255,255,255,0.7)' : colors.textSecondary },
+                      ]}
+                      numberOfLines={2}
+                    >
+                      {msg.replyTo.imagePath ? '📷 Photo' : msg.replyTo.text}
                     </Text>
+                  </View>
+                )}
+
+                {/* Image */}
+                {msg.imagePath ? (
+                  <TouchableOpacity
+                    activeOpacity={0.9}
+                    onPress={() => setSelectedPhotoMsg(msg)}
+                    style={styles.imageBubbleWrapper}
+                  >
+                    <Image
+                      source={{ uri: msg.imagePath }}
+                      style={styles.chatImageBubble}
+                      resizeMode="cover"
+                    />
+                    {msg.isUploading ? (
+                      <View style={styles.uploadProgressOverlay}>
+                        <ActivityIndicator size="small" color="#FFF" />
+                        <Text style={styles.uploadProgressText}>{msg.uploadProgress ?? 45}%</Text>
+                      </View>
+                    ) : (
+                      <View style={styles.imageOverlayBadge}>
+                        <ZoomIn size={13} color="#FFF" />
+                      </View>
+                    )}
+                  </TouchableOpacity>
+                ) : null}
+
+                {/* Location attachment */}
+                {msg.location ? (
+                  <TouchableOpacity
+                    style={[
+                      styles.locationBubble,
+                      { backgroundColor: isMe ? 'rgba(255,255,255,0.15)' : colors.cardBorder },
+                    ]}
+                    onPress={() => {
+                      const { lat, lng } = msg.location!;
+                      const url =
+                        Platform.OS === 'ios'
+                          ? `maps://?q=${lat},${lng}`
+                          : `geo:${lat},${lng}?q=${lat},${lng}`;
+                      Linking.openURL(url).catch(() =>
+                        Linking.openURL(`https://maps.google.com/?q=${lat},${lng}`),
+                      );
+                    }}
+                  >
+                    <MapPin
+                      size={18}
+                      color={isMe ? '#FFF' : colors.primaryIndigo}
+                      style={{ marginRight: 8 }}
+                    />
+                    <View style={{ flex: 1 }}>
+                      <Text
+                        style={[
+                          styles.locationLabel,
+                          { color: isMe ? '#FFF' : colors.textPrimary },
+                        ]}
+                        numberOfLines={2}
+                      >
+                        {msg.location.label ||
+                          `${msg.location.lat.toFixed(4)}, ${msg.location.lng.toFixed(4)}`}
+                      </Text>
+                      <Text
+                        style={[
+                          styles.locationCoords,
+                          { color: isMe ? 'rgba(255,255,255,0.7)' : colors.textSecondary },
+                        ]}
+                      >
+                        Tap to open in Maps
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                ) : null}
+
+                {/* Message text */}
+                {msg.text?.trim() ? (
+                  <Text style={[styles.msgText, { color: isMe ? '#FFF' : colors.textPrimary }]}>
+                    {msg.text}
+                  </Text>
+                ) : null}
+
+                {/* Footer: time + ticks */}
+                <View style={styles.bubbleFooter}>
+                  {msg.isStarred && (
+                    <Star size={11} color="#FBBF24" fill="#FBBF24" style={{ marginRight: 4 }} />
                   )}
-                </TouchableOpacity>
-              )}
-            </TouchableOpacity>
-          </View>
-        </SwipeableBubble>
+                  <Text
+                    style={[
+                      styles.timeText,
+                      { color: isMe ? 'rgba(255,255,255,0.7)' : colors.textSecondary },
+                    ]}
+                  >
+                    {msg.time}
+                  </Text>
+                  {statusIcon()}
+                </View>
+
+                {/* 🌟 WhatsApp Style Floating Reaction Badge */}
+                {activeReactions.length > 0 && (
+                  <TouchableOpacity
+                    activeOpacity={0.85}
+                    onPress={() => setReactingToMsg(msg)}
+                    style={[
+                      styles.whatsappReactionPill,
+                      isMe ? styles.whatsappReactionPillMe : styles.whatsappReactionPillOther,
+                      {
+                        backgroundColor: colors.surface,
+                        borderColor: colors.cardBorder,
+                      },
+                    ]}
+                  >
+                    {activeReactions.map(([emoji]) => (
+                      <Text key={emoji} style={styles.whatsappReactionEmoji}>
+                        {emoji}
+                      </Text>
+                    ))}
+                    {activeReactions.reduce((acc, [_, count]) => acc + count, 0) > 1 && (
+                      <Text style={[styles.whatsappReactionCount, { color: colors.textSecondary }]}>
+                        {activeReactions.reduce((acc, [_, count]) => acc + count, 0)}
+                      </Text>
+                    )}
+                  </TouchableOpacity>
+                )}
+              </TouchableOpacity>
+            </View>
+          </SwipeableBubble>
+        </View>
       );
     },
-    [colors, resolvedDisplayName, conversationId, recipientDbId, reactToMessage],
+    [
+      colors,
+      themeMode,
+      roomMessages,
+      resolvedDisplayName,
+      conversationId,
+      recipientDbId,
+      reactToMessage,
+      resendMessage,
+    ],
   );
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -912,19 +1047,12 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
             activeOpacity={0.7}
           >
             <View style={styles.avatarWrapper}>
-              {targetAvatarUrl ? (
-                <Image
-                  source={{ uri: apiService.getResolvedMediaUrl(targetAvatarUrl) }}
-                  style={styles.headerAvatarImage}
-                  resizeMode="cover"
-                />
-              ) : (
-                <View style={[styles.avatar, { backgroundColor: colors.cardBorder }]}>
-                  <Text style={[styles.avatarLetter, { color: colors.primaryIndigo }]}>
-                    {resolvedDisplayName[0]?.toUpperCase() ?? 'C'}
-                  </Text>
-                </View>
-              )}
+              <SmartAvatar
+                avatarUrl={targetAvatarUrl}
+                name={resolvedDisplayName}
+                size={40}
+                groupBg={colors.cardBorder}
+              />
               <View
                 style={[
                   styles.presenceDot,
@@ -995,11 +1123,6 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
             <MoreVertical size={20} color={colors.textPrimary} />
           </TouchableOpacity>
         </View>
-      </View>
-
-      {/* Date divider */}
-      <View style={styles.dateDivider}>
-        <Text style={[styles.dateText, { color: colors.textSecondary }]}>Today</Text>
       </View>
 
       <KeyboardAvoidingView
@@ -1402,19 +1525,13 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
           </View>
           <ScrollView contentContainerStyle={styles.profileModalContent}>
             <View style={styles.profileHeroSection}>
-              {targetAvatarUrl ? (
-                <Image
-                  source={{ uri: apiService.getResolvedMediaUrl(targetAvatarUrl) }}
-                  style={styles.profileBigAvatarImage}
-                  resizeMode="cover"
-                />
-              ) : (
-                <View style={[styles.profileBigAvatar, { backgroundColor: colors.cardBorder }]}>
-                  <Text style={[styles.profileBigAvatarLetter, { color: colors.primaryIndigo }]}>
-                    {resolvedDisplayName[0]?.toUpperCase() ?? 'U'}
-                  </Text>
-                </View>
-              )}
+              <SmartAvatar
+                avatarUrl={targetAvatarUrl}
+                name={resolvedDisplayName}
+                size={100}
+                groupBg={colors.cardBorder}
+                textStyle={{ fontSize: 42 }}
+              />
               <Text style={[styles.profileHeroName, { color: colors.textPrimary }]}>
                 {resolvedDisplayName}
               </Text>
@@ -1741,8 +1858,29 @@ const styles = StyleSheet.create({
   headerTitle: { fontSize: 16, fontWeight: '700' },
   headerActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   actionBtn: { padding: 6 },
-  dateDivider: { alignItems: 'center', marginVertical: 10 },
-  dateText: { fontSize: 12, fontWeight: '500' },
+  bubbleRowContainer: { width: '100%' },
+  dateDivider: {
+    alignItems: 'center',
+    marginVertical: 12,
+    width: '100%',
+  },
+  dateBadgePill: {
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 10,
+    borderWidth: 1,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.12,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  dateText: {
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
   messageList: { paddingHorizontal: 14, paddingVertical: 16, paddingBottom: 8 },
   bubbleWrapper: {
     marginVertical: 3,

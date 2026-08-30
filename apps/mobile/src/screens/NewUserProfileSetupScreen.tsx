@@ -39,6 +39,7 @@ export const NewUserProfileSetupScreen: React.FC<Props> = ({ route, navigation }
   const [username, setUsername] = useState('');
   const [status, setStatus] = useState('Available | Ready to connect');
   const [avatarUri, setAvatarUri] = useState<string | null>(null);
+  const uploadedServerAvatarRef = useRef<string | undefined>(undefined);
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(30)).current;
@@ -92,7 +93,9 @@ export const NewUserProfileSetupScreen: React.FC<Props> = ({ route, navigation }
             .uploadAvatar(token, asset.base64)
             .then((res) => {
               if (res.avatarUrl) {
-                setAvatarUri(res.avatarUrl);
+                const fullUrl = res.b2Url || apiService.getResolvedMediaUrl(res.avatarUrl);
+                uploadedServerAvatarRef.current = fullUrl;
+                setAvatarUri(fullUrl);
               }
             })
             .catch((e) => console.warn('Avatar upload error:', e));
@@ -129,12 +132,17 @@ export const NewUserProfileSetupScreen: React.FC<Props> = ({ route, navigation }
       const cleanUsername = username.trim().replace(/^@+/, '');
       const formattedUsername = `@${cleanUsername}`;
 
+      const finalAvatar =
+        uploadedServerAvatarRef.current && !uploadedServerAvatarRef.current.startsWith('file://')
+          ? uploadedServerAvatarRef.current
+          : undefined;
+
       const newProfile = {
         name: name.trim(),
         username: formattedUsername,
         status: status.trim() || 'Available | Ready to connect',
         phone: phoneNumber,
-        avatarUrl: avatarUri || undefined,
+        avatarUrl: finalAvatar,
       };
 
       updateUserProfile(newProfile);
