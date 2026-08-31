@@ -496,8 +496,7 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
 
   const roomMessages = useMemo(() => {
     const msgsPrimary = messagesMap[conversationId] || [];
-    const msgsResolved =
-      resolvedConvId !== conversationId ? messagesMap[resolvedConvId] || [] : [];
+    const msgsResolved = resolvedConvId !== conversationId ? messagesMap[resolvedConvId] || [] : [];
     const msgsRecipient =
       effectiveRecipientId &&
       effectiveRecipientId !== conversationId &&

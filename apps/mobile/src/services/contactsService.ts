@@ -245,7 +245,7 @@ export const syncContactsWithServer = async (
   allSorted: DeviceContact[];
 }> => {
   const now = Date.now();
-  if (!forceRefresh && cachedSyncResult && (now - lastSyncTimestamp < SYNC_CACHE_TTL_MS)) {
+  if (!forceRefresh && cachedSyncResult && now - lastSyncTimestamp < SYNC_CACHE_TTL_MS) {
     return cachedSyncResult;
   }
 
@@ -276,92 +276,92 @@ export const syncContactsWithServer = async (
 
       const syncResult = await apiService.syncContacts(token, phoneNumbers);
 
-  const registeredPhoneMap = new Map<string, any>();
-  for (const regUser of syncResult.registered) {
-    const rawDigits = (regUser.phoneNumber || '').replace(/\D/g, '');
-    const clean10 = rawDigits.length >= 10 ? rawDigits.slice(-10) : rawDigits;
-    if (clean10) {
-      registeredPhoneMap.set(clean10, regUser);
-    }
-    registeredPhoneMap.set(regUser.phoneNumber, regUser);
-    registeredPhoneMap.set(rawDigits, regUser);
-  }
-
-  const registeredList: DeviceContact[] = [];
-  const unregisteredList: DeviceContact[] = [];
-  const seenRegisteredUserIds = new Set<string>();
-  const seenUnregisteredPhones = new Set<string>();
-
-  for (const contact of contacts) {
-    const digits = (contact.phone || '').replace(/\D/g, '');
-    const clean10 = digits.length >= 10 ? digits.slice(-10) : digits;
-
-    const matchedUser =
-      (clean10 ? registeredPhoneMap.get(clean10) : null) ||
-      registeredPhoneMap.get(contact.phone) ||
-      registeredPhoneMap.get(digits);
-
-    if (matchedUser) {
-      if (!seenRegisteredUserIds.has(matchedUser.id)) {
-        seenRegisteredUserIds.add(matchedUser.id);
-        const cleanUserHandle = matchedUser.username
-          ? `@${matchedUser.username.replace(/^@+/, '')}`
-          : contact.username
-            ? `@${contact.username.replace(/^@+/, '')}`
-            : `@user_${clean10.slice(-4)}`;
-
-        const isDeviceNameValid =
-          contact.name && contact.name.trim() && !/^\d{10,}$/.test(contact.name);
-        const resolvedName = isDeviceNameValid
-          ? contact.name.trim()
-          : matchedUser.displayName || contact.name;
-
-        const regContact: DeviceContact = {
-          ...contact,
-          phone: clean10 || contact.phone,
-          isRegistered: true,
-          userId: matchedUser.id,
-          name: resolvedName,
-          username: cleanUserHandle,
-          avatarUrl:
-            apiService.getResolvedMediaUrl(matchedUser.avatarUrl) ||
-            matchedUser.avatarUrl ||
-            undefined,
-          about: matchedUser.about || 'Available | Ready to connect',
-        };
-        registeredList.push(regContact);
+      const registeredPhoneMap = new Map<string, any>();
+      for (const regUser of syncResult.registered) {
+        const rawDigits = (regUser.phoneNumber || '').replace(/\D/g, '');
+        const clean10 = rawDigits.length >= 10 ? rawDigits.slice(-10) : rawDigits;
+        if (clean10) {
+          registeredPhoneMap.set(clean10, regUser);
+        }
+        registeredPhoneMap.set(regUser.phoneNumber, regUser);
+        registeredPhoneMap.set(rawDigits, regUser);
       }
-    } else {
-      if (clean10 && !seenUnregisteredPhones.has(clean10)) {
-        seenUnregisteredPhones.add(clean10);
-        unregisteredList.push({
-          ...contact,
-          phone: clean10,
-          isRegistered: false,
-        });
+
+      const registeredList: DeviceContact[] = [];
+      const unregisteredList: DeviceContact[] = [];
+      const seenRegisteredUserIds = new Set<string>();
+      const seenUnregisteredPhones = new Set<string>();
+
+      for (const contact of contacts) {
+        const digits = (contact.phone || '').replace(/\D/g, '');
+        const clean10 = digits.length >= 10 ? digits.slice(-10) : digits;
+
+        const matchedUser =
+          (clean10 ? registeredPhoneMap.get(clean10) : null) ||
+          registeredPhoneMap.get(contact.phone) ||
+          registeredPhoneMap.get(digits);
+
+        if (matchedUser) {
+          if (!seenRegisteredUserIds.has(matchedUser.id)) {
+            seenRegisteredUserIds.add(matchedUser.id);
+            const cleanUserHandle = matchedUser.username
+              ? `@${matchedUser.username.replace(/^@+/, '')}`
+              : contact.username
+                ? `@${contact.username.replace(/^@+/, '')}`
+                : `@user_${clean10.slice(-4)}`;
+
+            const isDeviceNameValid =
+              contact.name && contact.name.trim() && !/^\d{10,}$/.test(contact.name);
+            const resolvedName = isDeviceNameValid
+              ? contact.name.trim()
+              : matchedUser.displayName || contact.name;
+
+            const regContact: DeviceContact = {
+              ...contact,
+              phone: clean10 || contact.phone,
+              isRegistered: true,
+              userId: matchedUser.id,
+              name: resolvedName,
+              username: cleanUserHandle,
+              avatarUrl:
+                apiService.getResolvedMediaUrl(matchedUser.avatarUrl) ||
+                matchedUser.avatarUrl ||
+                undefined,
+              about: matchedUser.about || 'Available | Ready to connect',
+            };
+            registeredList.push(regContact);
+          }
+        } else {
+          if (clean10 && !seenUnregisteredPhones.has(clean10)) {
+            seenUnregisteredPhones.add(clean10);
+            unregisteredList.push({
+              ...contact,
+              phone: clean10,
+              isRegistered: false,
+            });
+          }
+        }
       }
+
+      // Sort registered alphabetically, then unregistered alphabetically
+      registeredList.sort((a, b) => a.name.localeCompare(b.name));
+      unregisteredList.sort((a, b) => a.name.localeCompare(b.name));
+
+      const result = {
+        registered: registeredList,
+        unregistered: unregisteredList,
+        allSorted: [...registeredList, ...unregisteredList],
+      };
+
+      lastSyncTimestamp = Date.now();
+      cachedSyncResult = result;
+      return result;
+    } finally {
+      syncInFlightPromise = null;
     }
-  }
+  })();
 
-    // Sort registered alphabetically, then unregistered alphabetically
-    registeredList.sort((a, b) => a.name.localeCompare(b.name));
-    unregisteredList.sort((a, b) => a.name.localeCompare(b.name));
-
-    const result = {
-      registered: registeredList,
-      unregistered: unregisteredList,
-      allSorted: [...registeredList, ...unregisteredList],
-    };
-
-    lastSyncTimestamp = Date.now();
-    cachedSyncResult = result;
-    return result;
-  } finally {
-    syncInFlightPromise = null;
-  }
-})();
-
-return syncInFlightPromise;
+  return syncInFlightPromise;
 };
 
 /**
