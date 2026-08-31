@@ -227,6 +227,14 @@ export const syncContactsWithBackend = async (
   return syncContactsWithServer(contacts, token, forceRefresh);
 };
 
+let syncInFlightPromise: Promise<{
+  registered: DeviceContact[];
+  unregistered: DeviceContact[];
+  allSorted: DeviceContact[];
+}> | null = null;
+let lastSyncTimestamp = 0;
+const SYNC_CACHE_TTL_MS = 30000; // 30 seconds debounce
+
 export const syncContactsWithServer = async (
   contacts: DeviceContact[],
   token?: string,
@@ -236,9 +244,15 @@ export const syncContactsWithServer = async (
   unregistered: DeviceContact[];
   allSorted: DeviceContact[];
 }> => {
-  if (!forceRefresh && cachedSyncResult && cachedSyncResult.allSorted.length > 0) {
+  const now = Date.now();
+  if (!forceRefresh && cachedSyncResult && (now - lastSyncTimestamp < SYNC_CACHE_TTL_MS)) {
     return cachedSyncResult;
   }
+
+  if (syncInFlightPromise) {
+    return syncInFlightPromise;
+  }
+
   if (!contacts || contacts.length === 0) {
     return { registered: [], unregistered: [], allSorted: [] };
   }
@@ -251,14 +265,16 @@ export const syncContactsWithServer = async (
     };
   }
 
-  const phoneNumbers = contacts
-    .map((c) => {
-      const d = (c.phone || '').replace(/\D/g, '');
-      return d.length >= 10 ? d.slice(-10) : d;
-    })
-    .filter((p) => p && p.trim().length >= 7);
+  syncInFlightPromise = (async () => {
+    try {
+      const phoneNumbers = contacts
+        .map((c) => {
+          const d = (c.phone || '').replace(/\D/g, '');
+          return d.length >= 10 ? d.slice(-10) : d;
+        })
+        .filter((p) => p && p.trim().length >= 7);
 
-  const syncResult = await apiService.syncContacts(token, phoneNumbers);
+      const syncResult = await apiService.syncContacts(token, phoneNumbers);
 
   const registeredPhoneMap = new Map<string, any>();
   for (const regUser of syncResult.registered) {
@@ -327,18 +343,25 @@ export const syncContactsWithServer = async (
     }
   }
 
-  // Sort registered alphabetically, then unregistered alphabetically
-  registeredList.sort((a, b) => a.name.localeCompare(b.name));
-  unregisteredList.sort((a, b) => a.name.localeCompare(b.name));
+    // Sort registered alphabetically, then unregistered alphabetically
+    registeredList.sort((a, b) => a.name.localeCompare(b.name));
+    unregisteredList.sort((a, b) => a.name.localeCompare(b.name));
 
-  const result = {
-    registered: registeredList,
-    unregistered: unregisteredList,
-    allSorted: [...registeredList, ...unregisteredList],
-  };
+    const result = {
+      registered: registeredList,
+      unregistered: unregisteredList,
+      allSorted: [...registeredList, ...unregisteredList],
+    };
 
-  cachedSyncResult = result;
-  return result;
+    lastSyncTimestamp = Date.now();
+    cachedSyncResult = result;
+    return result;
+  } finally {
+    syncInFlightPromise = null;
+  }
+})();
+
+return syncInFlightPromise;
 };
 
 /**

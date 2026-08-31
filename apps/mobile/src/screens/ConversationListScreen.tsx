@@ -6,7 +6,6 @@ import {
   TouchableOpacity,
   FlatList,
   StyleSheet,
-  SafeAreaView,
   StatusBar,
   ScrollView,
   ActivityIndicator,
@@ -18,6 +17,7 @@ import {
   Modal,
   Image,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useFocusEffect } from '@react-navigation/native';
 import { RootStackParamList, ConversationItem } from '../types';
@@ -280,14 +280,14 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
   useEffect(() => {
     // Auto-load and sync contacts on launch / whenever token is ready
     if (token) {
-      loadContacts(true);
+      loadContacts(false);
     }
   }, [token]);
 
   useEffect(() => {
-    // When user switches to People tab, ensure contacts are synced
+    // When user switches to People tab, ensure contacts are synced if empty
     if (selectedBottomNav === 2 && registeredContacts.length === 0 && !contactsLoading) {
-      loadContacts(true);
+      loadContacts(false);
     }
   }, [selectedBottomNav]);
 
@@ -337,7 +337,51 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
 
   const handleStartChatWithContact = (contact: DeviceContact) => {
     isNavigatedToChatRef.current = true;
-    const myIdentifier = userProfile.username || userProfile.phone || 'me';
+
+    // Check if conversation already exists in conversations list
+    const targetDbId = contact.userId;
+    const targetUsername = contact.username ? `@${contact.username.replace(/^@+/, '')}` : undefined;
+    const targetPhone = contact.phone;
+    const cleanPhone = targetPhone ? targetPhone.replace(/\D/g, '').slice(-10) : '';
+
+    const existing = conversations.find((c) => {
+      if (targetDbId && (c.id === targetDbId || c.recipientDbId === targetDbId)) return true;
+      if (
+        targetUsername &&
+        c.username &&
+        c.username.toLowerCase().replace(/^@+/, '') ===
+          targetUsername.toLowerCase().replace(/^@+/, '')
+      )
+        return true;
+      if (cleanPhone && c.phone && c.phone.replace(/\D/g, '').slice(-10) === cleanPhone)
+        return true;
+      return false;
+    });
+
+    if (existing) {
+      if (targetDbId && !existing.recipientDbId) {
+        addConversation(
+          existing.title || contact.name,
+          existing.username || targetUsername,
+          existing.id,
+          targetDbId,
+          contact.avatarUrl || existing.avatarUrl,
+          contact.phone || existing.phone,
+          contact.about || existing.about,
+        );
+      }
+      navigation.navigate('Chat', {
+        conversationId: existing.id,
+        title: existing.title || contact.name,
+        username: existing.username || contact.username,
+        avatarUrl: existing.avatarUrl || contact.avatarUrl,
+        phone: existing.phone || contact.phone,
+        recipientDbId: targetDbId || existing.recipientDbId,
+      });
+      return;
+    }
+
+    const myIdentifier = (userProfile.username || userProfile.phone || 'me').replace(/^@+/, '');
     const targetIdentifier = contact.username || contact.phone || contact.userId || contact.name;
     const convId = getDeterministicConversationId(myIdentifier, targetIdentifier);
     addConversation(
@@ -1189,24 +1233,13 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                     setSelectedAvatarProfile(item);
                   }}
                 >
-                  {item.avatarUrl ? (
-                    <Image
-                      source={{ uri: apiService.getResolvedMediaUrl(item.avatarUrl) }}
-                      style={styles.cardAvatarImage}
-                      resizeMode="cover"
-                    />
-                  ) : (
-                    <View
-                      style={[
-                        styles.cardAvatar,
-                        { backgroundColor: item.groupBg || colors.cardBorder },
-                      ]}
-                    >
-                      <Text style={[styles.avatarLetter, { color: colors.primaryIndigo }]}>
-                        {item.avatar}
-                      </Text>
-                    </View>
-                  )}
+                  <SmartAvatar
+                    avatarUrl={item.avatarUrl}
+                    name={item.title}
+                    username={item.username}
+                    size={48}
+                    groupBg={item.groupBg || colors.cardBorder}
+                  />
                   {isUserOnline(item.recipientDbId) ||
                   isUserOnline(item.username) ||
                   isUserOnline(item.id) ||
@@ -1964,7 +1997,10 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
   );
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
+    <SafeAreaView
+      style={[styles.container, { backgroundColor: colors.bg }]}
+      edges={['top', 'left', 'right']}
+    >
       <StatusBar
         barStyle={themeMode === 'dark' ? 'light-content' : 'dark-content'}
         backgroundColor={colors.bg}
@@ -2804,7 +2840,6 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight || 0 : 0,
   },
   topHeaderRow: {
     flexDirection: 'row',

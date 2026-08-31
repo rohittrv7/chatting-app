@@ -6,7 +6,6 @@ import {
   Modal,
   ScrollView,
   StyleSheet,
-  SafeAreaView,
   StatusBar,
   TextInput,
   Platform,
@@ -15,6 +14,7 @@ import {
   Animated,
   PanResponder,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   devInspector,
   ApiLogEntry,

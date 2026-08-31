@@ -4,12 +4,12 @@ import {
   Text,
   TouchableOpacity,
   StyleSheet,
-  SafeAreaView,
   StatusBar,
   Animated,
   Platform,
   useWindowDimensions,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types';
 import { AppColors } from '../theme/colors';
@@ -126,7 +126,7 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
   const avatarTextSize = screenHeight < 700 ? 36 : 42;
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'bottom', 'left', 'right']}>
       <StatusBar barStyle="light-content" backgroundColor="#0B0E14" />
 
       {/* Top Header with Back button & E2EE Info */}
@@ -331,7 +331,6 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#0B0E14',
-    paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 0) + 8 : 8,
     justifyContent: 'space-between',
   },
   topHeader: {

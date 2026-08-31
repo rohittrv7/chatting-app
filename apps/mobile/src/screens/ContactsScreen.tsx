@@ -5,7 +5,6 @@ import {
   TouchableOpacity,
   FlatList,
   StyleSheet,
-  SafeAreaView,
   StatusBar,
   TextInput,
   ActivityIndicator,
@@ -13,6 +12,7 @@ import {
   Image,
   BackHandler,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types';
 import { useChat } from '../context/ChatContext';
@@ -46,7 +46,7 @@ import { devInspector } from '../services/devInspectorService';
 type Props = NativeStackScreenProps<RootStackParamList, 'Contacts'>;
 
 export const ContactsScreen: React.FC<Props> = ({ navigation }) => {
-  const { userProfile, addConversation, isUserOnline } = useChat();
+  const { userProfile, addConversation, isUserOnline, conversations } = useChat();
   const { themeMode, colors } = useTheme();
   const { showToast } = useToast();
   const token = useSelector((state: RootState) => state.auth.token);
@@ -112,13 +112,67 @@ export const ContactsScreen: React.FC<Props> = ({ navigation }) => {
   }, []);
 
   const handleStartChat = (contact: DeviceContact) => {
-    const myIdentifier = userProfile.username || userProfile.phone || 'me';
+    // Check if conversation already exists in conversations list
+    const targetDbId = contact.userId;
+    const targetUsername = contact.username ? `@${contact.username.replace(/^@+/, '')}` : undefined;
+    const targetPhone = contact.phone;
+    const cleanPhone = targetPhone ? targetPhone.replace(/\D/g, '').slice(-10) : '';
+
+    const existing = conversations.find((c) => {
+      if (targetDbId && (c.id === targetDbId || c.recipientDbId === targetDbId)) return true;
+      if (
+        targetUsername &&
+        c.username &&
+        c.username.toLowerCase().replace(/^@+/, '') ===
+          targetUsername.toLowerCase().replace(/^@+/, '')
+      )
+        return true;
+      if (cleanPhone && c.phone && c.phone.replace(/\D/g, '').slice(-10) === cleanPhone)
+        return true;
+      return false;
+    });
+
+    if (existing) {
+      if (targetDbId && !existing.recipientDbId) {
+        addConversation(
+          existing.title || contact.name,
+          existing.username || targetUsername,
+          existing.id,
+          targetDbId,
+          contact.avatarUrl || existing.avatarUrl,
+          contact.phone || existing.phone,
+          contact.about || existing.about,
+        );
+      }
+      navigation.navigate('Chat', {
+        conversationId: existing.id,
+        title: existing.title || contact.name,
+        username: existing.username || contact.username,
+        avatarUrl: existing.avatarUrl || contact.avatarUrl,
+        phone: existing.phone || contact.phone,
+        recipientDbId: targetDbId || existing.recipientDbId,
+      });
+      return;
+    }
+
+    const myIdentifier = (userProfile.username || userProfile.phone || 'me').replace(/^@+/, '');
     const targetIdentifier = contact.username || contact.phone || contact.userId || contact.name;
     const convId = getDeterministicConversationId(myIdentifier, targetIdentifier);
-    addConversation(contact.name, contact.username || contact.phone, convId);
+    addConversation(
+      contact.name,
+      contact.username || contact.phone,
+      convId,
+      contact.userId,
+      contact.avatarUrl,
+      contact.phone,
+    );
     navigation.navigate('Chat', {
       conversationId: convId,
       title: contact.name,
+      username: contact.username,
+      avatarUrl: contact.avatarUrl,
+      phone: contact.phone,
+      recipientDbId: contact.userId,
     });
   };
 
@@ -216,7 +270,10 @@ export const ContactsScreen: React.FC<Props> = ({ navigation }) => {
   }
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
+    <SafeAreaView
+      style={[styles.container, { backgroundColor: colors.bg }]}
+      edges={['top', 'bottom', 'left', 'right']}
+    >
       <StatusBar
         barStyle={themeMode === 'dark' ? 'light-content' : 'dark-content'}
         backgroundColor={colors.bg}
@@ -589,7 +646,6 @@ export const ContactsScreen: React.FC<Props> = ({ navigation }) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight || 0 : 0,
   },
   header: {
     flexDirection: 'row',

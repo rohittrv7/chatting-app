@@ -54,6 +54,9 @@ import {
   syncContactsWithBackend,
 } from '../services/contactsService';
 
+const globalLoadedHistoricalConvs = new Set<string>();
+const globalLoadingHistoricalConvs = new Set<string>();
+
 // ─── Context type ─────────────────────────────────────────────────────────────
 
 interface ChatContextType {
@@ -177,6 +180,11 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const authUserIdRef = useRef(effectiveUserId);
   /** Track sent receipts to prevent double-sending */
   const sentReceiptsRef = useRef<Set<string>>(new Set());
+  /** In-flight and rate-limiting guards to prevent API storms */
+  const isSyncingConvsRef = useRef(false);
+  const lastConvsSyncTimeRef = useRef(0);
+  const loadedHistoricalConvsRef = useRef<Set<string>>(new Set());
+  const loadingHistoricalConvsRef = useRef<Set<string>>(new Set());
 
   conversationsRef.current = conversations;
   activeConvIdRef.current = activeConversationId;
@@ -682,11 +690,17 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // Public API
   // ─────────────────────────────────────────────────────────────────────────
 
-  const syncServerConversations = async () => {
+  const syncServerConversations = async (force = false) => {
     const tok = tokenRef.current;
     if (!tok) return;
+    const now = Date.now();
+    if (!force && (isSyncingConvsRef.current || now - lastConvsSyncTimeRef.current < 15000)) {
+      return;
+    }
+    isSyncingConvsRef.current = true;
     try {
       const serverConvs = await apiService.fetchUserConversations(tok);
+      lastConvsSyncTimeRef.current = Date.now();
       if (!Array.isArray(serverConvs) || serverConvs.length === 0) return;
 
       const myDbId = (
@@ -848,24 +862,51 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (recipientIds.length > 0 && socketService.isConnected()) {
         socketService.queryPresence(recipientIds);
       }
-    } catch {}
+    } catch {
+    } finally {
+      isSyncingConvsRef.current = false;
+    }
   };
 
-  const loadHistoricalMessagesForConversation = async (conversationId: string) => {
+  const loadHistoricalMessagesForConversation = async (conversationId: string, force = false) => {
     const tok = tokenRef.current;
     if (!tok || !conversationId) return;
-    try {
-      const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-      let targetConvId = conversationId;
-      if (!UUID_RE.test(conversationId)) {
-        const conv = conversationsRef.current.find((c) => c.id === conversationId);
-        if (conv?.recipientDbId) {
-          const resolved = await _resolveConvId(conversationId, conv.recipientDbId);
-          if (resolved) targetConvId = resolved;
-        }
-      }
 
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    let targetConvId = conversationId;
+    if (!UUID_RE.test(conversationId)) {
+      const conv = conversationsRef.current.find((c) => c.id === conversationId);
+      if (conv?.recipientDbId) {
+        const resolved = await _resolveConvId(conversationId, conv.recipientDbId);
+        if (resolved) targetConvId = resolved;
+      }
+    }
+
+    if (!force) {
+      if (
+        globalLoadingHistoricalConvs.has(conversationId) ||
+        globalLoadingHistoricalConvs.has(targetConvId) ||
+        globalLoadedHistoricalConvs.has(conversationId) ||
+        globalLoadedHistoricalConvs.has(targetConvId)
+      ) {
+        return;
+      }
+      const existingLocal =
+        messagesMapRef.current[conversationId] || messagesMapRef.current[targetConvId];
+      if (existingLocal && existingLocal.length > 0) {
+        globalLoadedHistoricalConvs.add(conversationId);
+        globalLoadedHistoricalConvs.add(targetConvId);
+        return;
+      }
+    }
+
+    globalLoadingHistoricalConvs.add(conversationId);
+    globalLoadingHistoricalConvs.add(targetConvId);
+    try {
       const serverMsgs = await apiService.fetchHistoricalMessages(tok, targetConvId);
+      globalLoadedHistoricalConvs.add(conversationId);
+      globalLoadedHistoricalConvs.add(targetConvId);
+
       if (!Array.isArray(serverMsgs) || serverMsgs.length === 0) return;
 
       const myDbId = (authUserIdRef.current || extractUserIdFromToken(tok) || '').toLowerCase();
@@ -918,7 +959,11 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
         }
       }
-    } catch {}
+    } catch {
+    } finally {
+      globalLoadingHistoricalConvs.delete(conversationId);
+      globalLoadingHistoricalConvs.delete(targetConvId);
+    }
   };
 
   const isUserOnline = (userId?: string): boolean => {
@@ -1281,7 +1326,12 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     dispatch(setActiveConversationId(conversationId));
     socketService.openChat(conversationId);
     markConversationRead(conversationId);
-    loadHistoricalMessagesForConversation(conversationId);
+
+    // Only fetch historical messages from server if not already in local memory/state
+    const localMsgs = messagesMapRef.current[conversationId];
+    if (!localMsgs || localMsgs.length === 0) {
+      loadHistoricalMessagesForConversation(conversationId);
+    }
 
     // Always query presence when opening a chat room.
     // At this point recipientDbId may or may not be available — query both ways.

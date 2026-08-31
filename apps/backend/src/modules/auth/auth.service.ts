@@ -356,7 +356,7 @@ export class AuthService {
     }
 
     const relativeUrl = `/uploads/avatars/${filename}`;
-    const avatarUrl = b2Url || relativeUrl;
+    const avatarUrl = relativeUrl;
     const updatedUser = await this.authRepository.updateUserProfile(userId, { avatarUrl });
     return {
       success: true,

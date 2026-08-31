@@ -6,7 +6,6 @@ import {
   TouchableOpacity,
   FlatList,
   StyleSheet,
-  SafeAreaView,
   StatusBar,
   ActivityIndicator,
   Modal,
@@ -20,6 +19,7 @@ import {
   Animated,
   PanResponder,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList, ChatMessage } from '../types';
 import { useChat } from '../context/ChatContext';
@@ -415,19 +415,21 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
   const lastTypingSentRef = useRef(false);
   const lastTypingPingTimeRef = useRef(0);
 
+  const recipientDbIdRef = useRef(effectiveRecipientId);
+  recipientDbIdRef.current = effectiveRecipientId;
+  const currentConvRef = useRef(currentConv);
+  currentConvRef.current = currentConv;
+
   // ── Mount / unmount ───────────────────────────────────────────────────────
   useEffect(() => {
     openChatRoom(conversationId);
-    // Query presence specifically with the recipient's DB UUID
-    if (recipientDbId) queryPresence([recipientDbId]);
 
     // Register typing callback just for this screen
     const prevCbs = (socketService as any).callbacks ?? {};
     (socketService as any).callbacks = {
       ...prevCbs,
       onTypingUpdate: (data: { conversationId: string; senderId: string; isTyping: boolean }) => {
-        const effectiveTargetId =
-          recipientDbId || (route.params as any)?.recipientDbId || currentConv?.recipientDbId;
+        const effectiveTargetId = recipientDbIdRef.current;
         const senderMatch =
           effectiveTargetId &&
           (data.senderId === effectiveTargetId ||
@@ -459,14 +461,54 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
       const cbs = (socketService as any).callbacks ?? {};
       (socketService as any).callbacks = { ...cbs, onTypingUpdate: undefined };
     };
-  }, [conversationId, recipientDbId, currentConv, route.params]);
+  }, [conversationId]);
 
-  // ── Messages sorted ───────────────────────────────────────────────────────
+  // Query presence when recipient ID is resolved without remounting chat room
+  useEffect(() => {
+    if (effectiveRecipientId) {
+      queryPresence([effectiveRecipientId]);
+    }
+  }, [effectiveRecipientId]);
+
+  // ── Messages sorted (Merged across primary conversationId and matched aliases) ───
+  const matchedExistingConv = useMemo(() => {
+    return conversations.find((c) => {
+      if (c.id === conversationId) return true;
+      if (effectiveRecipientId && c.recipientDbId === effectiveRecipientId) return true;
+      if (
+        targetUsername &&
+        c.username &&
+        c.username.toLowerCase().replace(/^@+/, '') ===
+          targetUsername.toLowerCase().replace(/^@+/, '')
+      )
+        return true;
+      if (
+        targetPhone &&
+        c.phone &&
+        c.phone.replace(/\D/g, '').slice(-10) === targetPhone.replace(/\D/g, '').slice(-10)
+      )
+        return true;
+      return false;
+    });
+  }, [conversations, conversationId, effectiveRecipientId, targetUsername, targetPhone]);
+
+  const resolvedConvId = matchedExistingConv?.id || conversationId;
+
   const roomMessages = useMemo(() => {
-    const msgs = messagesMap[conversationId] || [];
+    const msgsPrimary = messagesMap[conversationId] || [];
+    const msgsResolved =
+      resolvedConvId !== conversationId ? messagesMap[resolvedConvId] || [] : [];
+    const msgsRecipient =
+      effectiveRecipientId &&
+      effectiveRecipientId !== conversationId &&
+      effectiveRecipientId !== resolvedConvId
+        ? messagesMap[effectiveRecipientId] || []
+        : [];
+
+    const combined = [...msgsPrimary, ...msgsResolved, ...msgsRecipient];
     // Dedup by id
     const seen = new Map<string, ChatMessage>();
-    for (const m of msgs) {
+    for (const m of combined) {
       if (m?.id) seen.set(m.id, m);
     }
     return Array.from(seen.values()).sort((a, b) => {
@@ -474,7 +516,7 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
       const tB = b.createdAtMs || (b.createdAt ? new Date(b.createdAt).getTime() : 0);
       return tA - tB;
     });
-  }, [messagesMap, conversationId]);
+  }, [messagesMap, conversationId, resolvedConvId, effectiveRecipientId]);
 
   // ── Scroll to bottom on new messages ──────────────────────────────────────
   useEffect(() => {
@@ -1023,7 +1065,10 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
 
   // ══════════════════════════════════════════════════════════════════════════
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
+    <SafeAreaView
+      style={[styles.container, { backgroundColor: colors.bg }]}
+      edges={['top', 'bottom', 'left', 'right']}
+    >
       <StatusBar
         barStyle={themeMode === 'dark' ? 'light-content' : 'dark-content'}
         backgroundColor={colors.bg}
@@ -1825,7 +1870,7 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
-  container: { flex: 1, paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight || 0 : 0 },
+  container: { flex: 1 },
   header: {
     flexDirection: 'row',
     alignItems: 'center',

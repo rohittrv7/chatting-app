@@ -28,7 +28,7 @@ class ServerConfigService {
       if (storedEnv === 'live' || storedEnv === 'local') {
         this.currentEnv = storedEnv;
       } else {
-        this.currentEnv = 'live'; // default to live backend
+        this.currentEnv = 'live'; // default to live backend for production push
       }
 
       const storedIp = await safeStorage.getItem(SERVER_CUSTOM_IP_KEY);

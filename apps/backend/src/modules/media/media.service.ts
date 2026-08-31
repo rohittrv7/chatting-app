@@ -273,6 +273,28 @@ export class MediaService implements OnModuleInit {
             this.logger.log(
               `Backblaze B2 Upload SUCCESS: ${cleanKey} (fileId: ${uploadData.fileId})`,
             );
+
+            try {
+              const authRes = await fetch(`${auth.apiUrl}/b2api/v2/b2_get_download_authorization`, {
+                method: 'POST',
+                headers: {
+                  Authorization: auth.token,
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                  bucketId: auth.bucketId,
+                  fileNamePrefix: cleanKey,
+                  validDurationInSeconds: 604800, // 7 days valid authorization
+                }),
+              });
+              if (authRes.ok) {
+                const authData = await authRes.json();
+                if (authData.authorizationToken) {
+                  return `${auth.downloadUrl}/file/${this.bucketName}/${cleanKey}?Authorization=${authData.authorizationToken}`;
+                }
+              }
+            } catch {}
+
             return `${auth.downloadUrl}/file/${this.bucketName}/${cleanKey}`;
           } else {
             const errText = await uploadRes.text();

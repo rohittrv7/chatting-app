@@ -5,7 +5,6 @@ import {
   TextInput,
   TouchableOpacity,
   StyleSheet,
-  SafeAreaView,
   StatusBar,
   ScrollView,
   Image,
@@ -13,6 +12,7 @@ import {
   Animated,
   KeyboardAvoidingView,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useDispatch, useSelector } from 'react-redux';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types';
@@ -93,7 +93,7 @@ export const NewUserProfileSetupScreen: React.FC<Props> = ({ route, navigation }
             .uploadAvatar(token, asset.base64)
             .then((res) => {
               if (res.avatarUrl) {
-                const fullUrl = res.b2Url || apiService.getResolvedMediaUrl(res.avatarUrl);
+                const fullUrl = apiService.getResolvedMediaUrl(res.avatarUrl) || res.avatarUrl;
                 uploadedServerAvatarRef.current = fullUrl;
                 setAvatarUri(fullUrl);
               }
@@ -158,7 +158,10 @@ export const NewUserProfileSetupScreen: React.FC<Props> = ({ route, navigation }
   };
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
+    <SafeAreaView
+      style={[styles.container, { backgroundColor: colors.bg }]}
+      edges={['top', 'bottom', 'left', 'right']}
+    >
       <StatusBar
         barStyle={themeMode === 'dark' ? 'light-content' : 'dark-content'}
         backgroundColor={colors.bg}
@@ -344,7 +347,6 @@ export const NewUserProfileSetupScreen: React.FC<Props> = ({ route, navigation }
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight || 0 : 0,
   },
   scrollContent: {
     flexGrow: 1,

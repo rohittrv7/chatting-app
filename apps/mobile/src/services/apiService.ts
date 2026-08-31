@@ -9,19 +9,48 @@ export const getApiBaseUrl = () => serverConfig.getApiBaseUrl();
 
 function _resolveMediaUrl(url?: string | null): string {
   if (!url || typeof url !== 'string') return '';
-  if (
-    url.startsWith('http://') ||
-    url.startsWith('https://') ||
-    url.startsWith('file://') ||
-    url.startsWith('blob:') ||
-    url.startsWith('data:')
-  ) {
-    return url;
-  }
+  const trimmed = url.trim();
+  if (!trimmed) return '';
+
   const base = getApiBaseUrl()
     .replace(/\/api\/v1\/?$/, '')
     .replace(/\/+$/, '');
-  const cleanPath = url.startsWith('/') ? url : `/${url}`;
+
+  // If URL is a direct Backblaze link to avatars without an auth token, resolve it via backend static server
+  if (
+    trimmed.includes('backblazeb2.com') &&
+    trimmed.includes('/avatars/') &&
+    !trimmed.includes('Authorization=')
+  ) {
+    const parts = trimmed.split('/avatars/');
+    if (parts[1]) {
+      return `${base}/uploads/avatars/${parts[1]}`;
+    }
+  }
+
+  // If URL is a direct Backblaze link to media without an auth token, resolve it via backend static server
+  if (
+    trimmed.includes('backblazeb2.com') &&
+    trimmed.includes('/media/') &&
+    !trimmed.includes('Authorization=')
+  ) {
+    const parts = trimmed.split('/media/');
+    if (parts[1]) {
+      return `${base}/uploads/images/${parts[1]}`;
+    }
+  }
+
+  if (
+    trimmed.startsWith('http://') ||
+    trimmed.startsWith('https://') ||
+    trimmed.startsWith('file://') ||
+    trimmed.startsWith('blob:') ||
+    trimmed.startsWith('data:')
+  ) {
+    return trimmed;
+  }
+
+  const cleanPath = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
   return `${base}${cleanPath}`;
 }
 

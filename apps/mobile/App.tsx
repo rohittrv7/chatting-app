@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { View, ActivityIndicator, StatusBar } from 'react-native';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import {
   NavigationContainer,
   DarkTheme,
@@ -168,14 +169,16 @@ function AppNavigator() {
 
 export default function App() {
   return (
-    <Provider store={store}>
-      <ThemeProvider>
-        <ChatProvider>
-          <ToastProvider>
-            <AppNavigator />
-          </ToastProvider>
-        </ChatProvider>
-      </ThemeProvider>
-    </Provider>
+    <SafeAreaProvider>
+      <Provider store={store}>
+        <ThemeProvider>
+          <ChatProvider>
+            <ToastProvider>
+              <AppNavigator />
+            </ToastProvider>
+          </ChatProvider>
+        </ThemeProvider>
+      </Provider>
+    </SafeAreaProvider>
   );
 }
