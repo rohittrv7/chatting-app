@@ -2,7 +2,7 @@ const io = require('socket.io-client');
 const jwt = require('jsonwebtoken');
 
 const JWT_SECRET = 'super_secret_jwt_access_key_12345';
-const SERVER_URL = 'http://localhost:3000';
+const SERVER_URL = process.env.SERVER_URL || 'https://chatting-app-rme6.onrender.com';
 
 const USER_A_ID = '724a3472-f453-4a3d-89f1-3e4103a6b4e2';
 const USER_B_ID = '0630106c-a6d9-4255-acfb-87dba1318af3';
@@ -16,19 +16,23 @@ function createToken(userId, deviceId) {
 }
 
 async function runTest() {
-  console.log('🚀 Starting Complete Two-Way Audio & Video Call Flow Simulation Tests...\n');
+  console.log(
+    '🚀 Starting Complete Two-Way Audio & Video Call Flow Simulation Tests against ' +
+      SERVER_URL +
+      '...\n',
+  );
 
   const tokenA = createToken(USER_A_ID, 'device_a');
   const tokenB = createToken(USER_B_ID, 'device_b');
 
   console.log('1. Connecting Client A and Client B to Socket.io server...');
   const clientA = io(SERVER_URL, {
-    transports: ['websocket'],
+    transports: ['polling', 'websocket'],
     auth: { token: tokenA },
   });
 
   const clientB = io(SERVER_URL, {
-    transports: ['websocket'],
+    transports: ['polling', 'websocket'],
     auth: { token: tokenB },
   });
 
@@ -160,6 +164,21 @@ async function runTest() {
 
   await bGotConnected2;
   console.log('✅ Client B successfully transitioned to CONNECTED (Video Mode Active)!');
+
+  // Test Two-Way Video Frame Streaming
+  const aGotVideoFrame = new Promise((res) => clientA.once('call:video-frame', res));
+  clientB.emit('call:video-frame', {
+    callId: callId2,
+    targetUserId: USER_A_ID,
+    frameBase64: 'data:image/jpeg;base64,SIMULATED_LIVE_CAMERA_FRAME_B_TO_A',
+    timestamp: Date.now(),
+  });
+  const videoFrameData = await aGotVideoFrame;
+  console.log(
+    '✅ Client A received live camera video frame from Client B (' +
+      videoFrameData.frameBase64.substring(0, 30) +
+      '...)!',
+  );
 
   // --- TEST 3: DYNAMIC MODE SWITCHING (VIDEO <-> AUDIO) ---
   console.log('\n--- TEST 3: DYNAMIC MODE SWITCHING (VIDEO -> AUDIO -> VIDEO) ---');

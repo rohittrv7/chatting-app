@@ -1046,4 +1046,32 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       });
     }
   }
+
+  @SubscribeMessage('call:video-frame')
+  async handleCallVideoFrame(
+    @ConnectedSocket() client: Socket,
+    @MessageBody()
+    payload: {
+      callId: string;
+      targetUserId: string;
+      frameBase64: string;
+      timestamp?: number;
+    },
+  ) {
+    const senderId = (client as any)._userId || client.data?.userId;
+    if (!senderId || !payload?.targetUserId || !payload?.frameBase64) return;
+
+    const targetUserId = (await this._resolveUserId(payload.targetUserId)) || payload.targetUserId;
+    const frameData = {
+      callId: payload.callId,
+      senderId,
+      frameBase64: payload.frameBase64,
+      timestamp: payload.timestamp || Date.now(),
+    };
+
+    this.server.to(`user:${targetUserId}`).emit('call:video-frame', frameData);
+    if (payload.targetUserId !== targetUserId) {
+      this.server.to(`user:${payload.targetUserId}`).emit('call:video-frame', frameData);
+    }
+  }
 }

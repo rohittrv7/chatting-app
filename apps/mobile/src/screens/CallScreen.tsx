@@ -30,7 +30,7 @@ import {
 import { CameraView, CameraType, useCameraPermissions } from 'expo-camera';
 import { callService, ActiveCallSession } from '../services/callService';
 import { soundService } from '../services/soundService';
-import { apiService } from '../services/apiService';
+import { socketService } from '../services/socket';
 import { SmartAvatar } from '../components/SmartAvatar';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Call'>;
@@ -54,12 +54,15 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
     callService.getSession(),
   );
   const [isMuted, setIsMuted] = useState(false);
-  const [isSpeakerOn, setIsSpeakerOn] = useState(initialIsVideo || false);
+  const [isSpeakerOn, setIsSpeakerOn] = useState(true);
   const [isVideo, setIsVideo] = useState(initialIsVideo || false);
   const [isConnected, setIsConnected] = useState(false);
   const [secondsElapsed, setSecondsElapsed] = useState(0);
   const [cameraFacing, setCameraFacing] = useState<CameraType>('front');
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
+  const [remoteVideoFrame, setRemoteVideoFrame] = useState<string | null>(null);
+
+  const cameraRef = useRef<CameraView>(null);
   const hasNavigatedBack = useRef(false);
 
   const safeGoBack = useCallback(() => {
@@ -76,6 +79,77 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
       requestCameraPermission();
     }
   }, [isVideo, cameraPermission, requestCameraPermission]);
+
+  // Listen for remote video stream frames
+  useEffect(() => {
+    const handleRemoteFrame = (data: { callId: string; frameBase64: string }) => {
+      if (data?.frameBase64) {
+        setRemoteVideoFrame(data.frameBase64);
+      }
+    };
+
+    socketService.on('call:video-frame', handleRemoteFrame);
+    return () => {
+      socketService.off('call:video-frame', handleRemoteFrame);
+    };
+  }, []);
+
+  // Continuous live camera frame capture loop for video streaming
+  useEffect(() => {
+    let isStreaming = true;
+    let timer: any = null;
+
+    const captureAndStreamFrame = async () => {
+      if (!isStreaming || !isVideo || !cameraPermission?.granted || !cameraRef.current) {
+        return;
+      }
+
+      try {
+        const targetId = callSession?.targetUserId || targetUserId;
+        const currentCallId = callSession?.callId || callId;
+
+        if (targetId && currentCallId && isConnected) {
+          const photo = await cameraRef.current.takePictureAsync({
+            quality: 0.25,
+            base64: true,
+            skipProcessing: true,
+            shutterSound: false,
+          });
+
+          if (photo?.base64 && isStreaming) {
+            const dataUri = `data:image/jpeg;base64,${photo.base64}`;
+            socketService.emit('call:video-frame', {
+              callId: currentCallId,
+              targetUserId: targetId,
+              frameBase64: dataUri,
+              timestamp: Date.now(),
+            });
+          }
+        }
+      } catch (_) {}
+
+      if (isStreaming && isVideo) {
+        timer = setTimeout(captureAndStreamFrame, 900);
+      }
+    };
+
+    if (isVideo && isConnected && cameraPermission?.granted) {
+      timer = setTimeout(captureAndStreamFrame, 1000);
+    }
+
+    return () => {
+      isStreaming = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, [
+    isVideo,
+    isConnected,
+    cameraPermission?.granted,
+    callSession?.targetUserId,
+    callSession?.callId,
+    targetUserId,
+    callId,
+  ]);
 
   // Animated pulse rings for ringing/active state
   const pulseAnim1 = useRef(new Animated.Value(1)).current;
@@ -186,7 +260,6 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
   };
 
   const displayName = callSession?.targetUserName || targetUserId || 'Contact';
-  const nameInitial = displayName ? displayName[0].toUpperCase() : 'C';
   const avatarUrl = callSession?.targetUserAvatar;
 
   const isRinging = callSession?.state === 'OUTGOING_RINGING';
@@ -211,11 +284,10 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
 
   // Responsive scaling
   const avatarSize = screenHeight < 700 ? 90 : 110;
-  const avatarTextSize = screenHeight < 700 ? 38 : 46;
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom', 'left', 'right']}>
-      <StatusBar barStyle="light-content" backgroundColor="#0B0E14" />
+      <StatusBar barStyle="light-content" backgroundColor="#070A12" />
 
       {/* Top Header with Back button & E2EE Info */}
       <View style={styles.topHeader}>
@@ -243,39 +315,62 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
 
       {/* Main Body */}
       {isVideo ? (
-        // 📹 VIDEO CALL LAYOUT
+        // 📹 TWO-WAY VIDEO CALL LAYOUT
         <View style={styles.videoMainContainer}>
-          {/* Remote Video / Backdrop Container */}
+          {/* Remote Video Stream Area */}
           <View style={styles.remoteVideoBackdrop}>
-            <SmartAvatar
-              avatarUrl={avatarUrl}
-              name={displayName}
-              size={110}
-              style={styles.remoteVideoAvatar}
-            />
-            <Text style={styles.remoteVideoName} numberOfLines={1}>
-              {displayName}
-            </Text>
-            <View
-              style={[
-                styles.statusBadge,
-                {
-                  backgroundColor: statusBadgeBg,
-                  borderColor: statusBadgeBorder,
-                  marginTop: 6,
-                },
-              ]}
-            >
-              <View style={[styles.statusDot, { backgroundColor: statusDotColor }]} />
-              <Text style={[styles.statusText, { color: statusTextColor }]}>{statusText}</Text>
-            </View>
-            <Text style={styles.callTypeLabel}>WhatsApp HD Video Call</Text>
+            {remoteVideoFrame ? (
+              <View style={styles.remoteVideoWrapper}>
+                <Image
+                  source={{ uri: remoteVideoFrame }}
+                  style={StyleSheet.absoluteFillObject}
+                  resizeMode="cover"
+                />
+                <View style={styles.remoteOverlayInfo}>
+                  <Text style={styles.remoteOverlayName} numberOfLines={1}>
+                    {displayName}
+                  </Text>
+                  <Text style={styles.remoteOverlayDuration}>{formatDuration(secondsElapsed)}</Text>
+                </View>
+              </View>
+            ) : (
+              <View style={styles.remoteVideoAvatarContainer}>
+                <SmartAvatar
+                  avatarUrl={avatarUrl}
+                  name={displayName}
+                  size={110}
+                  style={styles.remoteVideoAvatar}
+                />
+                <Text style={styles.remoteVideoName} numberOfLines={1}>
+                  {displayName}
+                </Text>
+                <View
+                  style={[
+                    styles.statusBadge,
+                    {
+                      backgroundColor: statusBadgeBg,
+                      borderColor: statusBadgeBorder,
+                      marginTop: 6,
+                    },
+                  ]}
+                >
+                  <View style={[styles.statusDot, { backgroundColor: statusDotColor }]} />
+                  <Text style={[styles.statusText, { color: statusTextColor }]}>{statusText}</Text>
+                </View>
+                <Text style={styles.callTypeLabel}>WhatsApp Live HD Video</Text>
+              </View>
+            )}
           </View>
 
           {/* Picture-in-Picture (PiP) Local Camera Tile */}
           {cameraPermission?.granted ? (
             <View style={styles.pipContainer}>
-              <CameraView facing={cameraFacing} style={styles.pipCamera}>
+              <CameraView
+                ref={cameraRef}
+                facing={cameraFacing}
+                style={styles.pipCamera}
+                mute={true}
+              >
                 <TouchableOpacity
                   style={styles.pipFlipBtn}
                   onPress={handleFlipCamera}
@@ -366,7 +461,7 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
         </Animated.View>
       )}
 
-      {/* Control Buttons Bar - Overflow-Proof & Responsive */}
+      {/* Control Buttons Bar */}
       <View style={styles.bottomControls}>
         {isConnected ? (
           // Active Connected Call Controls (Speaker, Mute, Video, End)
@@ -580,6 +675,38 @@ const styles = StyleSheet.create({
     backgroundColor: '#0F172A',
     borderRadius: 24,
     marginVertical: 8,
+    overflow: 'hidden',
+  },
+  remoteVideoWrapper: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: '#000',
+    justifyContent: 'flex-end',
+  },
+  remoteOverlayInfo: {
+    position: 'absolute',
+    bottom: 16,
+    left: 16,
+    backgroundColor: 'rgba(0, 0, 0, 0.65)',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+  },
+  remoteOverlayName: {
+    color: '#FFF',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  remoteOverlayDuration: {
+    color: '#10B981',
+    fontSize: 12,
+    fontWeight: '600',
+    marginTop: 2,
+  },
+  remoteVideoAvatarContainer: {
+    justifyContent: 'center',
+    alignItems: 'center',
     paddingHorizontal: 20,
   },
   remoteVideoAvatar: {
@@ -601,8 +728,8 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 16,
     right: 16,
-    width: 110,
-    height: 155,
+    width: 115,
+    height: 165,
     borderRadius: 18,
     overflow: 'hidden',
     borderWidth: 2,
@@ -633,8 +760,8 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 16,
     right: 16,
-    width: 110,
-    height: 140,
+    width: 115,
+    height: 150,
     borderRadius: 18,
     backgroundColor: 'rgba(15, 23, 42, 0.9)',
     borderWidth: 1,

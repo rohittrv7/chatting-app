@@ -2,17 +2,44 @@ import { Audio } from 'expo-av';
 import * as FileSystem from 'expo-file-system/legacy';
 import { socketService } from './socket';
 
+// HD Voice Wideband Preset (24kHz Mono AAC — standard for VoIP Voice Clarity)
+const VoIPRecordingOptions: Audio.RecordingOptions = {
+  isMeteringEnabled: false,
+  android: {
+    extension: '.m4a',
+    outputFormat: Audio.AndroidOutputFormat.MPEG_4,
+    audioEncoder: Audio.AndroidAudioEncoder.AAC,
+    sampleRate: 24000,
+    numberOfChannels: 1,
+    bitRate: 64000,
+  },
+  ios: {
+    extension: '.m4a',
+    audioQuality: Audio.IOSAudioQuality.HIGH,
+    sampleRate: 24000,
+    numberOfChannels: 1,
+    bitRate: 64000,
+    linearPCMBitDepth: 16,
+    linearPCMIsBigEndian: false,
+    linearPCMIsFloat: false,
+  },
+  web: {
+    mimeType: 'audio/webm',
+    bitsPerSecond: 64000,
+  },
+};
+
 class CallAudioService {
   private currentRecording: Audio.Recording | null = null;
   private currentCallId: string | null = null;
   private targetUserId: string | null = null;
   private isMuted = false;
-  private isSpeaker = false;
+  private isSpeaker = true;
   private isEngineRunning = false;
   private chunkCounter = 0;
   private playQueue: string[] = [];
   private isPlayingQueue = false;
-  private currentPlaybackSound: Audio.Sound | null = null;
+  private activeSounds: Audio.Sound[] = [];
 
   constructor() {
     socketService.on(
@@ -25,7 +52,7 @@ class CallAudioService {
     );
   }
 
-  public async startVoiceSession(callId: string, targetUserId: string, isSpeaker = false) {
+  public async startVoiceSession(callId: string, targetUserId: string, isSpeaker = true) {
     this.currentCallId = callId;
     this.targetUserId = targetUserId;
     this.isSpeaker = isSpeaker;
@@ -49,7 +76,7 @@ class CallAudioService {
         playThroughEarpieceAndroid: !isSpeaker,
       });
 
-      this._startRecordingLoop();
+      this._startContinuousRecordingLoop();
     } catch (err) {
       console.warn('[CallAudio] Failed to start voice session:', err);
     }
@@ -66,11 +93,12 @@ class CallAudioService {
         await this.currentRecording.stopAndUnloadAsync().catch(() => {});
         this.currentRecording = null;
       }
-      if (this.currentPlaybackSound) {
-        await this.currentPlaybackSound.stopAsync().catch(() => {});
-        await this.currentPlaybackSound.unloadAsync().catch(() => {});
-        this.currentPlaybackSound = null;
+
+      for (const snd of this.activeSounds) {
+        await snd.stopAsync().catch(() => {});
+        await snd.unloadAsync().catch(() => {});
       }
+      this.activeSounds = [];
 
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: false,
@@ -99,17 +127,17 @@ class CallAudioService {
     } catch (_) {}
   }
 
-  private async _startRecordingLoop() {
+  private async _startContinuousRecordingLoop() {
     if (!this.isEngineRunning) return;
 
     try {
       const recording = new Audio.Recording();
-      await recording.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
+      await recording.prepareToRecordAsync(VoIPRecordingOptions);
       await recording.startAsync();
       this.currentRecording = recording;
 
-      // 500ms audio chunk for low-latency, real-time voice streaming
-      await new Promise((res) => setTimeout(res, 500));
+      // 1000ms duration per packet ensures complete speech syllables without clipping
+      await new Promise((res) => setTimeout(res, 1000));
 
       if (!this.isEngineRunning) {
         await recording.stopAndUnloadAsync().catch(() => {});
@@ -120,38 +148,48 @@ class CallAudioService {
       const uri = recording.getURI();
       this.currentRecording = null;
 
-      if (uri && !this.isMuted && this.targetUserId && this.currentCallId) {
-        const fileInfo = await FileSystem.getInfoAsync(uri);
-        if (fileInfo.exists && (fileInfo.size || 0) > 60) {
-          const base64 = await FileSystem.readAsStringAsync(uri, {
-            encoding: FileSystem.EncodingType.Base64,
-          });
-
-          if (base64 && this.isEngineRunning) {
-            socketService.emit('call:audio-chunk', {
-              callId: this.currentCallId,
-              targetUserId: this.targetUserId,
-              audioBase64: base64,
-              chunkIndex: ++this.chunkCounter,
-            });
-          }
-        }
-        FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
+      // Immediately launch next recording pass so there is zero gap in voice capture
+      if (this.isEngineRunning) {
+        this._startContinuousRecordingLoop();
       }
 
-      if (this.isEngineRunning) {
-        this._startRecordingLoop();
+      // Process and stream previous chunk asynchronously
+      if (uri && !this.isMuted && this.targetUserId && this.currentCallId) {
+        this._sendAudioFile(uri, this.currentCallId, this.targetUserId);
       }
     } catch (e) {
       if (this.isEngineRunning) {
-        setTimeout(() => this._startRecordingLoop(), 300);
+        setTimeout(() => this._startContinuousRecordingLoop(), 200);
       }
     }
   }
 
+  private async _sendAudioFile(uri: string, callId: string, targetUserId: string) {
+    try {
+      const fileInfo = await FileSystem.getInfoAsync(uri);
+      if (fileInfo.exists && (fileInfo.size || 0) > 100) {
+        const base64 = await FileSystem.readAsStringAsync(uri, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+
+        if (base64 && this.isEngineRunning) {
+          socketService.emit('call:audio-chunk', {
+            callId,
+            targetUserId,
+            audioBase64: base64,
+            chunkIndex: ++this.chunkCounter,
+          });
+        }
+      }
+    } catch (_) {
+    } finally {
+      FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
+    }
+  }
+
   private enqueueAudioChunk(base64: string) {
-    if (this.playQueue.length > 6) {
-      this.playQueue.shift(); // Drop stale chunks to prevent lag
+    if (this.playQueue.length > 8) {
+      this.playQueue.shift(); // Drop overflow to prevent lag
     }
     this.playQueue.push(base64);
     if (!this.isPlayingQueue) {
@@ -178,13 +216,15 @@ class CallAudioService {
         { uri: chunkFile },
         { shouldPlay: true, volume: 1.0 },
       );
-      this.currentPlaybackSound = sound;
+
+      this.activeSounds.push(sound);
       await sound.setVolumeAsync(1.0);
       await sound.playAsync();
 
       sound.setOnPlaybackStatusUpdate((status: any) => {
         if (status.didJustFinish || status.isLoaded === false) {
           sound.unloadAsync().catch(() => {});
+          this.activeSounds = this.activeSounds.filter((s) => s !== sound);
           FileSystem.deleteAsync(chunkFile, { idempotent: true }).catch(() => {});
           this._processPlayQueue();
         }
