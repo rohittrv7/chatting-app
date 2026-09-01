@@ -77,10 +77,21 @@ interface ChatContextType {
     text: string,
     isMe?: boolean,
     imagePath?: string,
-    location?: { lat: number; lng: number; label?: string },
+    location?: {
+      lat: number;
+      lng: number;
+      label?: string;
+      isLive?: boolean;
+      liveDurationMinutes?: number;
+      expiresAt?: string;
+      isLiveEnded?: boolean;
+      accuracy?: number;
+    },
     receiverId?: string,
     contactTitle?: string,
     contactUsername?: string,
+    document?: { uri: string; name: string; size?: number | string; mimeType?: string },
+    contactPayload?: { name: string; phone: string; username?: string },
   ) => void;
   updateMessageUploadProgress: (
     messageId: string,
@@ -483,6 +494,8 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       createdAt: payload.createdAt || now.toISOString(),
       imagePath: payload.imagePath,
       location: payload.location,
+      document: payload.document,
+      contact: payload.contact,
       isStarred: false,
     };
 
@@ -499,6 +512,18 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       soundService.playNotificationTone();
     }
 
+    const previewSnippet =
+      payload.text ||
+      (payload.imagePath
+        ? '📷 Photo'
+        : payload.document
+          ? `📄 ${payload.document.name || 'Document'}`
+          : payload.contact
+            ? `👤 Contact: ${payload.contact.name}`
+            : payload.location
+              ? '📍 Location'
+              : 'Message');
+
     // Update or create conversation list entry
     const existingConv = conversationsRef.current.find(
       (c) => c.id === convId || (c.recipientDbId && c.recipientDbId === payload.senderId),
@@ -506,7 +531,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (existingConv) {
       _updateLastMessageInternal(
         existingConv.id,
-        payload.text || '📷 Photo',
+        previewSnippet,
         !isUserLooking,
         false,
         'DELIVERED',
@@ -983,15 +1008,18 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setUserProfile((prev) => {
         const updated = { ...prev, ...profile };
         userProfileRef.current = updated;
-        safeStorage.setItem('@whatsapp_connect_user_profile', JSON.stringify(updated));
-        safeStorage.setItem(AUTH_STORAGE_KEYS.USER_PROFILE, JSON.stringify(updated));
-        dispatch(profileUpdatedSuccess(updated));
-        const tok = tokenRef.current;
-        if (tok) {
-          apiService.updateProfile(tok, updated).catch(() => {});
-        }
         return updated;
       });
+
+      const updated = { ...userProfileRef.current, ...profile };
+      userProfileRef.current = updated;
+      safeStorage.setItem('@whatsapp_connect_user_profile', JSON.stringify(updated));
+      safeStorage.setItem(AUTH_STORAGE_KEYS.USER_PROFILE, JSON.stringify(updated));
+      dispatch(profileUpdatedSuccess(updated));
+      const tok = tokenRef.current;
+      if (tok) {
+        apiService.updateProfile(tok, updated).catch(() => {});
+      }
     },
     [dispatch],
   );
@@ -1003,10 +1031,21 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     text: string,
     isMe = true,
     imagePath?: string,
-    location?: { lat: number; lng: number; label?: string },
+    location?: {
+      lat: number;
+      lng: number;
+      label?: string;
+      isLive?: boolean;
+      liveDurationMinutes?: number;
+      expiresAt?: string;
+      isLiveEnded?: boolean;
+      accuracy?: number;
+    },
     receiverId?: string,
     contactTitle?: string,
     contactUsername?: string,
+    document?: { uri: string; name: string; size?: number | string; mimeType?: string },
+    contactPayload?: { name: string; phone: string; username?: string },
   ) => {
     const now = new Date();
     const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
@@ -1029,6 +1068,8 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       createdAt: now.toISOString(),
       imagePath,
       location,
+      document,
+      contact: contactPayload,
       isStarred: false,
     };
 
@@ -1038,16 +1079,24 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       soundService.playMessageSentSound();
     }
 
+    const snippet =
+      text ||
+      (imagePath
+        ? '📷 Photo'
+        : document
+          ? `📄 ${document.name || 'Document'}`
+          : contactPayload
+            ? `👤 Contact: ${contactPayload.name}`
+            : location
+              ? location.isLive
+                ? '📡 Live Location'
+                : '📍 Location'
+              : '');
+
     // Update or create conversation entry
     const existingConv = conversationsRef.current.find((c) => c.id === conversationId);
     if (existingConv) {
-      _updateLastMessageInternal(
-        conversationId,
-        text || (imagePath ? '📷 Photo' : location ? '📍 Location' : ''),
-        false,
-        true,
-        'SENDING',
-      );
+      _updateLastMessageInternal(conversationId, snippet, false, true, 'SENDING');
     } else {
       const matched = getResolvedContact({
         username: contactUsername || receiverId,
@@ -1061,7 +1110,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
           recipientDbId: receiverId,
           avatarUrl: matched?.avatarUrl,
           phone: matched?.phone,
-          lastMessage: text || (imagePath ? '📷 Photo' : location ? '📍 Location' : ''),
+          lastMessage: snippet,
           time: timeStr,
           lastMessageIsMe: true,
           lastMessageStatus: 'SENDING',
@@ -1113,6 +1162,8 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
           text,
           imagePath,
           location,
+          document,
+          contact: contactPayload,
         });
       });
 
@@ -1231,26 +1282,27 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
   ) => {
     const now = new Date();
     const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
-    dispatch(
-      setConversations(
-        conversationsRef.current.map((c) => {
-          if (c.id === conversationId) {
-            const currentUnread = parseInt(c.unread || '0', 10);
-            return {
-              ...c,
-              lastMessage: text,
-              time: timeStr,
-              lastMessageIsMe: isMe,
-              lastMessageStatus: (status ||
-                c.lastMessageStatus ||
-                (isMe ? 'SENT' : 'DELIVERED')) as any,
-              unread: incrementUnread ? String(currentUnread + 1) : '0',
-            };
-          }
-          return c;
-        }),
-      ),
-    );
+    const list = [...conversationsRef.current];
+    const idx = list.findIndex((c) => c.id === conversationId);
+
+    if (idx >= 0) {
+      const conv = list[idx];
+      const currentUnread = parseInt(conv.unread || '0', 10);
+      const updatedConv = {
+        ...conv,
+        lastMessage: text,
+        time: timeStr,
+        lastMessageIsMe: isMe,
+        lastMessageStatus: (status ||
+          conv.lastMessageStatus ||
+          (isMe ? 'SENT' : 'DELIVERED')) as any,
+        unread: incrementUnread ? String(currentUnread + 1) : '0',
+      };
+      // Move to top of the list
+      list.splice(idx, 1);
+      list.unshift(updatedConv);
+      dispatch(setConversations(list));
+    }
   };
 
   const updateLastMessage = _updateLastMessageInternal;

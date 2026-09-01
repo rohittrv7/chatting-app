@@ -1,5 +1,12 @@
 import React, { useEffect, useState } from 'react';
-import { View, ActivityIndicator, StatusBar } from 'react-native';
+import { View, ActivityIndicator, StatusBar, LogBox } from 'react-native';
+
+LogBox.ignoreLogs([
+  '[expo-av]: Expo AV has been deprecated',
+  'Expo AV has been deprecated and will be removed in SDK 54',
+  'Due to changes in Androids permission requirements',
+  'Expo Go can no longer provide full access to the media library',
+]);
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import {
   NavigationContainer,
@@ -33,6 +40,7 @@ import { NotificationSettingsScreen } from './src/screens/NotificationSettingsSc
 import { StorageSettingsScreen } from './src/screens/StorageSettingsScreen';
 import { HelpSettingsScreen } from './src/screens/HelpSettingsScreen';
 import { QrCodeScreen } from './src/screens/QrCodeScreen';
+import { IncomingCallModal } from './src/components/IncomingCallModal';
 
 export const navigationRef = createNavigationContainerRef<RootStackParamList>();
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -163,6 +171,7 @@ function AppNavigator() {
           <Stack.Screen name="QrCode" component={QrCodeScreen} />
         </Stack.Navigator>
       </NavigationContainer>
+      <IncomingCallModal navigationRef={navigationRef} />
     </View>
   );
 }

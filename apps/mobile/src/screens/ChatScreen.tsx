@@ -28,6 +28,8 @@ import { useToast } from '../context/ToastContext';
 import { useSelector } from 'react-redux';
 import { RootState } from '../store';
 import * as ImagePicker from 'expo-image-picker';
+import * as DocumentPicker from 'expo-document-picker';
+import * as Contacts from 'expo-contacts';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import * as MediaLibrary from 'expo-media-library';
@@ -39,6 +41,7 @@ try {
 
 import { socketService } from '../services/socket';
 import { apiService } from '../services/apiService';
+import { callService } from '../services/callService';
 import { SmartAvatar } from '../components/SmartAvatar';
 import { getResolvedDisplayName, getResolvedContact } from '../services/contactsService';
 import {
@@ -66,6 +69,16 @@ import {
   Image as ImageIcon,
   Reply,
   RotateCcw,
+  Contact as ContactIcon,
+  Search,
+  ExternalLink,
+  MessageSquare,
+  Navigation,
+  Radio,
+  Clock,
+  LocateFixed,
+  StopCircle,
+  Compass,
 } from 'lucide-react-native';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Chat'>;
@@ -378,12 +391,16 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
       if (isNaN(d.getTime())) return 'Offline';
       const now = new Date();
       const isToday = d.toDateString() === now.toDateString();
+      const yesterday = new Date(now);
+      yesterday.setDate(yesterday.getDate() - 1);
+      const isYesterday = d.toDateString() === yesterday.toDateString();
       const timeStr = d.toLocaleTimeString([], {
         hour: 'numeric',
         minute: '2-digit',
         hour12: true,
       });
       if (isToday) return `Last seen today at ${timeStr}`;
+      if (isYesterday) return `Last seen yesterday at ${timeStr}`;
       return `Last seen ${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} at ${timeStr}`;
     } catch {
       return 'Offline';
@@ -407,6 +424,23 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [showClearModal, setShowClearModal] = useState(false);
   const [isSendingLocation, setIsSendingLocation] = useState(false);
+  const [showLocationPickerModal, setShowLocationPickerModal] = useState(false);
+  const [selectedLiveDuration, setSelectedLiveDuration] = useState<number>(60); // 15, 60, 480 mins
+  const [liveLocationComment, setLiveLocationComment] = useState('');
+  const [currentGpsData, setCurrentGpsData] = useState<{
+    lat: number;
+    lng: number;
+    label: string;
+    accuracy?: number;
+  } | null>(null);
+  const [isLoadingGps, setIsLoadingGps] = useState(false);
+  const [stoppedLiveMsgIds, setStoppedLiveMsgIds] = useState<Record<string, boolean>>({});
+  const [showContactPickerModal, setShowContactPickerModal] = useState(false);
+  const [availablePhoneContacts, setAvailablePhoneContacts] = useState<
+    Array<{ id: string; name: string; phone: string }>
+  >([]);
+  const [contactSearchQuery, setContactSearchQuery] = useState('');
+  const [isLoadingContacts, setIsLoadingContacts] = useState(false);
 
   const flatListRef = useRef<FlatList>(null);
   const textInputRef = useRef<TextInput>(null);
@@ -676,10 +710,25 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
       const captionToUse = idx === 0 ? cap : '';
       let mediaUrlToSend = media.uri;
 
-      // Upload directly to Backblaze B2 via backend if base64 and token available
-      if (token && media.base64) {
+      // Ensure base64 is available for upload
+      let base64Data = media.base64;
+      if (!base64Data && media.uri) {
         try {
-          const uploadRes = await apiService.uploadMediaFile(token, media.base64, media.name);
+          base64Data = await FileSystem.readAsStringAsync(media.uri, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+        } catch {}
+      }
+
+      // Upload directly to server & Backblaze B2 via backend API
+      if (token && base64Data) {
+        try {
+          const uploadRes = await apiService.uploadMediaFile(
+            token,
+            base64Data,
+            media.name || `photo_${Date.now()}.jpg`,
+            'image/jpeg',
+          );
           if (uploadRes.success && uploadRes.url) {
             mediaUrlToSend = uploadRes.url;
           }
@@ -698,7 +747,124 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
     });
   };
 
-  const handleSendLocation = async () => {
+  const handlePickDocument = async () => {
+    setShowAttachMenu(false);
+    if (!recipientDbId) {
+      showToast('Recipient info missing', 'error');
+      return;
+    }
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        copyToCacheDirectory: true,
+        type: '*/*',
+      });
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        const doc = result.assets[0];
+        let base64Data = '';
+        try {
+          base64Data = await FileSystem.readAsStringAsync(doc.uri, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+        } catch {}
+
+        let remoteDocUrl = doc.uri;
+        if (token && base64Data) {
+          const uploadRes = await apiService.uploadMediaFile(
+            token,
+            base64Data,
+            doc.name,
+            doc.mimeType || 'application/octet-stream',
+          );
+          if (uploadRes.success && uploadRes.url) {
+            remoteDocUrl = uploadRes.url;
+          }
+        }
+
+        const sizeFormatted = doc.size
+          ? doc.size > 1024 * 1024
+            ? `${(doc.size / (1024 * 1024)).toFixed(1)} MB`
+            : `${Math.round(doc.size / 1024)} KB`
+          : undefined;
+
+        addMessage(
+          conversationId,
+          '',
+          true,
+          undefined,
+          undefined,
+          recipientDbId,
+          resolvedDisplayName,
+          undefined,
+          {
+            uri: remoteDocUrl,
+            name: doc.name,
+            size: sizeFormatted,
+            mimeType: doc.mimeType,
+          },
+        );
+        showToast('Document sent 📄', 'success', 1500);
+      }
+    } catch (e) {
+      console.warn('Document picker error:', e);
+      showToast('Could not pick document', 'error');
+    }
+  };
+
+  const handleOpenContactPicker = async () => {
+    setShowAttachMenu(false);
+    setShowContactPickerModal(true);
+    setIsLoadingContacts(true);
+    try {
+      const { status } = await Contacts.requestPermissionsAsync();
+      if (status === 'granted') {
+        const { data } = await Contacts.getContactsAsync({
+          fields: [Contacts.Fields.PhoneNumbers, Contacts.Fields.Emails],
+          sort: Contacts.SortTypes.FirstName,
+        });
+        if (data && data.length > 0) {
+          const formatted = data
+            .filter((c) => c.phoneNumbers && c.phoneNumbers.length > 0)
+            .map((c) => ({
+              id: c.id,
+              name: c.name || `${c.firstName || ''} ${c.lastName || ''}`.trim() || 'Contact',
+              phone: c.phoneNumbers![0].number || '',
+            }));
+          setAvailablePhoneContacts(formatted);
+        }
+      }
+    } catch (e) {
+      console.warn('Contacts picker error:', e);
+    } finally {
+      setIsLoadingContacts(false);
+    }
+  };
+
+  const handleSendSelectedContact = (contact: {
+    name: string;
+    phone: string;
+    username?: string;
+  }) => {
+    setShowContactPickerModal(false);
+    if (!recipientDbId) {
+      showToast('Recipient info missing', 'error');
+      return;
+    }
+    addMessage(
+      conversationId,
+      '',
+      true,
+      undefined,
+      undefined,
+      recipientDbId,
+      resolvedDisplayName,
+      undefined,
+      undefined,
+      contact,
+    );
+    showToast('Contact shared 👤', 'success', 1500);
+  };
+
+  const handleOpenLocationPicker = async () => {
     setShowAttachMenu(false);
     if (!Location) {
       showToast('expo-location not installed', 'warning');
@@ -708,56 +874,119 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
       showToast('Recipient info missing', 'error');
       return;
     }
-    setIsSendingLocation(true);
+    setShowLocationPickerModal(true);
+    setIsLoadingGps(true);
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') {
         showToast('Location permission required', 'warning');
+        setIsLoadingGps(false);
         return;
       }
       const loc = await Location.getCurrentPositionAsync({
         accuracy: Location.Accuracy?.Balanced ?? 4,
       });
-      const lat = loc.coords.latitude,
-        lng = loc.coords.longitude;
+      const lat = loc.coords.latitude;
+      const lng = loc.coords.longitude;
       let label = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
       try {
         const [geo] = await Location.reverseGeocodeAsync({ latitude: lat, longitude: lng });
-        if (geo) label = [geo.name, geo.street, geo.city].filter(Boolean).slice(0, 2).join(', ');
+        if (geo) {
+          label = [geo.name, geo.street, geo.subregion || geo.city, geo.region]
+            .filter(Boolean)
+            .slice(0, 3)
+            .join(', ');
+        }
       } catch {}
-      addMessage(
-        conversationId,
-        '',
-        true,
-        undefined,
-        { lat, lng, label },
-        recipientDbId,
-        resolvedDisplayName,
-      );
-      showToast('Location shared 📍', 'success', 1500);
+      setCurrentGpsData({
+        lat,
+        lng,
+        label,
+        accuracy: loc.coords.accuracy ? Math.round(loc.coords.accuracy) : undefined,
+      });
     } catch {
-      showToast('Could not get location', 'error');
+      showToast('Could not fetch GPS coordinates', 'error');
     } finally {
-      setIsSendingLocation(false);
+      setIsLoadingGps(false);
     }
+  };
+
+  const handleSendCurrentLocation = () => {
+    if (!currentGpsData || !recipientDbId) {
+      showToast('Location not ready', 'warning');
+      return;
+    }
+    setShowLocationPickerModal(false);
+    addMessage(
+      conversationId,
+      '',
+      true,
+      undefined,
+      {
+        lat: currentGpsData.lat,
+        lng: currentGpsData.lng,
+        label: currentGpsData.label,
+        accuracy: currentGpsData.accuracy,
+        isLive: false,
+      },
+      recipientDbId,
+      resolvedDisplayName,
+    );
+    showToast('Current Location sent 📍', 'success', 1500);
+  };
+
+  const handleSendLiveLocation = () => {
+    if (!currentGpsData || !recipientDbId) {
+      showToast('Location not ready', 'warning');
+      return;
+    }
+    const expiresAt = new Date(Date.now() + selectedLiveDuration * 60 * 1000).toISOString();
+    const comment = liveLocationComment.trim();
+    setShowLocationPickerModal(false);
+    setLiveLocationComment('');
+
+    addMessage(
+      conversationId,
+      comment,
+      true,
+      undefined,
+      {
+        lat: currentGpsData.lat,
+        lng: currentGpsData.lng,
+        label: currentGpsData.label,
+        isLive: true,
+        liveDurationMinutes: selectedLiveDuration,
+        expiresAt,
+        accuracy: currentGpsData.accuracy,
+      },
+      recipientDbId,
+      resolvedDisplayName,
+    );
+    showToast(`Live Location shared (${selectedLiveDuration}m) 📡`, 'success', 2000);
+  };
+
+  const handleStopLiveLocation = (msgId: string) => {
+    setStoppedLiveMsgIds((prev) => ({ ...prev, [msgId]: true }));
+    showToast('Live location sharing stopped', 'info', 1500);
   };
 
   const handleDownloadPhoto = async (uri?: string) => {
     if (!uri) return;
     try {
-      let localUri = uri;
-      if (uri.startsWith('data:image')) {
-        const cleanB64 = uri.replace(/^data:[^;]+;base64,/, '');
+      const resolved = apiService.getResolvedMediaUrl(uri);
+      let localUri = resolved;
+      if (resolved.startsWith('data:image')) {
+        const cleanB64 = resolved.replace(/^data:[^;]+;base64,/, '');
         const tempPath = `${FileSystem.cacheDirectory}photo_${Date.now()}.jpg`;
         await FileSystem.writeAsStringAsync(tempPath, cleanB64, {
           encoding: FileSystem.EncodingType.Base64,
         });
         localUri = tempPath;
-      } else if (uri.startsWith('http')) {
-        const rawName = uri.split('/').pop() || `photo_${Date.now()}.jpg`;
+      } else if (resolved.startsWith('http://') || resolved.startsWith('https://')) {
+        const rawName = resolved.split('/').pop() || `photo_${Date.now()}.jpg`;
         const cleanFilename = rawName.split('?')[0] || `photo_${Date.now()}.jpg`;
         const res = await FileSystem.downloadAsync(
-          uri,
+          resolved,
           `${FileSystem.cacheDirectory}${cleanFilename}`,
         );
         localUri = res.uri;
@@ -788,16 +1017,95 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
     }
   };
 
+  const handleOpenDocument = async (docUri?: string, docName?: string) => {
+    if (!docUri) return;
+    try {
+      const resolved = apiService.getResolvedMediaUrl(docUri);
+      let localUri = resolved;
+      if (resolved.startsWith('http://') || resolved.startsWith('https://')) {
+        const rawName = docName || resolved.split('/').pop() || `doc_${Date.now()}`;
+        const cleanFilename = rawName.split('?')[0];
+        const res = await FileSystem.downloadAsync(
+          resolved,
+          `${FileSystem.cacheDirectory}${cleanFilename}`,
+        );
+        localUri = res.uri;
+      }
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(localUri);
+      } else {
+        Linking.openURL(resolved).catch(() => {});
+      }
+    } catch {
+      Linking.openURL(apiService.getResolvedMediaUrl(docUri)).catch(() => {});
+    }
+  };
+
   const handleSharePhoto = async (uri?: string) => {
     if (!uri) return;
     try {
-      if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(uri);
+      const resolved = apiService.getResolvedMediaUrl(uri);
+      if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(resolved);
     } catch {}
   };
 
   const handleReact = (msg: ChatMessage, emoji: string) => {
     setReactingToMsg(null);
     reactToMessage(conversationId, msg.id, emoji, recipientDbId);
+  };
+
+  const handleTriggerCall = async (callType: 'audio' | 'video') => {
+    let targetId =
+      effectiveRecipientId ||
+      recipientDbId ||
+      (route.params as any)?.recipientDbId ||
+      currentConv?.recipientDbId;
+
+    if (!targetId && token) {
+      const handle = (
+        currentConv?.username ||
+        (route.params as any)?.username ||
+        currentConv?.phone ||
+        (route.params as any)?.phone ||
+        title
+      )?.replace(/^@+/, '');
+
+      if (handle) {
+        try {
+          const results = await apiService.searchUsers(token, handle);
+          const match =
+            results.find(
+              (u) =>
+                (u.username &&
+                  u.username.toLowerCase().replace(/^@+/, '') === handle.toLowerCase()) ||
+                (u.phoneNumber && u.phoneNumber.replace(/\D/g, '') === handle.replace(/\D/g, '')) ||
+                (u.name && u.name.toLowerCase() === title.toLowerCase()),
+            ) || results[0];
+          if (match?.id) {
+            targetId = match.id;
+            setResolvedRecipientId(match.id);
+          }
+        } catch (e) {}
+      }
+    }
+
+    const finalTargetId = targetId || title;
+    const session = callService.startCall({
+      targetUserId: finalTargetId,
+      targetUserName: resolvedDisplayName || title,
+      targetUserAvatar: currentConv?.avatarUrl,
+      callType,
+      myUserId: authUserId,
+      myName: userProfile?.name,
+      myAvatar: userProfile?.avatarUrl,
+      conversationId,
+    });
+    navigation.navigate('Call', {
+      callId: session.callId,
+      targetUserId: resolvedDisplayName || title,
+      isCaller: true,
+      isVideo: callType === 'video',
+    });
   };
 
   // ── Bubble renderer ────────────────────────────────────────────────────────
@@ -932,7 +1240,7 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
                     style={styles.imageBubbleWrapper}
                   >
                     <Image
-                      source={{ uri: msg.imagePath }}
+                      source={{ uri: apiService.getResolvedMediaUrl(msg.imagePath) }}
                       style={styles.chatImageBubble}
                       resizeMode="cover"
                     />
@@ -949,50 +1257,337 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
                   </TouchableOpacity>
                 ) : null}
 
-                {/* Location attachment */}
-                {msg.location ? (
+                {/* Document attachment */}
+                {msg.document ? (
                   <TouchableOpacity
+                    activeOpacity={0.85}
+                    onPress={() => handleOpenDocument(msg.document?.uri, msg.document?.name)}
                     style={[
-                      styles.locationBubble,
+                      styles.docBubbleWrapper,
                       { backgroundColor: isMe ? 'rgba(255,255,255,0.15)' : colors.cardBorder },
                     ]}
-                    onPress={() => {
-                      const { lat, lng } = msg.location!;
-                      const url =
-                        Platform.OS === 'ios'
-                          ? `maps://?q=${lat},${lng}`
-                          : `geo:${lat},${lng}?q=${lat},${lng}`;
-                      Linking.openURL(url).catch(() =>
-                        Linking.openURL(`https://maps.google.com/?q=${lat},${lng}`),
-                      );
-                    }}
                   >
-                    <MapPin
-                      size={18}
-                      color={isMe ? '#FFF' : colors.primaryIndigo}
-                      style={{ marginRight: 8 }}
-                    />
-                    <View style={{ flex: 1 }}>
+                    <View
+                      style={[
+                        styles.docIconBox,
+                        {
+                          backgroundColor: isMe
+                            ? 'rgba(255,255,255,0.25)'
+                            : 'rgba(99,102,241,0.15)',
+                        },
+                      ]}
+                    >
+                      <FileText size={22} color={isMe ? '#FFF' : colors.primaryIndigo} />
+                    </View>
+                    <View style={{ flex: 1, marginLeft: 10 }}>
+                      <Text
+                        style={[styles.docNameText, { color: isMe ? '#FFF' : colors.textPrimary }]}
+                        numberOfLines={1}
+                      >
+                        {msg.document.name || 'Document'}
+                      </Text>
                       <Text
                         style={[
-                          styles.locationLabel,
+                          styles.docSubText,
+                          { color: isMe ? 'rgba(255,255,255,0.7)' : colors.textSecondary },
+                        ]}
+                      >
+                        {msg.document.size || 'Tap to open'}
+                      </Text>
+                    </View>
+                    <Download
+                      size={16}
+                      color={isMe ? '#FFF' : colors.textSecondary}
+                      style={{ marginLeft: 6 }}
+                    />
+                  </TouchableOpacity>
+                ) : null}
+
+                {/* Contact attachment */}
+                {msg.contact ? (
+                  <View
+                    style={[
+                      styles.contactBubbleWrapper,
+                      { backgroundColor: isMe ? 'rgba(255,255,255,0.15)' : colors.cardBorder },
+                    ]}
+                  >
+                    <View style={styles.contactBubbleHeader}>
+                      <View
+                        style={[
+                          styles.contactAvatarBox,
+                          {
+                            backgroundColor: isMe
+                              ? 'rgba(255,255,255,0.25)'
+                              : 'rgba(99,102,241,0.15)',
+                          },
+                        ]}
+                      >
+                        <User size={20} color={isMe ? '#FFF' : colors.primaryIndigo} />
+                      </View>
+                      <View style={{ flex: 1, marginLeft: 10 }}>
+                        <Text
+                          style={[
+                            styles.contactNameText,
+                            { color: isMe ? '#FFF' : colors.textPrimary },
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {msg.contact.name}
+                        </Text>
+                        <Text
+                          style={[
+                            styles.contactPhoneText,
+                            { color: isMe ? 'rgba(255,255,255,0.7)' : colors.textSecondary },
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {msg.contact.phone}
+                        </Text>
+                      </View>
+                    </View>
+                    <TouchableOpacity
+                      style={[
+                        styles.contactMessageBtn,
+                        { borderTopColor: isMe ? 'rgba(255,255,255,0.2)' : colors.cardBorder },
+                      ]}
+                      onPress={() => {
+                        navigation.push('Chat', {
+                          conversationId: `direct_${msg.contact?.phone || msg.contact?.name}`,
+                          title: msg.contact?.name || 'Contact',
+                          phone: msg.contact?.phone,
+                        });
+                      }}
+                    >
+                      <MessageSquare
+                        size={14}
+                        color={isMe ? '#FFF' : colors.primaryIndigo}
+                        style={{ marginRight: 6 }}
+                      />
+                      <Text
+                        style={[
+                          styles.contactMessageBtnText,
+                          { color: isMe ? '#FFF' : colors.primaryIndigo },
+                        ]}
+                      >
+                        Message
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : null}
+
+                {/* Stylish Location attachment */}
+                {msg.location ? (
+                  <View
+                    style={[
+                      styles.stylishLocationCard,
+                      {
+                        backgroundColor: isMe ? 'rgba(0,0,0,0.18)' : colors.surface,
+                        borderColor: isMe ? 'rgba(255,255,255,0.2)' : colors.cardBorder,
+                      },
+                    ]}
+                  >
+                    {/* Visual Map Banner */}
+                    <TouchableOpacity
+                      activeOpacity={0.9}
+                      onPress={() => {
+                        const { lat, lng } = msg.location!;
+                        const url =
+                          Platform.OS === 'ios'
+                            ? `maps://?q=${lat},${lng}`
+                            : `geo:${lat},${lng}?q=${lat},${lng}`;
+                        Linking.openURL(url).catch(() =>
+                          Linking.openURL(`https://maps.google.com/?q=${lat},${lng}`),
+                        );
+                      }}
+                      style={[
+                        styles.locationMapBanner,
+                        {
+                          backgroundColor: msg.location.isLive
+                            ? 'rgba(16,185,129,0.18)'
+                            : 'rgba(59,130,246,0.18)',
+                        },
+                      ]}
+                    >
+                      {/* Radar rings / map effect */}
+                      <View style={styles.mapGridPattern}>
+                        <View
+                          style={[
+                            styles.mapRadarRing,
+                            {
+                              width: 90,
+                              height: 90,
+                              borderColor: msg.location.isLive
+                                ? 'rgba(16,185,129,0.25)'
+                                : 'rgba(59,130,246,0.25)',
+                            },
+                          ]}
+                        />
+                        <View
+                          style={[
+                            styles.mapRadarRing,
+                            {
+                              width: 52,
+                              height: 52,
+                              borderColor: msg.location.isLive
+                                ? 'rgba(16,185,129,0.45)'
+                                : 'rgba(59,130,246,0.45)',
+                            },
+                          ]}
+                        />
+                        <View
+                          style={[
+                            styles.mapPinCenterCircle,
+                            {
+                              backgroundColor: msg.location.isLive ? '#10B981' : '#3B82F6',
+                            },
+                          ]}
+                        >
+                          {msg.location.isLive ? (
+                            <Radio size={18} color="#FFF" />
+                          ) : (
+                            <MapPin size={18} color="#FFF" />
+                          )}
+                        </View>
+                      </View>
+
+                      {/* Floating Badge */}
+                      <View
+                        style={[
+                          styles.locationTypeBadge,
+                          {
+                            backgroundColor: msg.location.isLive
+                              ? stoppedLiveMsgIds[msg.id] || msg.location.isLiveEnded
+                                ? 'rgba(100,116,139,0.85)'
+                                : '#10B981'
+                              : 'rgba(15,23,42,0.75)',
+                          },
+                        ]}
+                      >
+                        {msg.location.isLive &&
+                        !stoppedLiveMsgIds[msg.id] &&
+                        !msg.location.isLiveEnded ? (
+                          <View style={styles.livePulseDot} />
+                        ) : (
+                          <LocateFixed size={11} color="#FFF" style={{ marginRight: 4 }} />
+                        )}
+                        <Text style={styles.locationTypeBadgeText}>
+                          {msg.location.isLive
+                            ? stoppedLiveMsgIds[msg.id] || msg.location.isLiveEnded
+                              ? 'LIVE ENDED'
+                              : 'LIVE LOCATION'
+                            : 'CURRENT GPS'}
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
+
+                    {/* Content Section */}
+                    <View style={styles.locationCardBody}>
+                      <Text
+                        style={[
+                          styles.locationCardTitle,
                           { color: isMe ? '#FFF' : colors.textPrimary },
                         ]}
                         numberOfLines={2}
                       >
                         {msg.location.label ||
-                          `${msg.location.lat.toFixed(4)}, ${msg.location.lng.toFixed(4)}`}
+                          `Lat: ${msg.location.lat.toFixed(4)}, Lng: ${msg.location.lng.toFixed(4)}`}
                       </Text>
-                      <Text
-                        style={[
-                          styles.locationCoords,
-                          { color: isMe ? 'rgba(255,255,255,0.7)' : colors.textSecondary },
-                        ]}
-                      >
-                        Tap to open in Maps
-                      </Text>
+
+                      {msg.location.isLive ? (
+                        <View style={styles.liveTimerRow}>
+                          <Clock
+                            size={12}
+                            color={isMe ? 'rgba(255,255,255,0.7)' : colors.textSecondary}
+                            style={{ marginRight: 4 }}
+                          />
+                          <Text
+                            style={[
+                              styles.liveTimerText,
+                              {
+                                color: isMe ? 'rgba(255,255,255,0.75)' : colors.textSecondary,
+                              },
+                            ]}
+                          >
+                            {stoppedLiveMsgIds[msg.id] || msg.location.isLiveEnded
+                              ? 'Live sharing ended'
+                              : msg.location.expiresAt
+                                ? `Live until ${new Date(msg.location.expiresAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true })}`
+                                : `Live for ${msg.location.liveDurationMinutes || 60}m`}
+                          </Text>
+                        </View>
+                      ) : (
+                        <Text
+                          style={[
+                            styles.locationAccuracyText,
+                            { color: isMe ? 'rgba(255,255,255,0.7)' : colors.textSecondary },
+                          ]}
+                        >
+                          {msg.location.accuracy
+                            ? `Accurate to ~${msg.location.accuracy}m`
+                            : 'Exact GPS coordinates'}
+                        </Text>
+                      )}
                     </View>
-                  </TouchableOpacity>
+
+                    {/* Action Bar */}
+                    <View
+                      style={[
+                        styles.locationActionBar,
+                        { borderTopColor: isMe ? 'rgba(255,255,255,0.15)' : colors.cardBorder },
+                      ]}
+                    >
+                      <TouchableOpacity
+                        style={styles.locationActionBtn}
+                        onPress={() => {
+                          const { lat, lng } = msg.location!;
+                          const url =
+                            Platform.OS === 'ios'
+                              ? `maps://?q=${lat},${lng}`
+                              : `geo:${lat},${lng}?q=${lat},${lng}`;
+                          Linking.openURL(url).catch(() =>
+                            Linking.openURL(`https://maps.google.com/?q=${lat},${lng}`),
+                          );
+                        }}
+                      >
+                        <Navigation
+                          size={13}
+                          color={isMe ? '#FFF' : colors.primaryIndigo}
+                          style={{ marginRight: 5 }}
+                        />
+                        <Text
+                          style={[
+                            styles.locationActionBtnText,
+                            { color: isMe ? '#FFF' : colors.primaryIndigo },
+                          ]}
+                        >
+                          {msg.location.isLive ? 'Track Live Route' : 'Open in Maps'}
+                        </Text>
+                      </TouchableOpacity>
+
+                      {isMe &&
+                        msg.location.isLive &&
+                        !stoppedLiveMsgIds[msg.id] &&
+                        !msg.location.isLiveEnded && (
+                          <TouchableOpacity
+                            style={[
+                              styles.locationActionBtn,
+                              {
+                                borderLeftWidth: 1,
+                                borderLeftColor: isMe
+                                  ? 'rgba(255,255,255,0.15)'
+                                  : colors.cardBorder,
+                              },
+                            ]}
+                            onPress={() => handleStopLiveLocation(msg.id)}
+                          >
+                            <StopCircle size={13} color="#EF4444" style={{ marginRight: 4 }} />
+                            <Text style={[styles.locationActionBtnText, { color: '#EF4444' }]}>
+                              Stop
+                            </Text>
+                          </TouchableOpacity>
+                        )}
+                    </View>
+                  </View>
                 ) : null}
 
                 {/* Message text */}
@@ -1137,30 +1732,10 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
         </View>
 
         <View style={styles.headerActions}>
-          <TouchableOpacity
-            style={styles.actionBtn}
-            onPress={() =>
-              navigation.navigate('Call', {
-                callId: `call_${Date.now()}`,
-                targetUserId: title,
-                isCaller: true,
-                isVideo: false,
-              })
-            }
-          >
+          <TouchableOpacity style={styles.actionBtn} onPress={() => handleTriggerCall('audio')}>
             <Phone size={20} color={colors.primaryIndigo} />
           </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.actionBtn}
-            onPress={() =>
-              navigation.navigate('Call', {
-                callId: `call_${Date.now()}`,
-                targetUserId: title,
-                isCaller: true,
-                isVideo: true,
-              })
-            }
-          >
+          <TouchableOpacity style={styles.actionBtn} onPress={() => handleTriggerCall('video')}>
             <Video size={22} color={colors.primaryIndigo} />
           </TouchableOpacity>
           <TouchableOpacity style={styles.actionBtn} onPress={() => setShowMoreMenuModal(true)}>
@@ -1274,21 +1849,26 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
               </View>
               <Text style={[styles.attachLabel, { color: colors.textSecondary }]}>Photo</Text>
             </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.attachItem}
-              onPress={handleSendLocation}
-              disabled={isSendingLocation}
-            >
-              <View style={[styles.attachIcon, { backgroundColor: 'rgba(16,185,129,0.12)' }]}>
-                {isSendingLocation ? (
-                  <ActivityIndicator size="small" color="#10B981" />
-                ) : (
-                  <MapPin size={22} color="#10B981" />
-                )}
+
+            <TouchableOpacity style={styles.attachItem} onPress={handlePickDocument}>
+              <View style={[styles.attachIcon, { backgroundColor: 'rgba(59,130,246,0.12)' }]}>
+                <FileText size={22} color="#3B82F6" />
               </View>
-              <Text style={[styles.attachLabel, { color: colors.textSecondary }]}>
-                {isSendingLocation ? 'Getting...' : 'Location'}
-              </Text>
+              <Text style={[styles.attachLabel, { color: colors.textSecondary }]}>Document</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.attachItem} onPress={handleOpenContactPicker}>
+              <View style={[styles.attachIcon, { backgroundColor: 'rgba(236,72,153,0.12)' }]}>
+                <ContactIcon size={22} color="#EC4899" />
+              </View>
+              <Text style={[styles.attachLabel, { color: colors.textSecondary }]}>Contact</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.attachItem} onPress={handleOpenLocationPicker}>
+              <View style={[styles.attachIcon, { backgroundColor: 'rgba(16,185,129,0.12)' }]}>
+                <MapPin size={22} color="#10B981" />
+              </View>
+              <Text style={[styles.attachLabel, { color: colors.textSecondary }]}>Location</Text>
             </TouchableOpacity>
           </View>
         )}
@@ -1622,12 +2202,7 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
                 ]}
                 onPress={() => {
                   setShowUserProfileModal(false);
-                  navigation.navigate('Call', {
-                    callId: `call_${Date.now()}`,
-                    targetUserId: title,
-                    isCaller: true,
-                    isVideo: false,
-                  });
+                  handleTriggerCall('audio');
                 }}
               >
                 <Phone size={22} color={colors.primaryIndigo} />
@@ -1640,12 +2215,7 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
                 ]}
                 onPress={() => {
                   setShowUserProfileModal(false);
-                  navigation.navigate('Call', {
-                    callId: `call_${Date.now()}`,
-                    targetUserId: title,
-                    isCaller: true,
-                    isVideo: true,
-                  });
+                  handleTriggerCall('video');
                 }}
               >
                 <Video size={22} color={colors.primaryIndigo} />
@@ -1863,6 +2433,344 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
           </View>
         </View>
       </Modal>
+
+      {/* ── Contact Picker Modal ───────────────────────────────────────── */}
+      <Modal
+        visible={showContactPickerModal}
+        animationType="slide"
+        transparent={false}
+        onRequestClose={() => setShowContactPickerModal(false)}
+      >
+        <SafeAreaView
+          style={[styles.container, { backgroundColor: colors.bg }]}
+          edges={['top', 'bottom', 'left', 'right']}
+        >
+          <StatusBar
+            barStyle={themeMode === 'dark' ? 'light-content' : 'dark-content'}
+            backgroundColor={colors.bg}
+          />
+          <View
+            style={[
+              styles.header,
+              { backgroundColor: colors.surface, borderBottomColor: colors.cardBorder },
+            ]}
+          >
+            <View style={styles.headerLeft}>
+              <TouchableOpacity
+                onPress={() => setShowContactPickerModal(false)}
+                style={styles.backBtn}
+              >
+                <ArrowLeft size={24} color={colors.textPrimary} />
+              </TouchableOpacity>
+              <View>
+                <Text style={[styles.headerTitle, { color: colors.textPrimary }]}>
+                  Select Contact
+                </Text>
+                <Text style={[styles.headerSubtitle, { color: colors.textSecondary }]}>
+                  {availablePhoneContacts.length} contacts found
+                </Text>
+              </View>
+            </View>
+          </View>
+
+          <View
+            style={[
+              styles.contactSearchBox,
+              { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+            ]}
+          >
+            <Search size={18} color={colors.textSecondary} style={{ marginRight: 8 }} />
+            <TextInput
+              style={[styles.contactSearchInput, { color: colors.textPrimary }]}
+              placeholder="Search by name or number..."
+              placeholderTextColor={colors.textSecondary}
+              value={contactSearchQuery}
+              onChangeText={setContactSearchQuery}
+            />
+            {contactSearchQuery ? (
+              <TouchableOpacity onPress={() => setContactSearchQuery('')}>
+                <X size={16} color={colors.textSecondary} />
+              </TouchableOpacity>
+            ) : null}
+          </View>
+
+          {isLoadingContacts ? (
+            <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+              <ActivityIndicator size="large" color={colors.primaryIndigo} />
+              <Text style={{ marginTop: 12, color: colors.textSecondary }}>
+                Loading contacts...
+              </Text>
+            </View>
+          ) : (
+            <FlatList
+              data={availablePhoneContacts.filter(
+                (c) =>
+                  !contactSearchQuery ||
+                  c.name.toLowerCase().includes(contactSearchQuery.toLowerCase()) ||
+                  c.phone.includes(contactSearchQuery),
+              )}
+              keyExtractor={(item) => item.id}
+              renderItem={({ item }) => (
+                <TouchableOpacity
+                  style={[styles.contactListItem, { borderBottomColor: colors.cardBorder }]}
+                  onPress={() => handleSendSelectedContact({ name: item.name, phone: item.phone })}
+                >
+                  <View
+                    style={[styles.contactItemAvatar, { backgroundColor: colors.primaryIndigo }]}
+                  >
+                    <Text style={styles.contactItemAvatarText}>
+                      {item.name[0]?.toUpperCase() || 'C'}
+                    </Text>
+                  </View>
+                  <View style={{ flex: 1, marginLeft: 12 }}>
+                    <Text style={[styles.contactItemName, { color: colors.textPrimary }]}>
+                      {item.name}
+                    </Text>
+                    <Text style={[styles.contactItemPhone, { color: colors.textSecondary }]}>
+                      {item.phone}
+                    </Text>
+                  </View>
+                  <Send size={16} color={colors.primaryIndigo} />
+                </TouchableOpacity>
+              )}
+              ListEmptyComponent={
+                <View style={{ padding: 32, alignItems: 'center' }}>
+                  <Text style={{ color: colors.textSecondary }}>No contacts found</Text>
+                </View>
+              }
+            />
+          )}
+        </SafeAreaView>
+      </Modal>
+
+      {/* ── Location Picker Modal ───────────────────────────────────────── */}
+      <Modal
+        visible={showLocationPickerModal}
+        animationType="slide"
+        transparent={false}
+        onRequestClose={() => setShowLocationPickerModal(false)}
+      >
+        <SafeAreaView
+          style={[styles.container, { backgroundColor: colors.bg }]}
+          edges={['top', 'bottom', 'left', 'right']}
+        >
+          <StatusBar
+            barStyle={themeMode === 'dark' ? 'light-content' : 'dark-content'}
+            backgroundColor={colors.bg}
+          />
+          <View
+            style={[
+              styles.header,
+              { backgroundColor: colors.surface, borderBottomColor: colors.cardBorder },
+            ]}
+          >
+            <View style={styles.headerLeft}>
+              <TouchableOpacity
+                onPress={() => setShowLocationPickerModal(false)}
+                style={styles.backBtn}
+              >
+                <ArrowLeft size={24} color={colors.textPrimary} />
+              </TouchableOpacity>
+              <View>
+                <Text style={[styles.headerTitle, { color: colors.textPrimary }]}>
+                  Share Location
+                </Text>
+                <Text style={[styles.headerSubtitle, { color: colors.textSecondary }]}>
+                  {isLoadingGps ? 'Fetching GPS fix...' : 'Select Location Type'}
+                </Text>
+              </View>
+            </View>
+          </View>
+
+          <ScrollView contentContainerStyle={styles.locationModalScroll}>
+            {/* GPS Status Banner */}
+            <View
+              style={[
+                styles.gpsStatusCard,
+                { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+              ]}
+            >
+              <View
+                style={[
+                  styles.gpsStatusIconCircle,
+                  {
+                    backgroundColor: isLoadingGps
+                      ? 'rgba(245,158,11,0.12)'
+                      : 'rgba(16,185,129,0.12)',
+                  },
+                ]}
+              >
+                {isLoadingGps ? (
+                  <ActivityIndicator size="small" color="#F59E0B" />
+                ) : (
+                  <Compass size={24} color="#10B981" />
+                )}
+              </View>
+              <View style={{ flex: 1, marginLeft: 12 }}>
+                <Text style={[styles.gpsStatusTitle, { color: colors.textPrimary }]}>
+                  {isLoadingGps ? 'Locating device...' : 'GPS Signal Ready'}
+                </Text>
+                <Text
+                  style={[styles.gpsStatusSubtitle, { color: colors.textSecondary }]}
+                  numberOfLines={2}
+                >
+                  {isLoadingGps
+                    ? 'Acquiring satellite coordinates...'
+                    : currentGpsData?.label || 'GPS coordinates detected'}
+                </Text>
+                {currentGpsData?.accuracy ? (
+                  <Text style={[styles.gpsAccuracyText, { color: '#10B981' }]}>
+                    ● Accurate to ~{currentGpsData.accuracy} meters
+                  </Text>
+                ) : null}
+              </View>
+            </View>
+
+            {/* Option 1: Share Current Location */}
+            <TouchableOpacity
+              activeOpacity={0.8}
+              disabled={isLoadingGps}
+              onPress={handleSendCurrentLocation}
+              style={[
+                styles.locationOptionCard,
+                { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+              ]}
+            >
+              <View
+                style={[
+                  styles.locationOptionIconCircle,
+                  { backgroundColor: 'rgba(59,130,246,0.12)' },
+                ]}
+              >
+                <MapPin size={24} color="#3B82F6" />
+              </View>
+              <View style={{ flex: 1, marginLeft: 14 }}>
+                <Text style={[styles.locationOptionTitle, { color: colors.textPrimary }]}>
+                  Send Current Location
+                </Text>
+                <Text style={[styles.locationOptionDesc, { color: colors.textSecondary }]}>
+                  Share your fixed snapshot coordinates
+                </Text>
+              </View>
+              <Send size={18} color="#3B82F6" />
+            </TouchableOpacity>
+
+            {/* Option 2: Share Live Location */}
+            <View
+              style={[
+                styles.liveLocationContainerCard,
+                { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+              ]}
+            >
+              <View style={styles.liveLocationHeaderRow}>
+                <View
+                  style={[
+                    styles.locationOptionIconCircle,
+                    { backgroundColor: 'rgba(16,185,129,0.15)' },
+                  ]}
+                >
+                  <Radio size={24} color="#10B981" />
+                </View>
+                <View style={{ flex: 1, marginLeft: 14 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                    <Text style={[styles.locationOptionTitle, { color: colors.textPrimary }]}>
+                      Share Live Location
+                    </Text>
+                    <View style={styles.livePillBadge}>
+                      <Text style={styles.livePillBadgeText}>LIVE</Text>
+                    </View>
+                  </View>
+                  <Text style={[styles.locationOptionDesc, { color: colors.textSecondary }]}>
+                    Track your route continuously in real time
+                  </Text>
+                </View>
+              </View>
+
+              <Text style={[styles.durationSectionLabel, { color: colors.textSecondary }]}>
+                SHARE LIVE DURATION
+              </Text>
+
+              {/* Duration selector chips */}
+              <View style={styles.durationRow}>
+                {[
+                  { label: '15 Minutes', mins: 15 },
+                  { label: '1 Hour', mins: 60 },
+                  { label: '8 Hours', mins: 480 },
+                ].map((item) => {
+                  const isSelected = selectedLiveDuration === item.mins;
+                  return (
+                    <TouchableOpacity
+                      key={item.mins}
+                      onPress={() => setSelectedLiveDuration(item.mins)}
+                      style={[
+                        styles.durationChip,
+                        {
+                          backgroundColor: isSelected
+                            ? '#10B981'
+                            : themeMode === 'dark'
+                              ? 'rgba(255,255,255,0.06)'
+                              : '#F1F5F9',
+                          borderColor: isSelected ? '#10B981' : colors.cardBorder,
+                        },
+                      ]}
+                    >
+                      <Clock
+                        size={14}
+                        color={isSelected ? '#FFF' : colors.textSecondary}
+                        style={{ marginRight: 5 }}
+                      />
+                      <Text
+                        style={[
+                          styles.durationChipText,
+                          {
+                            color: isSelected ? '#FFF' : colors.textPrimary,
+                            fontWeight: isSelected ? '700' : '500',
+                          },
+                        ]}
+                      >
+                        {item.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+
+              {/* Optional Comment */}
+              <TextInput
+                style={[
+                  styles.liveCommentInput,
+                  {
+                    backgroundColor: themeMode === 'dark' ? 'rgba(255,255,255,0.04)' : '#F8FAFC',
+                    borderColor: colors.cardBorder,
+                    color: colors.textPrimary,
+                  },
+                ]}
+                placeholder="Add a comment... (optional)"
+                placeholderTextColor={colors.textSecondary}
+                value={liveLocationComment}
+                onChangeText={setLiveLocationComment}
+              />
+
+              {/* Share Live Button */}
+              <TouchableOpacity
+                activeOpacity={0.85}
+                disabled={isLoadingGps}
+                onPress={handleSendLiveLocation}
+                style={styles.shareLiveBtn}
+              >
+                <Radio size={18} color="#FFF" style={{ marginRight: 8 }} />
+                <Text style={styles.shareLiveBtnText}>
+                  Start Live Sharing (
+                  {selectedLiveDuration >= 60
+                    ? `${selectedLiveDuration / 60} hr`
+                    : `${selectedLiveDuration} min`}
+                  )
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
     </SafeAreaView>
   );
 };
@@ -1900,6 +2808,7 @@ const styles = StyleSheet.create({
     borderWidth: 2,
   },
   headerTitle: { fontSize: 16, fontWeight: '700' },
+  headerSubtitle: { fontSize: 12, marginTop: 1 },
   headerActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   actionBtn: { padding: 6 },
   bubbleRowContainer: { width: '100%' },
@@ -2327,5 +3236,339 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '700',
     marginLeft: 3,
+  },
+  // Document bubble styles
+  docBubbleWrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 10,
+    borderRadius: 14,
+    marginBottom: 4,
+    maxWidth: 280,
+  },
+  docIconBox: {
+    width: 42,
+    height: 42,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  docNameText: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  docSubText: {
+    fontSize: 12,
+    marginTop: 2,
+  },
+  // Contact bubble styles
+  contactBubbleWrapper: {
+    padding: 10,
+    borderRadius: 14,
+    marginBottom: 4,
+    minWidth: 220,
+    maxWidth: 280,
+  },
+  contactBubbleHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  contactAvatarBox: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  contactNameText: {
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  contactPhoneText: {
+    fontSize: 12,
+    marginTop: 2,
+  },
+  contactMessageBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingTop: 8,
+    borderTopWidth: 1,
+  },
+  contactMessageBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  // Contact picker modal styles
+  contactSearchBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: 16,
+    marginVertical: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  contactSearchInput: {
+    flex: 1,
+    fontSize: 14,
+    paddingVertical: 2,
+  },
+  contactListItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 0.5,
+  },
+  contactItemAvatar: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  contactItemAvatarText: {
+    color: '#FFF',
+    fontSize: 17,
+    fontWeight: '800',
+  },
+  contactItemName: {
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  contactItemPhone: {
+    fontSize: 13,
+    marginTop: 2,
+  },
+  // Stylish Location Card styles
+  stylishLocationCard: {
+    borderRadius: 16,
+    borderWidth: 1,
+    overflow: 'hidden',
+    marginBottom: 4,
+    minWidth: 240,
+    maxWidth: 290,
+  },
+  locationMapBanner: {
+    height: 110,
+    width: '100%',
+    position: 'relative',
+    justifyContent: 'center',
+    alignItems: 'center',
+    overflow: 'hidden',
+  },
+  mapGridPattern: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  mapRadarRing: {
+    position: 'absolute',
+    borderRadius: 100,
+    borderWidth: 1.5,
+  },
+  mapPinCenterCircle: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.3,
+    shadowRadius: 5,
+    elevation: 4,
+  },
+  locationTypeBadge: {
+    position: 'absolute',
+    top: 8,
+    left: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  livePulseDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: '#FFF',
+    marginRight: 5,
+  },
+  locationTypeBadgeText: {
+    color: '#FFF',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  locationCardBody: {
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  locationCardTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    lineHeight: 19,
+  },
+  liveTimerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 4,
+  },
+  liveTimerText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  locationAccuracyText: {
+    fontSize: 12,
+    marginTop: 3,
+  },
+  locationActionBar: {
+    flexDirection: 'row',
+    borderTopWidth: 1,
+  },
+  locationActionBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 9,
+  },
+  locationActionBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  // Location Picker Modal styles
+  locationModalScroll: {
+    padding: 16,
+    paddingBottom: 36,
+  },
+  gpsStatusCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 14,
+    borderRadius: 16,
+    borderWidth: 1,
+    marginBottom: 16,
+  },
+  gpsStatusIconCircle: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  gpsStatusTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  gpsStatusSubtitle: {
+    fontSize: 13,
+    marginTop: 2,
+    lineHeight: 18,
+  },
+  gpsAccuracyText: {
+    fontSize: 12,
+    fontWeight: '600',
+    marginTop: 3,
+  },
+  locationOptionCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 16,
+    borderRadius: 18,
+    borderWidth: 1,
+    marginBottom: 16,
+  },
+  locationOptionIconCircle: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  locationOptionTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  locationOptionDesc: {
+    fontSize: 13,
+    marginTop: 2,
+    lineHeight: 18,
+  },
+  liveLocationContainerCard: {
+    borderRadius: 18,
+    borderWidth: 1,
+    padding: 16,
+  },
+  liveLocationHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  livePillBadge: {
+    backgroundColor: '#10B981',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+    marginLeft: 8,
+  },
+  livePillBadgeText: {
+    color: '#FFF',
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  durationSectionLabel: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+    marginBottom: 10,
+  },
+  durationRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 14,
+  },
+  durationChip: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  durationChipText: {
+    fontSize: 13,
+  },
+  liveCommentInput: {
+    borderRadius: 14,
+    borderWidth: 1,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    fontSize: 14,
+    marginBottom: 16,
+  },
+  shareLiveBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#10B981',
+    paddingVertical: 14,
+    borderRadius: 14,
+    shadowColor: '#10B981',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.35,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  shareLiveBtnText: {
+    color: '#FFF',
+    fontSize: 15,
+    fontWeight: '700',
   },
 });

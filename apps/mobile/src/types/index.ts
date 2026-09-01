@@ -31,7 +31,18 @@ export interface ChatMessage {
   isFile?: boolean;
   fileSize?: string;
   imagePath?: string;
-  location?: { lat: number; lng: number; label?: string };
+  location?: {
+    lat: number;
+    lng: number;
+    label?: string;
+    isLive?: boolean;
+    liveDurationMinutes?: number;
+    expiresAt?: string;
+    isLiveEnded?: boolean;
+    accuracy?: number;
+  };
+  document?: { uri: string; name: string; size?: number | string; mimeType?: string };
+  contact?: { name: string; phone: string; username?: string };
   isStarred?: boolean;
   uploadProgress?: number;
   isUploading?: boolean;

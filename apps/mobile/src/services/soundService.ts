@@ -119,6 +119,112 @@ const SENT_BASE64 = generateWavBase64(SAMPLE_RATE, [
   { freq: 750.0, duration: 0.05, volume: 0.5 },
 ]);
 
+// Telephone Ringback Tone (440Hz + 480Hz dial tone: 1.2s tone + 1.8s silence)
+function generateRingbackWav(sampleRate = 22050): string {
+  const totalDuration = 3.0;
+  const numSamples = Math.floor(sampleRate * totalDuration);
+  const buffer = new Uint8Array(44 + numSamples);
+
+  buffer[0] = 0x52;
+  buffer[1] = 0x49;
+  buffer[2] = 0x46;
+  buffer[3] = 0x46;
+  const fileSize = 36 + numSamples;
+  buffer[4] = fileSize & 0xff;
+  buffer[5] = (fileSize >> 8) & 0xff;
+  buffer[6] = (fileSize >> 16) & 0xff;
+  buffer[7] = (fileSize >> 24) & 0xff;
+  buffer[8] = 0x57;
+  buffer[9] = 0x41;
+  buffer[10] = 0x56;
+  buffer[11] = 0x45;
+  buffer[12] = 0x66;
+  buffer[13] = 0x6d;
+  buffer[14] = 0x74;
+  buffer[15] = 0x20;
+  buffer[16] = 16;
+  buffer[17] = 0;
+  buffer[18] = 0;
+  buffer[19] = 0;
+  buffer[20] = 1;
+  buffer[21] = 0;
+  buffer[22] = 1;
+  buffer[23] = 0;
+  buffer[24] = sampleRate & 0xff;
+  buffer[25] = (sampleRate >> 8) & 0xff;
+  buffer[26] = (sampleRate >> 16) & 0xff;
+  buffer[27] = (sampleRate >> 24) & 0xff;
+  buffer[28] = sampleRate & 0xff;
+  buffer[29] = (sampleRate >> 8) & 0xff;
+  buffer[30] = (sampleRate >> 16) & 0xff;
+  buffer[31] = (sampleRate >> 24) & 0xff;
+  buffer[32] = 1;
+  buffer[33] = 0;
+  buffer[34] = 8;
+  buffer[35] = 0;
+  buffer[36] = 0x64;
+  buffer[37] = 0x61;
+  buffer[38] = 0x74;
+  buffer[39] = 0x61;
+  buffer[40] = numSamples & 0xff;
+  buffer[41] = (numSamples >> 8) & 0xff;
+  buffer[42] = (numSamples >> 16) & 0xff;
+  buffer[43] = (numSamples >> 24) & 0xff;
+
+  const toneDuration = 1.2;
+  const toneSamples = Math.floor(sampleRate * toneDuration);
+  for (let i = 0; i < numSamples; i++) {
+    if (i < toneSamples) {
+      const t = i / sampleRate;
+      const wave = 0.5 * Math.sin(2 * Math.PI * 440 * t) + 0.5 * Math.sin(2 * Math.PI * 480 * t);
+      let env = 1.0;
+      if (i < 400) env = i / 400;
+      else if (toneSamples - i < 400) env = (toneSamples - i) / 400;
+      buffer[44 + i] = Math.floor(128 + wave * env * 115);
+    } else {
+      buffer[44 + i] = 128;
+    }
+  }
+
+  let binary = '';
+  for (let i = 0; i < buffer.byteLength; i++) {
+    binary += String.fromCharCode(buffer[i]);
+  }
+  return typeof btoa === 'function'
+    ? btoa(binary)
+    : Buffer.from(binary, 'binary').toString('base64');
+}
+
+const RINGBACK_BASE64 = generateRingbackWav(SAMPLE_RATE);
+
+// WhatsApp-style Incoming Ringing Melody
+const INCOMING_RINGTONE_BASE64 = generateWavBase64(SAMPLE_RATE, [
+  { freq: 659.25, duration: 0.12, volume: 0.9 },
+  { freq: 783.99, duration: 0.12, volume: 0.9 },
+  { freq: 987.77, duration: 0.14, volume: 0.95 },
+  { freq: 1318.51, duration: 0.35, volume: 1.0 },
+  { freq: 0, duration: 0.1, volume: 0 },
+  { freq: 987.77, duration: 0.12, volume: 0.9 },
+  { freq: 1318.51, duration: 0.45, volume: 1.0 },
+  { freq: 0, duration: 0.8, volume: 0 },
+]);
+
+// Call Connected Chime
+const CONNECTED_CHIME_BASE64 = generateWavBase64(SAMPLE_RATE, [
+  { freq: 523.25, duration: 0.08, volume: 0.8 },
+  { freq: 659.25, duration: 0.08, volume: 0.85 },
+  { freq: 1046.5, duration: 0.22, volume: 0.95 },
+]);
+
+// Call Ended / Busy 3-Beep Tone
+const CALL_ENDED_BASE64 = generateWavBase64(SAMPLE_RATE, [
+  { freq: 480.0, duration: 0.12, volume: 0.9 },
+  { freq: 0, duration: 0.08, volume: 0 },
+  { freq: 480.0, duration: 0.12, volume: 0.9 },
+  { freq: 0, duration: 0.08, volume: 0 },
+  { freq: 480.0, duration: 0.25, volume: 0.9 },
+]);
+
 class SoundService {
   private audioCtx: any = null;
   private isAudioModeConfigured = false;
@@ -127,6 +233,13 @@ class SoundService {
   private popFileUri = '';
   private chimeFileUri = '';
   private sentFileUri = '';
+  private ringbackFileUri = '';
+  private incomingRingtoneFileUri = '';
+  private connectedChimeFileUri = '';
+  private callEndedFileUri = '';
+  private activeLoopingSound: any = null;
+  private activeSounds: Set<any> = new Set();
+  private currentSoundGeneration = 0;
 
   constructor() {
     if (Platform.OS === 'web' && typeof window !== 'undefined') {
@@ -157,15 +270,23 @@ class SoundService {
       }
 
       if (!this.localFilesInitialized && FileSystem.cacheDirectory) {
-        this.popFileUri = `${FileSystem.cacheDirectory}wa_in_chat_pop_v3.wav`;
-        this.chimeFileUri = `${FileSystem.cacheDirectory}wa_alert_chime_v3.wav`;
-        this.sentFileUri = `${FileSystem.cacheDirectory}wa_msg_sent_v3.wav`;
+        this.popFileUri = `${FileSystem.cacheDirectory}wa_in_chat_pop_v4.wav`;
+        this.chimeFileUri = `${FileSystem.cacheDirectory}wa_alert_chime_v4.wav`;
+        this.sentFileUri = `${FileSystem.cacheDirectory}wa_msg_sent_v4.wav`;
+        this.ringbackFileUri = `${FileSystem.cacheDirectory}wa_ringback_tone_v4.wav`;
+        this.incomingRingtoneFileUri = `${FileSystem.cacheDirectory}wa_incoming_ringtone_v4.wav`;
+        this.connectedChimeFileUri = `${FileSystem.cacheDirectory}wa_connected_chime_v4.wav`;
+        this.callEndedFileUri = `${FileSystem.cacheDirectory}wa_call_ended_v4.wav`;
 
         // Write files to local disk so Android MediaPlayer and iOS AVAudioPlayer can load real file:// URIs
         await Promise.all([
           this._writeBase64File(this.popFileUri, POP_BASE64),
           this._writeBase64File(this.chimeFileUri, CHIME_BASE64),
           this._writeBase64File(this.sentFileUri, SENT_BASE64),
+          this._writeBase64File(this.ringbackFileUri, RINGBACK_BASE64),
+          this._writeBase64File(this.incomingRingtoneFileUri, INCOMING_RINGTONE_BASE64),
+          this._writeBase64File(this.connectedChimeFileUri, CONNECTED_CHIME_BASE64),
+          this._writeBase64File(this.callEndedFileUri, CALL_ENDED_BASE64),
         ]);
         this.localFilesInitialized = true;
       }
@@ -308,6 +429,100 @@ class SoundService {
       }
 
       await this._playNativeFile(this.sentFileUri, 0.6);
+    } catch (_) {}
+  }
+
+  /**
+   * 4. Outgoing Call Ringback Tone (Looped dial tone: tring... tring...)
+   */
+  public async startOutgoingRingbackTone() {
+    const gen = ++this.currentSoundGeneration;
+    try {
+      await this.stopCallSounds();
+      await this._initNativeAudio();
+      if (this.currentSoundGeneration !== gen || !Audio || !this.ringbackFileUri) return;
+
+      const { sound } = await Audio.Sound.createAsync(
+        { uri: this.ringbackFileUri },
+        { shouldPlay: true, isLooping: true, volume: 0.9 },
+      );
+      if (this.currentSoundGeneration !== gen) {
+        sound.stopAsync().catch(() => {});
+        sound.unloadAsync().catch(() => {});
+        return;
+      }
+      this.activeLoopingSound = sound;
+      this.activeSounds.add(sound);
+    } catch (e) {
+      console.warn('Could not start ringback tone:', e);
+    }
+  }
+
+  /**
+   * 5. Incoming Ringtone (Looped melody chime when call is incoming)
+   */
+  public async startIncomingRingtone() {
+    const gen = ++this.currentSoundGeneration;
+    try {
+      await this.stopCallSounds();
+      await this._initNativeAudio();
+      if (this.currentSoundGeneration !== gen || !Audio || !this.incomingRingtoneFileUri) return;
+
+      const { sound } = await Audio.Sound.createAsync(
+        { uri: this.incomingRingtoneFileUri },
+        { shouldPlay: true, isLooping: true, volume: 1.0 },
+      );
+      if (this.currentSoundGeneration !== gen) {
+        sound.stopAsync().catch(() => {});
+        sound.unloadAsync().catch(() => {});
+        return;
+      }
+      this.activeLoopingSound = sound;
+      this.activeSounds.add(sound);
+    } catch (e) {
+      console.warn('Could not start incoming ringtone:', e);
+    }
+  }
+
+  /**
+   * Stop any active looping call sound (dial tone or ringtone)
+   */
+  public async stopCallSounds() {
+    this.currentSoundGeneration++;
+    for (const snd of this.activeSounds) {
+      try {
+        snd.stopAsync().catch(() => {});
+        snd.unloadAsync().catch(() => {});
+      } catch (_) {}
+    }
+    this.activeSounds.clear();
+
+    if (this.activeLoopingSound) {
+      try {
+        await this.activeLoopingSound.stopAsync();
+        await this.activeLoopingSound.unloadAsync();
+      } catch (_) {}
+      this.activeLoopingSound = null;
+    }
+  }
+
+  /**
+   * 6. Call Connected Sound (Positive upward chime)
+   */
+  public async playCallConnectedSound() {
+    try {
+      await this.stopCallSounds();
+      await this._playNativeFile(this.connectedChimeFileUri, 0.85);
+    } catch (_) {}
+  }
+
+  /**
+   * 7. Call Ended / Busy Tone (3 short disconnect beeps)
+   */
+  public async playCallEndedSound() {
+    try {
+      await this.stopCallSounds();
+      await this._playNativeFile(this.callEndedFileUri, 0.85);
     } catch (_) {}
   }
 }

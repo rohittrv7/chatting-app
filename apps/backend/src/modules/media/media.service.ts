@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, BadRequestException, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   S3Client,
@@ -15,8 +15,8 @@ import {
 } from '@chat/shared-contracts';
 import * as path from 'path';
 import * as fs from 'fs';
-
 import * as crypto from 'crypto';
+import { OtelService } from '../observability/otel.service';
 
 @Injectable()
 export class MediaService implements OnModuleInit {
@@ -32,7 +32,10 @@ export class MediaService implements OnModuleInit {
   private b2BucketId: string | null = null;
   private b2AccountId: string | null = null;
 
-  constructor(private readonly configService: ConfigService) {}
+  constructor(
+    private readonly configService: ConfigService,
+    @Optional() private readonly otelService?: OtelService,
+  ) {}
 
   async onModuleInit() {
     this.bucketName = this.configService.get<string>('B2_BUCKET_NAME', 'chatting-indian-app');
@@ -313,6 +316,7 @@ export class MediaService implements OnModuleInit {
    * Direct base64/buffer upload for fast local and cloud media sharing
    */
   async uploadDirectFile(dto: { base64Data: string; fileName?: string; mimeType?: string }) {
+    const start = Date.now();
     if (!dto.base64Data) {
       throw new BadRequestException('base64Data is required');
     }
@@ -329,6 +333,14 @@ export class MediaService implements OnModuleInit {
     // Sync directly to Backblaze B2 Cloud Object Storage
     const b2Key = `media/${filename}`;
     const b2Url = await this.uploadBuffer(buffer, b2Key, dto.mimeType || 'image/jpeg');
+
+    const duration = Date.now() - start;
+    this.otelService?.recordFileStorage(
+      b2Url ? 'backblaze_b2' : 'local_fs',
+      filename,
+      buffer.length,
+      duration,
+    );
 
     const relativeUrl = `/uploads/images/${filename}`;
     return {

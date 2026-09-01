@@ -1,13 +1,33 @@
-import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
+import { Injectable, OnModuleInit, OnModuleDestroy, Logger, Optional } from '@nestjs/common';
 import { INestApplication } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
+import { OtelService } from '../modules/observability/otel.service';
 
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(PrismaService.name);
   private static hasLoggedSuccess = false;
 
+  constructor(@Optional() private readonly otelService?: OtelService) {
+    super();
+  }
+
   async onModuleInit(): Promise<void> {
+    // OpenTelemetry Prisma query timing & error telemetry middleware
+    this.$use(async (params, next) => {
+      const start = Date.now();
+      try {
+        const result = await next(params);
+        const duration = Date.now() - start;
+        this.otelService?.recordDbQuery(params.model || 'Query', params.action, duration);
+        return result;
+      } catch (err: any) {
+        const duration = Date.now() - start;
+        this.otelService?.recordDbQuery(params.model || 'Query', params.action, duration, err);
+        throw err;
+      }
+    });
+
     try {
       await this.$connect();
       if (!PrismaService.hasLoggedSuccess) {

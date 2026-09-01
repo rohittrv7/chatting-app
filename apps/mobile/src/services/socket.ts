@@ -31,6 +31,20 @@ export const EVT_CHAT_CLOSE = 'chat:close';
 export const EVT_MESSAGE_DELETED = 'message:deleted';
 export const EVT_MISSED_MESSAGES = 'messages:missed';
 
+// WebRTC Calling Events
+export const EVT_CALL_INITIATE = 'call:initiate';
+export const EVT_CALL_INCOMING = 'call:incoming';
+export const EVT_CALL_ACCEPT = 'call:accept';
+export const EVT_CALL_ACCEPTED = 'call:accepted';
+export const EVT_CALL_REJECT = 'call:reject';
+export const EVT_CALL_END = 'call:end';
+export const EVT_CALL_ENDED = 'call:ended';
+export const EVT_CALL_BUSY = 'call:busy';
+export const EVT_WEBRTC_OFFER = 'webrtc:offer';
+export const EVT_WEBRTC_ANSWER = 'webrtc:answer';
+export const EVT_WEBRTC_ICE_CANDIDATE = 'webrtc:ice-candidate';
+export const EVT_CALL_SWITCH_VIDEO = 'call:switch-to-video';
+
 // ─── Payload types ────────────────────────────────────────────────────────────
 
 export interface IncomingMessage {
@@ -45,7 +59,18 @@ export interface IncomingMessage {
   senderPhone?: string;
   text: string;
   imagePath?: string;
-  location?: { lat: number; lng: number; label?: string };
+  location?: {
+    lat: number;
+    lng: number;
+    label?: string;
+    isLive?: boolean;
+    liveDurationMinutes?: number;
+    expiresAt?: string;
+    isLiveEnded?: boolean;
+    accuracy?: number;
+  };
+  document?: { uri: string; name: string; size?: number | string; mimeType?: string };
+  contact?: { name: string; phone: string; username?: string };
   type: string;
   status: string;
   createdAt: string;
@@ -108,6 +133,7 @@ class RealtimeSocketService {
   private callbacks: SocketCallbacks = {};
   private currentUserId = '';
   private currentToken = '';
+  private eventListeners: Map<string, Set<(...args: any[]) => void>> = new Map();
 
   constructor() {
     // Reconnect when server URL toggles (Local ↔ Live in dev)
@@ -182,7 +208,18 @@ class RealtimeSocketService {
     receiverId: string;
     text?: string;
     imagePath?: string;
-    location?: { lat: number; lng: number; label?: string };
+    location?: {
+      lat: number;
+      lng: number;
+      label?: string;
+      isLive?: boolean;
+      liveDurationMinutes?: number;
+      expiresAt?: string;
+      isLiveEnded?: boolean;
+      accuracy?: number;
+    };
+    document?: { uri: string; name: string; size?: number | string; mimeType?: string };
+    contact?: { name: string; phone: string; username?: string };
     type?: string;
   }): void {
     if (!this.socket?.connected) return;
@@ -230,6 +267,35 @@ class RealtimeSocketService {
     this.socket.emit('message:reaction', { conversationId, messageId, emoji, receiverId });
   }
 
+  /** Generic emit */
+  emit(event: string, data: any): void {
+    if (!this.socket?.connected) return;
+    this.socket.emit(event, data);
+  }
+
+  /** Generic on */
+  on(event: string, handler: (...args: any[]) => void): void {
+    if (!this.eventListeners.has(event)) {
+      this.eventListeners.set(event, new Set());
+    }
+    this.eventListeners.get(event)!.add(handler);
+    if (this.socket) {
+      this.socket.off(event, handler);
+      this.socket.on(event, handler);
+    }
+  }
+
+  /** Generic off */
+  off(event: string, handler?: (...args: any[]) => void): void {
+    if (handler) {
+      this.eventListeners.get(event)?.delete(handler);
+      this.socket?.off(event, handler);
+    } else {
+      this.eventListeners.delete(event);
+      this.socket?.off(event);
+    }
+  }
+
   // ─── Private ───────────────────────────────────────────────────────────────
 
   private async _setup(): Promise<void> {
@@ -262,6 +328,14 @@ class RealtimeSocketService {
 
   private _registerListeners(): void {
     if (!this.socket) return;
+
+    // Attach all registered dynamic listeners (e.g. call:incoming, call:status, etc.)
+    for (const [event, handlers] of this.eventListeners.entries()) {
+      for (const handler of handlers) {
+        this.socket.off(event, handler);
+        this.socket.on(event, handler);
+      }
+    }
 
     this.socket.on('connect', () => {
       this.callbacks.onConnect?.();

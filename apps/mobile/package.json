@@ -20,6 +20,7 @@
     "expo-av": "^16.0.8",
     "expo-camera": "~17.0.10",
     "expo-contacts": "~15.0.11",
+    "expo-document-picker": "~14.0.5",
     "expo-file-system": "~19.0.24",
     "expo-haptics": "~15.0.8",
     "expo-image-picker": "~17.0.11",

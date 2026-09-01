@@ -1,5 +1,6 @@
-import { Injectable, Inject, Logger } from '@nestjs/common';
+import { Injectable, Inject, Logger, Optional } from '@nestjs/common';
 import Redis from 'ioredis';
+import { OtelService } from '../observability/otel.service';
 
 const MESSAGE_CACHE_LIMIT = 50;
 const CACHE_TTL_SECONDS = 86400; // 24 hours
@@ -12,7 +13,10 @@ export class MessageRedisService {
   private readonly lastSeenMemory = new Map<string, string>();
   private readonly logger = new Logger(MessageRedisService.name);
 
-  constructor(@Inject('REDIS_CLIENT') private readonly redis: Redis) {}
+  constructor(
+    @Inject('REDIS_CLIENT') private readonly redis: Redis,
+    @Optional() private readonly otelService?: OtelService,
+  ) {}
 
   /**
    * Returns dedicated pub/sub Redis clients for the Socket.IO Redis adapter.
@@ -50,6 +54,7 @@ export class MessageRedisService {
   // ─── Message Cache ────────────────────────────────────────────────────────
 
   async cacheMessage(conversationId: string, message: any): Promise<void> {
+    const start = Date.now();
     try {
       if (this.redis.status === 'ready' || this.redis.status === 'connect') {
         const k = this.convKey(conversationId);
@@ -59,9 +64,17 @@ export class MessageRedisService {
           .ltrim(k, 0, MESSAGE_CACHE_LIMIT - 1)
           .expire(k, CACHE_TTL_SECONDS)
           .exec();
+        this.otelService?.recordRedisOp('LPUSH_LTRIM', k, Date.now() - start);
         return;
       }
-    } catch {}
+    } catch (e: any) {
+      this.otelService?.recordRedisOp(
+        'LPUSH_LTRIM',
+        this.convKey(conversationId),
+        Date.now() - start,
+        e,
+      );
+    }
 
     const current = this.memoryStore.get(conversationId) || [];
     current.unshift(message);
@@ -70,13 +83,22 @@ export class MessageRedisService {
   }
 
   async getCachedMessages(conversationId: string, limit = 50): Promise<any[] | null> {
+    const start = Date.now();
     try {
       if (this.redis.status === 'ready' || this.redis.status === 'connect') {
         const k = this.convKey(conversationId);
         const rows = await this.redis.lrange(k, 0, limit - 1);
+        this.otelService?.recordRedisOp('LRANGE', k, Date.now() - start);
         if (rows && rows.length > 0) return rows.map((r) => JSON.parse(r));
       }
-    } catch {}
+    } catch (e: any) {
+      this.otelService?.recordRedisOp(
+        'LRANGE',
+        this.convKey(conversationId),
+        Date.now() - start,
+        e,
+      );
+    }
 
     const mem = this.memoryStore.get(conversationId);
     return mem && mem.length > 0 ? mem.slice(0, limit) : null;

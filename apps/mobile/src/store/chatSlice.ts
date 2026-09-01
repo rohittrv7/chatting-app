@@ -54,11 +54,14 @@ export const chatSlice = createSlice({
       );
 
       if (existingIdx >= 0) {
-        state.conversations[existingIdx] = {
+        const updated = {
           ...state.conversations[existingIdx],
           ...newConv,
           id: state.conversations[existingIdx].id || newConv.id,
         };
+        // Move to the top of the chat list
+        state.conversations.splice(existingIdx, 1);
+        state.conversations.unshift(updated);
       } else {
         state.conversations.unshift(newConv);
       }
@@ -98,15 +101,20 @@ export const chatSlice = createSlice({
         state.messagesMap[conversationId] = msgs.slice(-100);
       }
 
-      // Update lastMessage in conversation list
-      const conv = state.conversations.find((c) => c.id === conversationId);
-      if (conv) {
+      // Update lastMessage in conversation list and MOVE TO THE TOP OF THE LIST
+      const convIdx = state.conversations.findIndex((c) => c.id === conversationId);
+      if (convIdx >= 0) {
+        const conv = { ...state.conversations[convIdx] };
         conv.lastMessage =
           message.text ||
           (message.imagePath ? '📷 Photo' : message.location ? '📍 Location' : 'Message');
         conv.time = message.time;
         conv.lastMessageStatus = message.status;
         conv.lastMessageIsMe = message.isMe;
+
+        // Move to index 0 (top of the chat list)
+        state.conversations.splice(convIdx, 1);
+        state.conversations.unshift(conv);
       }
 
       safeStorage.setItem(CHAT_STORAGE_KEYS.MESSAGES, JSON.stringify(state.messagesMap));

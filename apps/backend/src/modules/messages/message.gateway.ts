@@ -9,13 +9,14 @@ import {
   MessageBody,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
-import { Logger } from '@nestjs/common';
+import { Logger, Optional } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { createAdapter } from '@socket.io/redis-adapter';
 import { MessageRepository } from './message.repository';
 import { MessageRedisService } from './message-redis.service';
 import { PrismaService } from '../../database/prisma.service';
 import { ConversationService } from '../conversations/conversation.service';
+import { OtelService } from '../observability/otel.service';
 
 // ─── Event name constants (single source of truth) ───────────────────────────
 // Client → Server
@@ -25,6 +26,20 @@ export const EVT_TYPING = 'typing';
 export const EVT_PRESENCE_QUERY = 'presence:query';
 export const EVT_CHAT_OPEN = 'chat:open';
 export const EVT_CHAT_CLOSE = 'chat:close';
+
+// WebRTC Signaling Events
+export const EVT_CALL_INITIATE = 'call:initiate';
+export const EVT_CALL_INCOMING = 'call:incoming';
+export const EVT_CALL_ACCEPT = 'call:accept';
+export const EVT_CALL_ACCEPTED = 'call:accepted';
+export const EVT_CALL_REJECT = 'call:reject';
+export const EVT_CALL_END = 'call:end';
+export const EVT_CALL_ENDED = 'call:ended';
+export const EVT_CALL_BUSY = 'call:busy';
+export const EVT_WEBRTC_OFFER = 'webrtc:offer';
+export const EVT_WEBRTC_ANSWER = 'webrtc:answer';
+export const EVT_WEBRTC_ICE_CANDIDATE = 'webrtc:ice-candidate';
+export const EVT_CALL_SWITCH_VIDEO = 'call:switch-to-video';
 
 // Server → Client
 export const EVT_MESSAGE_NEW = 'message:new'; // receiver gets new message
@@ -67,6 +82,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     private readonly redis: MessageRedisService,
     private readonly prisma: PrismaService,
     private readonly conversationService: ConversationService,
+    @Optional() private readonly otelService?: OtelService,
   ) {}
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -176,6 +192,8 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       text?: string;
       imagePath?: string;
       location?: { lat: number; lng: number; label?: string };
+      document?: { uri: string; name: string; size?: number | string; mimeType?: string };
+      contact?: { name: string; phone: string; username?: string };
       type?: string;
     },
   ) {
@@ -191,8 +209,8 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       return;
     }
 
-    const { clientMessageId, text, imagePath, location } = payload;
-    const msgType = imagePath ? 'IMAGE' : location ? 'LOCATION' : 'TEXT';
+    const { clientMessageId, text, imagePath, location, document, contact } = payload;
+    const msgType = imagePath ? 'IMAGE' : location ? 'LOCATION' : document ? 'DOCUMENT' : 'TEXT';
 
     // ── Resolve receiverId: must be a DB UUID ─────────────────────────────
     const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -252,7 +270,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
         conversationId,
         receiverId,
         type: msgType as any,
-        ciphertexts: { text: text ?? '', imagePath, location } as any,
+        ciphertexts: { text: text ?? '', imagePath, location, document, contact } as any,
       });
     } catch (err: any) {
       // Idempotency: if clientMessageId already exists for this sender, fetch existing row
@@ -306,6 +324,8 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       text: text ?? '',
       imagePath,
       location,
+      document,
+      contact,
       type: msgType,
       status: 'SERVER_RECEIVED',
       createdAt,
@@ -317,6 +337,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       ...messagePayload,
       status: 'DELIVERED',
     });
+    this.otelService?.recordSocketEvent(EVT_MESSAGE_NEW, receiverId);
 
     // ── STEP 4: Ack back to sender (single grey tick → confirmed in DB) ───
     client.emit(EVT_MESSAGE_ACK, {
@@ -326,6 +347,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       status: 'SERVER_RECEIVED',
       createdAt,
     });
+    this.otelService?.recordSocketEvent(EVT_MESSAGE_ACK, senderId);
 
     // ── STEP 5: Update delivery status based on receiver online state ─────
     // Fire-and-forget — status updates never block the critical send path
@@ -492,10 +514,31 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
     const lastSeenMap = await this.redis.getLastSeenBatch(payload.userIds);
     const presences: Record<string, { isOnline: boolean; lastSeen: string | null }> = {};
+    const offlineMissingIds: string[] = [];
 
     for (const uid of payload.userIds) {
       const isOnline = this._isOnline(uid);
-      presences[uid] = { isOnline, lastSeen: isOnline ? null : (lastSeenMap[uid] ?? null) };
+      const redisLastSeen = isOnline ? null : (lastSeenMap[uid] ?? null);
+      presences[uid] = { isOnline, lastSeen: redisLastSeen };
+      if (!isOnline && !redisLastSeen) {
+        offlineMissingIds.push(uid);
+      }
+    }
+
+    // DB Fallback for users whose Redis presence expired / not yet cached
+    if (offlineMissingIds.length > 0) {
+      try {
+        const devices = await this.prisma.device.findMany({
+          where: { userId: { in: offlineMissingIds } },
+          select: { userId: true, lastActiveAt: true },
+          orderBy: { lastActiveAt: 'desc' },
+        });
+        for (const dev of devices) {
+          if (presences[dev.userId] && !presences[dev.userId].lastSeen && dev.lastActiveAt) {
+            presences[dev.userId].lastSeen = dev.lastActiveAt.toISOString();
+          }
+        }
+      } catch {}
     }
 
     client.emit(EVT_PRESENCE_RESULT, { presences });
@@ -634,6 +677,371 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       this.logger.log(`📬 Delivered ${missed.length} missed messages to uid=${userId}`);
     } catch (err) {
       this.logger.warn(`Failed to deliver missed messages: ${err}`);
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // WebRTC Audio / Video Calling Signaling Handlers
+  // ─────────────────────────────────────────────────────────────────────────
+
+  private async _resolveUserId(
+    input?: string,
+    conversationId?: string,
+    senderId?: string,
+  ): Promise<string | null> {
+    if (!input) return null;
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (UUID_RE.test(input)) {
+      return input;
+    }
+
+    // 1. Try finding other member in conversation
+    if (conversationId) {
+      try {
+        const members = await this.prisma.conversationMember.findMany({
+          where: { conversationId },
+          select: { userId: true },
+        });
+        const other = members.find((m) => m.userId !== senderId);
+        if (other?.userId) return other.userId;
+      } catch (_) {}
+    }
+
+    // 2. Try looking up User by username, displayName, or phoneNumber
+    try {
+      const cleanHandle = input.replace(/^@/, '').trim();
+      const phoneDigits = input.replace(/\D/g, '').slice(-10);
+      const user = await this.prisma.user.findFirst({
+        where: {
+          OR: [
+            { id: input },
+            { username: { equals: cleanHandle, mode: 'insensitive' } },
+            { displayName: { equals: cleanHandle, mode: 'insensitive' } },
+            ...(phoneDigits ? [{ phoneNumber: { contains: phoneDigits } }] : []),
+          ],
+        },
+        select: { id: true },
+      });
+      if (user?.id) return user.id;
+    } catch (_) {}
+
+    return input;
+  }
+
+  @SubscribeMessage(EVT_CALL_INITIATE)
+  async handleCallInitiate(
+    @ConnectedSocket() client: Socket,
+    @MessageBody()
+    payload: {
+      callId: string;
+      receiverId: string;
+      callType: 'audio' | 'video';
+      callerName?: string;
+      callerAvatar?: string;
+      conversationId?: string;
+    },
+  ) {
+    const senderId = (client as any)._userId || client.data?.userId;
+    if (!senderId || !payload.receiverId) return;
+
+    const targetUserId =
+      (await this._resolveUserId(payload.receiverId, payload.conversationId, senderId)) ||
+      payload.receiverId;
+    const isReceiverOnline = this._isOnline(targetUserId) || this._isOnline(payload.receiverId);
+
+    this.logger.log(
+      `📞 [Call Initiate] from=${senderId} to=${targetUserId} (raw=${payload.receiverId}) type=${payload.callType} receiverOnline=${isReceiverOnline}`,
+    );
+    this.otelService?.recordSocketEvent(EVT_CALL_INITIATE, targetUserId);
+
+    // Immediately inform caller about status: 'RINGING' if receiver is online, 'CALLING' if offline
+    client.emit('call:status', {
+      callId: payload.callId,
+      status: isReceiverOnline ? 'RINGING' : 'CALLING',
+      isOnline: isReceiverOnline,
+    });
+
+    const callData = {
+      callId: payload.callId,
+      callerId: senderId,
+      callerName: payload.callerName || 'Contact',
+      callerAvatar: payload.callerAvatar,
+      callType: payload.callType || 'audio',
+      conversationId: payload.conversationId,
+    };
+
+    // Broadcast incoming call to receiver's personal room
+    this.server.to(`user:${targetUserId}`).emit(EVT_CALL_INCOMING, callData);
+    if (payload.receiverId !== targetUserId) {
+      this.server.to(`user:${payload.receiverId}`).emit(EVT_CALL_INCOMING, callData);
+    }
+  }
+
+  @SubscribeMessage('call:ringing')
+  async handleCallRinging(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { callId: string; callerId: string },
+  ) {
+    const senderId = (client as any)._userId || client.data?.userId;
+    if (!senderId || !payload.callerId) return;
+
+    const targetCallerId = (await this._resolveUserId(payload.callerId)) || payload.callerId;
+    this.logger.log(
+      `📞 [Call Ringing ACK] callId=${payload.callId} receiver=${senderId} -> caller=${targetCallerId}`,
+    );
+
+    this.server.to(`user:${targetCallerId}`).emit('call:status', {
+      callId: payload.callId,
+      status: 'RINGING',
+      isOnline: true,
+    });
+    if (payload.callerId !== targetCallerId) {
+      this.server.to(`user:${payload.callerId}`).emit('call:status', {
+        callId: payload.callId,
+        status: 'RINGING',
+        isOnline: true,
+      });
+    }
+  }
+
+  @SubscribeMessage(EVT_CALL_ACCEPT)
+  async handleCallAccept(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { callId: string; callerId: string },
+  ) {
+    const senderId = (client as any)._userId || client.data?.userId;
+    if (!senderId || !payload.callerId) return;
+
+    const targetCallerId = (await this._resolveUserId(payload.callerId)) || payload.callerId;
+    this.logger.log(
+      `📞 [Call Accept] callId=${payload.callId} acceptedBy=${senderId} callerId=${targetCallerId}`,
+    );
+    this.otelService?.recordSocketEvent(EVT_CALL_ACCEPTED, targetCallerId);
+
+    const acceptData = {
+      callId: payload.callId,
+      receiverId: senderId,
+    };
+
+    this.server.to(`user:${targetCallerId}`).emit(EVT_CALL_ACCEPTED, acceptData);
+    this.server.to(`user:${targetCallerId}`).emit('call:status', {
+      callId: payload.callId,
+      status: 'CONNECTED',
+      isOnline: true,
+    });
+    if (payload.callerId !== targetCallerId) {
+      this.server.to(`user:${payload.callerId}`).emit(EVT_CALL_ACCEPTED, acceptData);
+      this.server.to(`user:${payload.callerId}`).emit('call:status', {
+        callId: payload.callId,
+        status: 'CONNECTED',
+        isOnline: true,
+      });
+    }
+  }
+
+  @SubscribeMessage(EVT_CALL_REJECT)
+  async handleCallReject(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { callId: string; callerId: string; reason?: string },
+  ) {
+    const senderId = (client as any)._userId || client.data?.userId;
+    if (!senderId || !payload.callerId) return;
+
+    const targetCallerId = (await this._resolveUserId(payload.callerId)) || payload.callerId;
+    this.logger.log(`📞 [Call Rejected] callId=${payload.callId} by=${senderId}`);
+
+    const endData = {
+      callId: payload.callId,
+      reason: payload.reason || 'rejected',
+    };
+
+    this.server.to(`user:${targetCallerId}`).emit(EVT_CALL_ENDED, endData);
+    this.server.to(`user:${targetCallerId}`).emit('call:status', {
+      callId: payload.callId,
+      status: 'ENDED',
+      reason: payload.reason || 'rejected',
+    });
+    if (payload.callerId !== targetCallerId) {
+      this.server.to(`user:${payload.callerId}`).emit(EVT_CALL_ENDED, endData);
+      this.server.to(`user:${payload.callerId}`).emit('call:status', {
+        callId: payload.callId,
+        status: 'ENDED',
+        reason: payload.reason || 'rejected',
+      });
+    }
+  }
+
+  @SubscribeMessage(EVT_CALL_END)
+  async handleCallEnd(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { callId: string; targetUserId: string; reason?: string },
+  ) {
+    const senderId = (client as any)._userId || client.data?.userId;
+    if (!senderId || !payload.targetUserId) return;
+
+    const targetUserId = (await this._resolveUserId(payload.targetUserId)) || payload.targetUserId;
+    this.logger.log(
+      `📞 [Call Ended] callId=${payload.callId} by=${senderId} target=${targetUserId}`,
+    );
+
+    const endData = {
+      callId: payload.callId,
+      reason: payload.reason || 'ended',
+    };
+
+    this.server.to(`user:${targetUserId}`).emit(EVT_CALL_ENDED, endData);
+    this.server.to(`user:${targetUserId}`).emit('call:status', {
+      callId: payload.callId,
+      status: 'ENDED',
+      reason: payload.reason || 'ended',
+    });
+    if (payload.targetUserId !== targetUserId) {
+      this.server.to(`user:${payload.targetUserId}`).emit(EVT_CALL_ENDED, endData);
+      this.server.to(`user:${payload.targetUserId}`).emit('call:status', {
+        callId: payload.callId,
+        status: 'ENDED',
+        reason: payload.reason || 'ended',
+      });
+    }
+  }
+
+  @SubscribeMessage(EVT_WEBRTC_OFFER)
+  async handleWebRtcOffer(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { callId: string; targetUserId: string; sdp: any },
+  ) {
+    const senderId = (client as any)._userId || client.data?.userId;
+    if (!senderId || !payload.targetUserId) return;
+
+    const targetUserId = (await this._resolveUserId(payload.targetUserId)) || payload.targetUserId;
+    this.server.to(`user:${targetUserId}`).emit(EVT_WEBRTC_OFFER, {
+      callId: payload.callId,
+      sdp: payload.sdp,
+      senderId,
+    });
+  }
+
+  @SubscribeMessage(EVT_WEBRTC_ANSWER)
+  async handleWebRtcAnswer(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { callId: string; targetUserId: string; sdp: any },
+  ) {
+    const senderId = (client as any)._userId || client.data?.userId;
+    if (!senderId || !payload.targetUserId) return;
+
+    const targetUserId = (await this._resolveUserId(payload.targetUserId)) || payload.targetUserId;
+    this.server.to(`user:${targetUserId}`).emit(EVT_WEBRTC_ANSWER, {
+      callId: payload.callId,
+      sdp: payload.sdp,
+      senderId,
+    });
+  }
+
+  @SubscribeMessage(EVT_WEBRTC_ICE_CANDIDATE)
+  async handleWebRtcIceCandidate(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { callId: string; targetUserId: string; candidate: any },
+  ) {
+    const senderId = (client as any)._userId || client.data?.userId;
+    if (!senderId || !payload.targetUserId) return;
+
+    const targetUserId = (await this._resolveUserId(payload.targetUserId)) || payload.targetUserId;
+    this.server.to(`user:${targetUserId}`).emit(EVT_WEBRTC_ICE_CANDIDATE, {
+      callId: payload.callId,
+      candidate: payload.candidate,
+      senderId,
+    });
+  }
+
+  @SubscribeMessage(EVT_CALL_SWITCH_VIDEO)
+  async handleCallSwitchToVideo(
+    @ConnectedSocket() client: Socket,
+    @MessageBody()
+    payload: {
+      callId: string;
+      targetUserId: string;
+      action: 'request' | 'accept' | 'reject';
+      isVideo?: boolean;
+    },
+  ) {
+    await this._relaySwitchVideo(client, payload);
+  }
+
+  @SubscribeMessage('call:switch-video')
+  async handleCallSwitchVideo(
+    @ConnectedSocket() client: Socket,
+    @MessageBody()
+    payload: {
+      callId: string;
+      targetUserId: string;
+      action: 'request' | 'accept' | 'reject';
+      isVideo?: boolean;
+    },
+  ) {
+    await this._relaySwitchVideo(client, payload);
+  }
+
+  private async _relaySwitchVideo(
+    client: Socket,
+    payload: {
+      callId: string;
+      targetUserId: string;
+      action: 'request' | 'accept' | 'reject';
+      isVideo?: boolean;
+    },
+  ) {
+    const senderId = (client as any)._userId || client.data?.userId;
+    if (!senderId || !payload.targetUserId) return;
+
+    const targetUserId = (await this._resolveUserId(payload.targetUserId)) || payload.targetUserId;
+    this.logger.log(
+      `📹 [Call Switch Video] from=${senderId} to=${targetUserId} action=${payload.action} isVideo=${payload.isVideo}`,
+    );
+    const data = {
+      callId: payload.callId,
+      senderId,
+      action: payload.action,
+      isVideo:
+        payload.isVideo !== undefined
+          ? payload.isVideo
+          : payload.action === 'request' || payload.action === 'accept',
+    };
+    this.server.to(`user:${targetUserId}`).emit(EVT_CALL_SWITCH_VIDEO, data);
+    this.server.to(`user:${targetUserId}`).emit('call:switch-video', data);
+    if (payload.targetUserId !== targetUserId) {
+      this.server.to(`user:${payload.targetUserId}`).emit(EVT_CALL_SWITCH_VIDEO, data);
+      this.server.to(`user:${payload.targetUserId}`).emit('call:switch-video', data);
+    }
+  }
+
+  @SubscribeMessage('call:audio-chunk')
+  async handleCallAudioChunk(
+    @ConnectedSocket() client: Socket,
+    @MessageBody()
+    payload: {
+      callId: string;
+      targetUserId: string;
+      audioBase64: string;
+      chunkIndex?: number;
+    },
+  ) {
+    const senderId = (client as any)._userId || client.data?.userId;
+    if (!senderId || !payload.targetUserId || !payload.audioBase64) return;
+
+    const targetUserId = (await this._resolveUserId(payload.targetUserId)) || payload.targetUserId;
+    this.server.to(`user:${targetUserId}`).emit('call:audio-chunk', {
+      callId: payload.callId,
+      senderId,
+      audioBase64: payload.audioBase64,
+      chunkIndex: payload.chunkIndex,
+    });
+    if (payload.targetUserId !== targetUserId) {
+      this.server.to(`user:${payload.targetUserId}`).emit('call:audio-chunk', {
+        callId: payload.callId,
+        senderId,
+        audioBase64: payload.audioBase64,
+        chunkIndex: payload.chunkIndex,
+      });
     }
   }
 }

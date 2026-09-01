@@ -809,6 +809,56 @@ export const apiService = {
   },
 
   /**
+   * Direct media file upload for chat messages (photos, docs, etc.).
+   */
+  async uploadMediaFile(
+    token: string,
+    base64Data: string,
+    fileName?: string,
+    mimeType?: string,
+  ): Promise<{ success: boolean; url?: string; b2Url?: string; fileName?: string }> {
+    const url = `${getApiBaseUrl()}/media/upload`;
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          base64Data,
+          fileName: fileName || `file_${Date.now()}.jpg`,
+          mimeType: mimeType || 'image/jpeg',
+        }),
+      });
+
+      if (response.status === 401) {
+        const refreshed = await this.refreshAuthToken();
+        if (refreshed?.accessToken) {
+          return this.uploadMediaFile(refreshed.accessToken, base64Data, fileName, mimeType);
+        }
+        await handleSessionExpired();
+        return { success: false };
+      }
+
+      if (response.ok) {
+        const json = await response.json();
+        const payload = json.data || json;
+        const resolvedUrl = this.getResolvedMediaUrl(payload.url) || payload.url;
+        return {
+          success: true,
+          url: resolvedUrl,
+          b2Url: payload.b2Url || resolvedUrl,
+          fileName: payload.fileName,
+        };
+      }
+    } catch (e) {
+      console.warn('uploadMediaFile error:', e);
+    }
+    return { success: false };
+  },
+
+  /**
    * Fetch active conversations for the current user from backend database.
    * Auto-refreshes the access token on 401.
    */
@@ -1018,32 +1068,6 @@ export const apiService = {
         fromRedisCache: false,
         error: e?.message || 'Network error',
       });
-      return { success: false, message: e?.message };
-    }
-  },
-
-  async uploadMediaFile(
-    token: string,
-    base64Data: string,
-    fileName?: string,
-    mimeType = 'image/jpeg',
-  ): Promise<{ success: boolean; url?: string; message?: string }> {
-    const url = `${getApiBaseUrl()}/media/upload`;
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ base64Data, fileName, mimeType }),
-      });
-      if (response.ok) {
-        const json = await response.json();
-        return { success: true, url: json.url || json.data?.url };
-      }
-      return { success: false, message: `HTTP ${response.status}` };
-    } catch (e: any) {
       return { success: false, message: e?.message };
     }
   },

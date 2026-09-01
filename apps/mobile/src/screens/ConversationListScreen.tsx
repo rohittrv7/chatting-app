@@ -66,6 +66,9 @@ import {
   MoreVertical,
   UserX,
   Edit2,
+  PhoneIncoming,
+  PhoneOutgoing,
+  PhoneMissed,
 } from 'lucide-react-native';
 import {
   fetchDeviceContacts,
@@ -86,6 +89,8 @@ import { LogoutConfirmModal } from '../components/LogoutConfirmModal';
 import { TypingDots } from '../components/TypingIndicator';
 import { safeStorage } from '../services/storageHelper';
 import { AUTH_STORAGE_KEYS } from '../store/authSlice';
+import { callHistoryService, CallLogItem } from '../services/callHistoryService';
+import { callService } from '../services/callService';
 
 const formatChatTime = (timeStr?: string) => {
   if (!timeStr) return '';
@@ -224,6 +229,7 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
   );
   const [selectedInfoProfile, setSelectedInfoProfile] = useState<ConversationItem | null>(null);
 
+  const [callLogs, setCallLogs] = useState<CallLogItem[]>(callHistoryService.getLogs());
   const [registeredContacts, setRegisteredContacts] = useState<DeviceContact[]>([]);
   const [unregisteredContacts, setUnregisteredContacts] = useState<DeviceContact[]>([]);
   const [contactsLoading, setContactsLoading] = useState<boolean>(false);
@@ -231,6 +237,13 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
   const [peopleSearchQuery, setPeopleSearchQuery] = useState<string>('');
   const peopleInputRef = useRef<TextInput>(null);
   const chatsInputRef = useRef<TextInput>(null);
+
+  useEffect(() => {
+    const unsub = callHistoryService.subscribe((logs) => {
+      setCallLogs(logs);
+    });
+    return unsub;
+  }, []);
 
   const loadContacts = async (forceRefresh = false) => {
     setContactsLoading(true);
@@ -563,7 +576,7 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
   }, [searchQuery, token, conversations]);
 
   const filteredConversations = useMemo(() => {
-    return conversations.filter((item) => {
+    const list = conversations.filter((item) => {
       if (selectedFilter === 'Unread' && item.unread === '0') return false;
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase().trim().replace(/^@+/, '');
@@ -576,7 +589,23 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
       }
       return true;
     });
-  }, [conversations, selectedFilter, searchQuery]);
+
+    // Ensure the most recently active chat is always at the very top
+    return list.slice().sort((a, b) => {
+      const msgsA = messagesMap[a.id] || [];
+      const msgsB = messagesMap[b.id] || [];
+      const lastMsgA = msgsA[msgsA.length - 1];
+      const lastMsgB = msgsB[msgsB.length - 1];
+      const timeA =
+        lastMsgA?.createdAtMs || (lastMsgA?.createdAt ? new Date(lastMsgA.createdAt).getTime() : 0);
+      const timeB =
+        lastMsgB?.createdAtMs || (lastMsgB?.createdAt ? new Date(lastMsgB.createdAt).getTime() : 0);
+      if (timeA && timeB && timeA !== timeB) {
+        return timeB - timeA;
+      }
+      return 0;
+    });
+  }, [conversations, messagesMap, selectedFilter, searchQuery]);
 
   const handleInviteContact = async (contact: DeviceContact) => {
     showToast(`Sending invite to ${contact.name}...`, 'info');
@@ -1357,36 +1386,233 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
   );
 
   // 📞 CALLS TAB
-  const renderCallsTab = () => (
-    <View style={{ flex: 1 }}>
-      <View style={styles.topHeader}>
-        <Text style={[styles.headerTitle, { color: colors.textPrimary }]}>Calls</Text>
-      </View>
+  const renderCallsTab = () => {
+    const formatCallLogTime = (timestamp: number) => {
+      const date = new Date(timestamp);
+      const now = new Date();
+      const isToday = date.toDateString() === now.toDateString();
+      const yesterday = new Date(now);
+      yesterday.setDate(yesterday.getDate() - 1);
+      const isYesterday = date.toDateString() === yesterday.toDateString();
 
-      <View style={styles.emptyChatsContainer}>
-        <View
-          style={[
-            styles.emptyIconCircle,
-            { backgroundColor: colors.surface, borderColor: colors.cardBorder },
-          ]}
-        >
-          <PhoneCall size={36} color={colors.primaryIndigo} />
+      const h = date.getHours();
+      const m = date.getMinutes();
+      const ampm = h >= 12 ? 'pm' : 'am';
+      const h12 = h % 12 || 12;
+      const timeStr = `${h12}:${m.toString().padStart(2, '0')} ${ampm}`;
+
+      if (isToday) return `Today, ${timeStr}`;
+      if (isYesterday) return `Yesterday, ${timeStr}`;
+      const months = [
+        'Jan',
+        'Feb',
+        'Mar',
+        'Apr',
+        'May',
+        'Jun',
+        'Jul',
+        'Aug',
+        'Sep',
+        'Oct',
+        'Nov',
+        'Dec',
+      ];
+      return `${date.getDate()} ${months[date.getMonth()]}, ${timeStr}`;
+    };
+
+    const formatCallLogDuration = (seconds: number) => {
+      if (!seconds || seconds <= 0) return '';
+      if (seconds < 60) return `• ${seconds}s`;
+      const m = Math.floor(seconds / 60);
+      const s = seconds % 60;
+      return s > 0 ? `• ${m}m ${s}s` : `• ${m}m`;
+    };
+
+    const handleStartCallFromLog = (log: CallLogItem) => {
+      const session = callService.startCall({
+        targetUserId: log.targetUserId,
+        targetUserName: log.targetUserName,
+        targetUserAvatar: log.targetUserAvatar,
+        callType: log.callType,
+        myUserId: (userProfile as any)?.userId || userProfile?.phone || 'me',
+        myName: userProfile?.name,
+      });
+      navigation.navigate('Call', {
+        callId: session.callId,
+        targetUserId: log.targetUserName || log.targetUserId,
+        isCaller: true,
+        isVideo: log.callType === 'video',
+      });
+    };
+
+    return (
+      <View style={{ flex: 1 }}>
+        <View style={styles.topHeaderRow}>
+          <Text style={[styles.headerTitle, { color: colors.textPrimary }]}>Calls</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+            {callLogs.length > 0 && (
+              <TouchableOpacity
+                style={[
+                  styles.circleIconBtn,
+                  {
+                    backgroundColor: colors.surface,
+                    borderColor: colors.cardBorder,
+                    marginRight: 8,
+                  },
+                ]}
+                onPress={() => {
+                  callHistoryService.clearHistory();
+                  showToast('Call history cleared', 'info');
+                }}
+              >
+                <Trash2 size={18} color="#EF4444" />
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity
+              style={[
+                styles.circleIconBtn,
+                { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+              ]}
+              onPress={() => navigation.navigate('Contacts')}
+            >
+              <Plus size={20} color={colors.primaryIndigo} />
+            </TouchableOpacity>
+          </View>
         </View>
-        <Text style={[styles.emptyChatsTitle, { color: colors.textPrimary }]}>No Recent Calls</Text>
-        <Text style={[styles.emptyChatsDesc, { color: colors.textSecondary }]}>
-          Make crystal-clear, end-to-end encrypted audio and video calls directly with your
-          contacts.
-        </Text>
-        <TouchableOpacity
-          style={[styles.emptyStartChatBtn, { backgroundColor: colors.primaryIndigo }]}
-          onPress={() => navigation.navigate('Contacts')}
-        >
-          <Phone size={18} color="#FFF" style={{ marginRight: 8 }} />
-          <Text style={styles.emptyStartChatBtnText}>Start a Call</Text>
-        </TouchableOpacity>
+
+        {callLogs.length === 0 ? (
+          <View style={styles.emptyChatsContainer}>
+            <View
+              style={[
+                styles.emptyIconCircle,
+                { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+              ]}
+            >
+              <PhoneCall size={36} color={colors.primaryIndigo} />
+            </View>
+            <Text style={[styles.emptyChatsTitle, { color: colors.textPrimary }]}>
+              No Recent Calls
+            </Text>
+            <Text style={[styles.emptyChatsDesc, { color: colors.textSecondary }]}>
+              Make crystal-clear, end-to-end encrypted audio and video calls directly with your
+              contacts.
+            </Text>
+            <TouchableOpacity
+              style={[styles.emptyStartChatBtn, { backgroundColor: colors.primaryIndigo }]}
+              onPress={() => navigation.navigate('Contacts')}
+            >
+              <Phone size={18} color="#FFF" style={{ marginRight: 8 }} />
+              <Text style={styles.emptyStartChatBtnText}>Start a Call</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <FlatList
+            data={callLogs}
+            keyExtractor={(item) => item.id}
+            contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 100 }}
+            showsVerticalScrollIndicator={false}
+            renderItem={({ item: log }) => {
+              const isMissed = log.direction === 'missed' || log.status === 'missed';
+              const isOutgoing = log.direction === 'outgoing';
+              const nameInitial = log.targetUserName ? log.targetUserName[0].toUpperCase() : 'C';
+
+              return (
+                <TouchableOpacity
+                  activeOpacity={0.7}
+                  style={[
+                    styles.chatCard,
+                    {
+                      backgroundColor: colors.surface,
+                      borderColor: colors.cardBorder,
+                      marginBottom: 8,
+                      paddingVertical: 12,
+                      paddingHorizontal: 14,
+                      borderRadius: 18,
+                    },
+                  ]}
+                  onPress={() => handleStartCallFromLog(log)}
+                >
+                  {/* Left Avatar */}
+                  <View style={{ marginRight: 12 }}>
+                    {log.targetUserAvatar ? (
+                      <SmartAvatar
+                        avatarUrl={log.targetUserAvatar}
+                        size={48}
+                        name={log.targetUserName}
+                      />
+                    ) : (
+                      <View
+                        style={{
+                          width: 48,
+                          height: 48,
+                          borderRadius: 24,
+                          backgroundColor: isMissed ? '#EF4444' : '#4F46E5',
+                          justifyContent: 'center',
+                          alignItems: 'center',
+                        }}
+                      >
+                        <Text style={{ color: '#FFF', fontSize: 18, fontWeight: '800' }}>
+                          {nameInitial}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+
+                  {/* Center Details */}
+                  <View style={{ flex: 1, justifyContent: 'center' }}>
+                    <Text
+                      style={[
+                        {
+                          color: isMissed ? '#EF4444' : colors.textPrimary,
+                          fontSize: 16,
+                          fontWeight: '700',
+                        },
+                      ]}
+                      numberOfLines={1}
+                    >
+                      {log.targetUserName || log.targetUserId}
+                    </Text>
+
+                    <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 3 }}>
+                      {isMissed ? (
+                        <PhoneMissed size={14} color="#EF4444" style={{ marginRight: 5 }} />
+                      ) : isOutgoing ? (
+                        <PhoneOutgoing size={14} color="#10B981" style={{ marginRight: 5 }} />
+                      ) : (
+                        <PhoneIncoming size={14} color="#3B82F6" style={{ marginRight: 5 }} />
+                      )}
+
+                      <Text style={{ color: colors.textSecondary, fontSize: 12 }}>
+                        {formatCallLogTime(log.timestamp)}{' '}
+                        {log.durationSeconds > 0 ? formatCallLogDuration(log.durationSeconds) : ''}
+                      </Text>
+                    </View>
+                  </View>
+
+                  {/* Right Action Call Button */}
+                  <TouchableOpacity
+                    style={{
+                      padding: 10,
+                      borderRadius: 20,
+                      backgroundColor: colors.cardBorder,
+                      marginLeft: 8,
+                    }}
+                    onPress={() => handleStartCallFromLog(log)}
+                  >
+                    {log.callType === 'video' ? (
+                      <Video size={20} color={colors.primaryIndigo} />
+                    ) : (
+                      <Phone size={19} color={colors.primaryIndigo} />
+                    )}
+                  </TouchableOpacity>
+                </TouchableOpacity>
+              );
+            }}
+          />
+        )}
       </View>
-    </View>
-  );
+    );
+  };
 
   // 👥 PEOPLE TAB (Real Phone Contacts Sync with Chat & Invite Actions)
   const renderPeopleTab = () => (
@@ -2293,13 +2519,24 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                 onPress={() => {
                   const p = selectedAvatarProfile;
                   setSelectedAvatarProfile(null);
-                  if (p)
+                  if (p) {
+                    const session = callService.startCall({
+                      targetUserId: (p as any).recipientId || (p as any).participantId || p.title,
+                      targetUserName: p.title,
+                      targetUserAvatar: p.avatarUrl,
+                      callType: 'audio',
+                      myUserId: (userProfile as any)?.userId || userProfile?.phone || 'me',
+                      myName: userProfile?.name,
+                      myAvatar: userProfile?.avatarUrl,
+                      conversationId: p.id,
+                    });
                     navigation.navigate('Call', {
-                      callId: `call_${Date.now()}`,
+                      callId: session.callId,
                       targetUserId: p.title,
                       isCaller: true,
                       isVideo: false,
                     });
+                  }
                 }}
               >
                 <Phone size={22} color="#10B981" />
@@ -2311,13 +2548,24 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                 onPress={() => {
                   const p = selectedAvatarProfile;
                   setSelectedAvatarProfile(null);
-                  if (p)
+                  if (p) {
+                    const session = callService.startCall({
+                      targetUserId: (p as any).recipientId || (p as any).participantId || p.title,
+                      targetUserName: p.title,
+                      targetUserAvatar: p.avatarUrl,
+                      callType: 'video',
+                      myUserId: (userProfile as any)?.userId || userProfile?.phone || 'me',
+                      myName: userProfile?.name,
+                      myAvatar: userProfile?.avatarUrl,
+                      conversationId: p.id,
+                    });
                     navigation.navigate('Call', {
-                      callId: `call_${Date.now()}`,
+                      callId: session.callId,
                       targetUserId: p.title,
                       isCaller: true,
                       isVideo: true,
                     });
+                  }
                 }}
               >
                 <Video size={22} color="#8B5CF6" />
@@ -2651,17 +2899,29 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                   backgroundColor: colors.surface,
                   borderWidth: 1,
                   borderColor: colors.cardBorder,
+                  marginRight: 10,
                 }}
                 onPress={() => {
                   const p = selectedInfoProfile;
                   setSelectedInfoProfile(null);
-                  if (p)
+                  if (p) {
+                    const session = callService.startCall({
+                      targetUserId: (p as any).recipientId || (p as any).participantId || p.title,
+                      targetUserName: p.title,
+                      targetUserAvatar: p.avatarUrl,
+                      callType: 'audio',
+                      myUserId: (userProfile as any)?.userId || userProfile?.phone || 'me',
+                      myName: userProfile?.name,
+                      myAvatar: userProfile?.avatarUrl,
+                      conversationId: p.id,
+                    });
                     navigation.navigate('Call', {
-                      callId: `call_${Date.now()}`,
+                      callId: session.callId,
                       targetUserId: p.title,
                       isCaller: true,
                       isVideo: false,
                     });
+                  }
                 }}
               >
                 <Phone size={18} color="#10B981" style={{ marginRight: 6 }} />
@@ -2683,13 +2943,24 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                 onPress={() => {
                   const p = selectedInfoProfile;
                   setSelectedInfoProfile(null);
-                  if (p)
+                  if (p) {
+                    const session = callService.startCall({
+                      targetUserId: (p as any).recipientId || (p as any).participantId || p.title,
+                      targetUserName: p.title,
+                      targetUserAvatar: p.avatarUrl,
+                      callType: 'video',
+                      myUserId: (userProfile as any)?.userId || userProfile?.phone || 'me',
+                      myName: userProfile?.name,
+                      myAvatar: userProfile?.avatarUrl,
+                      conversationId: p.id,
+                    });
                     navigation.navigate('Call', {
-                      callId: `call_${Date.now()}`,
+                      callId: session.callId,
                       targetUserId: p.title,
                       isCaller: true,
                       isVideo: true,
                     });
+                  }
                 }}
               >
                 <Video size={18} color="#8B5CF6" style={{ marginRight: 6 }} />

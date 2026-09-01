@@ -42,7 +42,6 @@ export const SmartAvatar: React.FC<SmartAvatarProps> = ({
   }, [avatarUrl]);
 
   const rawUrl = avatarUrl && typeof avatarUrl === 'string' ? avatarUrl.trim() : '';
-  const isLocalBrokenFile = rawUrl.startsWith('file://') || rawUrl.startsWith('blob:');
 
   // Compute resolved display letter
   const cleanName = (name || username || 'User').replace(/^@+/, '').trim();
@@ -50,11 +49,9 @@ export const SmartAvatar: React.FC<SmartAvatarProps> = ({
 
   const radius = borderRadius !== undefined ? borderRadius : size / 2;
 
-  // If valid remote or resolved media URL and not errored
+  // Resolve media URL (supports relative server path, absolute URL, base64 data:, or local file://)
   const effectiveUri =
-    rawUrl.length > 5 && !isLocalBrokenFile && !imageError
-      ? apiService.getResolvedMediaUrl(rawUrl)
-      : null;
+    rawUrl.length > 0 && !imageError ? apiService.getResolvedMediaUrl(rawUrl) || rawUrl : null;
 
   if (effectiveUri) {
     return (
