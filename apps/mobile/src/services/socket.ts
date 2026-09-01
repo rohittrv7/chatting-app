@@ -299,6 +299,7 @@ class RealtimeSocketService {
   // ─── Private ───────────────────────────────────────────────────────────────
 
   private async _setup(): Promise<void> {
+    if (this.socket?.connected) return;
     const url = serverConfig.getSocketUrl();
 
     // Load the id of the last message we have locally — sent to server on connect
@@ -307,12 +308,14 @@ class RealtimeSocketService {
 
     try {
       this.socket = io(url, {
-        transports: ['websocket'],
+        transports: ['polling', 'websocket'],
+        upgrade: true,
         autoConnect: true,
         reconnection: true,
         reconnectionAttempts: Infinity,
         reconnectionDelay: 1000,
         reconnectionDelayMax: 5000,
+        timeout: 25000,
         // JWT goes in auth — backend reads from handshake.auth.token
         auth: {
           token: this.currentToken,
@@ -351,16 +354,18 @@ class RealtimeSocketService {
           .then((refreshed) => {
             if (refreshed?.accessToken) {
               this.currentToken = refreshed.accessToken;
-              this._teardown();
-              this._setup();
+              if (this.socket) {
+                this.socket.auth = {
+                  token: this.currentToken,
+                  lastMessageId: null,
+                };
+                this.socket.connect();
+              }
             } else {
-              this._teardown();
               handleSessionExpired();
             }
           })
-          .catch(() => {
-            this._teardown();
-          });
+          .catch(() => {});
       }
     });
 
@@ -372,15 +377,16 @@ class RealtimeSocketService {
           .then((refreshed) => {
             if (refreshed?.accessToken) {
               this.currentToken = refreshed.accessToken;
-              this._teardown();
-              this._setup();
-            } else {
-              this._teardown();
+              if (this.socket) {
+                this.socket.auth = {
+                  token: this.currentToken,
+                  lastMessageId: null,
+                };
+                this.socket.connect();
+              }
             }
           })
-          .catch(() => {
-            this._teardown();
-          });
+          .catch(() => {});
       }
     });
 

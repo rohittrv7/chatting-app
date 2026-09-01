@@ -65,7 +65,9 @@ export const EVT_MISSED_MESSAGES = 'messages:missed'; // offline gap fill on rec
 @WebSocketGateway({
   cors: { origin: '*', credentials: true },
   namespace: '/',
-  transports: ['websocket'],
+  transports: ['polling', 'websocket'],
+  pingTimeout: 45000,
+  pingInterval: 15000,
 })
 export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()
