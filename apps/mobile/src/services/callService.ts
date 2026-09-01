@@ -44,11 +44,24 @@ export interface ActiveCallSession {
   conversationId?: string;
 }
 
+export type CallCompletedLog = {
+  callId: string;
+  targetUserId: string;
+  targetUserName: string;
+  callType: CallType;
+  status: 'completed' | 'missed' | 'declined';
+  durationSeconds: number;
+  isCaller: boolean;
+  conversationId?: string;
+};
+
 type CallListener = (session: ActiveCallSession | null) => void;
+type CallCompletedCallback = (log: CallCompletedLog) => void;
 
 class CallService {
   private currentSession: ActiveCallSession | null = null;
   private listeners: Set<CallListener> = new Set();
+  private callCompletedListeners: Set<CallCompletedCallback> = new Set();
   private durationTimer: any = null;
   private callTimeoutTimer: any = null;
   private isInitialized = false;
@@ -522,6 +535,30 @@ class CallService {
       durationSeconds: session.durationSeconds,
       timestamp: session.startedAt || Date.now(),
     });
+
+    const completedLog: CallCompletedLog = {
+      callId: session.callId,
+      targetUserId: session.targetUserId,
+      targetUserName: session.targetUserName,
+      callType: session.callType,
+      status: status === 'failed' ? 'declined' : status,
+      durationSeconds: session.durationSeconds,
+      isCaller: session.isCaller,
+      conversationId: session.conversationId,
+    };
+
+    for (const listener of this.callCompletedListeners) {
+      try {
+        listener(completedLog);
+      } catch (_) {}
+    }
+  }
+
+  public onCallCompleted(cb: CallCompletedCallback) {
+    this.callCompletedListeners.add(cb);
+    return () => {
+      this.callCompletedListeners.delete(cb);
+    };
   }
 }
 

@@ -469,4 +469,34 @@ export class AuthService {
       isRegistered: true,
     }));
   }
+
+  async blockUser(currentUserId: string, targetUserId: string) {
+    if (currentUserId === targetUserId) {
+      throw new BadRequestException('You cannot block yourself');
+    }
+    await this.authRepository.blockUser(currentUserId, targetUserId);
+    return { success: true, message: 'User blocked successfully', targetUserId };
+  }
+
+  async unblockUser(currentUserId: string, targetUserId: string) {
+    await this.authRepository.unblockUser(currentUserId, targetUserId);
+    return { success: true, message: 'User unblocked successfully', targetUserId };
+  }
+
+  async getBlockedUsers(currentUserId: string) {
+    const list = await this.authRepository.getBlockedUsers(currentUserId);
+    return list.map((item) => ({
+      id: item.blocked.id,
+      displayName: item.blocked.displayName || item.blocked.username || item.blocked.phoneNumber,
+      username: item.blocked.username ? `@${item.blocked.username.replace(/^@+/, '')}` : null,
+      phoneNumber: item.blocked.phoneNumber,
+      avatarUrl: item.blocked.avatarUrl,
+      about: item.blocked.about,
+      blockedAt: item.createdAt,
+    }));
+  }
+
+  async getBlockStatus(currentUserId: string, targetUserId: string) {
+    return this.authRepository.isUserBlocked(currentUserId, targetUserId);
+  }
 }

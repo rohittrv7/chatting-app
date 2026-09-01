@@ -1071,6 +1071,67 @@ export const apiService = {
       return { success: false, message: e?.message };
     }
   },
+
+  async blockUser(token: string, targetUserId: string): Promise<boolean> {
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/auth/users/block`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ targetUserId }),
+      });
+      return response.ok;
+    } catch {
+      return false;
+    }
+  },
+
+  async unblockUser(token: string, targetUserId: string): Promise<boolean> {
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/auth/users/unblock`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ targetUserId }),
+      });
+      return response.ok;
+    } catch {
+      return false;
+    }
+  },
+
+  async getBlockedUsers(token: string): Promise<any[]> {
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/auth/users/blocked`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (response.ok) {
+        const json = await response.json();
+        return json.data || json || [];
+      }
+      return [];
+    } catch {
+      return [];
+    }
+  },
+
+  async getBlockStatus(
+    token: string,
+    targetUserId: string,
+  ): Promise<{ blockedByMe: boolean; blockedByThem: boolean }> {
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/auth/users/block-status/${targetUserId}`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (response.ok) {
+        const json = await response.json();
+        return json.data || json || { blockedByMe: false, blockedByThem: false };
+      }
+      return { blockedByMe: false, blockedByThem: false };
+    } catch {
+      return { blockedByMe: false, blockedByThem: false };
+    }
+  },
 };
 
 (apiService as any).getResolvedMediaUrl = _resolveMediaUrl;

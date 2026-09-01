@@ -252,4 +252,64 @@ export class AuthRepository {
       take: 30,
     });
   }
+
+  async blockUser(blockerId: string, blockedId: string) {
+    return this.prisma.blockedUser.upsert({
+      where: {
+        blockerId_blockedId: { blockerId, blockedId },
+      },
+      update: {},
+      create: {
+        blockerId,
+        blockedId,
+      },
+    });
+  }
+
+  async unblockUser(blockerId: string, blockedId: string) {
+    return this.prisma.blockedUser.deleteMany({
+      where: {
+        blockerId,
+        blockedId,
+      },
+    });
+  }
+
+  async getBlockedUsers(blockerId: string) {
+    return this.prisma.blockedUser.findMany({
+      where: { blockerId },
+      include: {
+        blocked: {
+          select: {
+            id: true,
+            displayName: true,
+            username: true,
+            phoneNumber: true,
+            avatarUrl: true,
+            about: true,
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  async isUserBlocked(
+    userA: string,
+    userB: string,
+  ): Promise<{ blockedByMe: boolean; blockedByThem: boolean }> {
+    const records = await this.prisma.blockedUser.findMany({
+      where: {
+        OR: [
+          { blockerId: userA, blockedId: userB },
+          { blockerId: userB, blockedId: userA },
+        ],
+      },
+    });
+
+    const blockedByMe = records.some((r) => r.blockerId === userA && r.blockedId === userB);
+    const blockedByThem = records.some((r) => r.blockerId === userB && r.blockedId === userA);
+
+    return { blockedByMe, blockedByThem };
+  }
 }

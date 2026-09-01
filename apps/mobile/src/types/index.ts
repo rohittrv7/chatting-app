@@ -52,6 +52,13 @@ export interface ChatMessage {
   reactions?: Record<string, number>;
   /** My own reaction on this message */
   myReaction?: string;
+  /** In-chat Call history log item */
+  callLog?: {
+    callType: 'audio' | 'video';
+    status: 'completed' | 'missed' | 'declined';
+    durationSeconds?: number;
+    isCaller: boolean;
+  };
 }
 
 export interface UserProfile {

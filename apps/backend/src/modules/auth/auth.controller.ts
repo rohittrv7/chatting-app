@@ -81,4 +81,35 @@ export class AuthController {
   async searchUsers(@CurrentUser() user: AuthenticatedUser, @Query('q') query: string) {
     return this.authService.searchUsers(user.userId, query || '');
   }
+
+  @Post('users/block')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Block target user from contacting or viewing profile' })
+  async blockUser(@CurrentUser() user: AuthenticatedUser, @Body() dto: { targetUserId: string }) {
+    return this.authService.blockUser(user.userId, dto.targetUserId);
+  }
+
+  @Post('users/unblock')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Unblock target user' })
+  async unblockUser(@CurrentUser() user: AuthenticatedUser, @Body() dto: { targetUserId: string }) {
+    return this.authService.unblockUser(user.userId, dto.targetUserId);
+  }
+
+  @Get('users/blocked')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get list of users blocked by current user' })
+  async getBlockedUsers(@CurrentUser() user: AuthenticatedUser) {
+    return this.authService.getBlockedUsers(user.userId);
+  }
+
+  @Get('users/block-status/:targetUserId')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get bidirectional block status with target user' })
+  async getBlockStatus(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('targetUserId') targetUserId: string,
+  ) {
+    return this.authService.getBlockStatus(user.userId, targetUserId);
+  }
 }

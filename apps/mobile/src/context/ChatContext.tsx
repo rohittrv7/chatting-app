@@ -53,6 +53,7 @@ import {
   getResolvedContact,
   syncContactsWithBackend,
 } from '../services/contactsService';
+import { callService } from '../services/callService';
 
 const globalLoadedHistoricalConvs = new Set<string>();
 const globalLoadingHistoricalConvs = new Set<string>();
@@ -122,6 +123,19 @@ interface ChatContextType {
   markConversationRead: (conversationId: string) => void;
   openChatRoom: (conversationId: string) => void;
   closeChatRoom: (conversationId: string) => void;
+  blockedUserIds: string[];
+  blockedByUserIds: string[];
+  isUserBlocked: (targetUserId?: string) => boolean;
+  isBlockedBy: (targetUserId?: string) => boolean;
+  blockUser: (targetUserId: string) => Promise<void>;
+  unblockUser: (targetUserId: string) => Promise<void>;
+  addCallLogMessage: (
+    conversationId: string,
+    callType: 'audio' | 'video',
+    callStatus: 'completed' | 'missed' | 'declined',
+    durationSeconds: number,
+    isCaller: boolean,
+  ) => void;
 }
 
 const defaultUserProfile: UserProfile = {
@@ -156,6 +170,13 @@ const ChatContext = createContext<ChatContextType>({
   markConversationRead: () => {},
   openChatRoom: () => {},
   closeChatRoom: () => {},
+  blockedUserIds: [],
+  blockedByUserIds: [],
+  isUserBlocked: () => false,
+  isBlockedBy: () => false,
+  blockUser: async () => {},
+  unblockUser: async () => {},
+  addCallLogMessage: () => {},
 });
 
 // ─── Provider ─────────────────────────────────────────────────────────────────
@@ -180,6 +201,8 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     Record<string, { isOnline: boolean; lastSeen?: string | null }>
   >({});
   const [typingMap, setTypingMap] = useState<Record<string, boolean>>({});
+  const [blockedUserIds, setBlockedUserIds] = useState<string[]>([]);
+  const [blockedByUserIds, setBlockedByUserIds] = useState<string[]>([]);
   const typingTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   // Always-fresh refs — socket callbacks read these without stale closure issues
@@ -203,6 +226,48 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
   tokenRef.current = token;
   messagesMapRef.current = messagesMap;
   authUserIdRef.current = effectiveUserId;
+
+  // ─── Fetch initial Blocked Users list from server on login ───────────────
+  useEffect(() => {
+    if (!token) return;
+    apiService
+      .getBlockedUsers(token)
+      .then((users) => {
+        if (Array.isArray(users)) {
+          setBlockedUserIds(users.map((u) => u.id));
+        }
+      })
+      .catch(() => {});
+  }, [token]);
+
+  // ─── Real-Time Block / Unblock Socket Listener ───────────────────────────
+  useEffect(() => {
+    const onUserBlocked = (data: { blockerId?: string; blockedId?: string }) => {
+      if (data.blockedId) {
+        setBlockedUserIds((prev) => Array.from(new Set([...prev, data.blockedId!])));
+      }
+      if (data.blockerId) {
+        setBlockedByUserIds((prev) => Array.from(new Set([...prev, data.blockerId!])));
+      }
+    };
+
+    const onUserUnblocked = (data: { blockerId?: string; blockedId?: string }) => {
+      if (data.blockedId) {
+        setBlockedUserIds((prev) => prev.filter((id) => id !== data.blockedId));
+      }
+      if (data.blockerId) {
+        setBlockedByUserIds((prev) => prev.filter((id) => id !== data.blockerId));
+      }
+    };
+
+    socketService.on('user:blocked', onUserBlocked);
+    socketService.on('user:unblocked', onUserUnblocked);
+
+    return () => {
+      socketService.off('user:blocked', onUserBlocked);
+      socketService.off('user:unblocked', onUserUnblocked);
+    };
+  }, []);
 
   // ─── Register tokensRefreshed callback ONCE so any refreshAuthToken() call
   //     automatically updates Redux → triggers socket reconnect via [token] dep
@@ -1453,6 +1518,124 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  // ─── Block & Unblock Methods ─────────────────────────────────────────────
+
+  const isUserBlocked = useCallback(
+    (targetUserId?: string): boolean => {
+      if (!targetUserId) return false;
+      return blockedUserIds.includes(targetUserId);
+    },
+    [blockedUserIds],
+  );
+
+  const isBlockedBy = useCallback(
+    (targetUserId?: string): boolean => {
+      if (!targetUserId) return false;
+      return blockedByUserIds.includes(targetUserId);
+    },
+    [blockedByUserIds],
+  );
+
+  const blockUser = useCallback(async (targetUserId: string) => {
+    if (!targetUserId) return;
+    setBlockedUserIds((prev) => Array.from(new Set([...prev, targetUserId])));
+    socketService.emit('user:block', { targetUserId });
+    const tok = tokenRef.current;
+    if (tok) {
+      await apiService.blockUser(tok, targetUserId).catch(() => {});
+    }
+  }, []);
+
+  const unblockUser = useCallback(
+    async (targetUserId: string) => {
+      if (!targetUserId) return;
+      setBlockedUserIds((prev) => prev.filter((id) => id !== targetUserId));
+      socketService.emit('user:unblock', { targetUserId });
+      const tok = tokenRef.current;
+      if (tok) {
+        await apiService.unblockUser(tok, targetUserId).catch(() => {});
+      }
+
+      // 🔄 Auto-resend any pending/queued messages that were held while blocked!
+      const currentMsgs = messagesMapRef.current;
+      for (const [convId, msgs] of Object.entries(currentMsgs)) {
+        const conv = conversationsRef.current.find((c) => c.id === convId);
+        if (conv && (conv.recipientDbId === targetUserId || conv.id === targetUserId)) {
+          for (const msg of msgs) {
+            if (msg.isMe && (msg.status === 'SENDING' || msg.status === 'FAILED')) {
+              resendMessage(convId, msg.id);
+            }
+          }
+        }
+      }
+    },
+    [resendMessage],
+  );
+
+  // ─── In-Chat WhatsApp-Style Call Log Message ─────────────────────────────
+
+  const addCallLogMessage = useCallback(
+    (
+      conversationId: string,
+      callType: 'audio' | 'video',
+      callStatus: 'completed' | 'missed' | 'declined',
+      durationSeconds: number,
+      isCaller: boolean,
+    ) => {
+      const msgId = `call_log_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      const now = new Date();
+      const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+      const callText =
+        callStatus === 'missed'
+          ? `Missed ${callType} call`
+          : callStatus === 'declined'
+            ? `Declined ${callType} call`
+            : `${callType === 'video' ? 'Video' : 'Voice'} call (${Math.floor(durationSeconds / 60)}:${(durationSeconds % 60).toString().padStart(2, '0')})`;
+
+      const newMsg: ChatMessage = {
+        id: msgId,
+        conversationId,
+        text: callText,
+        isMe: isCaller,
+        time: timeStr,
+        status: 'READ',
+        createdAtMs: Date.now(),
+        callLog: {
+          callType,
+          status: callStatus,
+          durationSeconds,
+          isCaller,
+        },
+      };
+
+      dispatch(appendMessage({ conversationId, message: newMsg }));
+      dispatch(
+        setConversations(
+          conversationsRef.current.map((c) =>
+            c.id === conversationId ? { ...c, lastMessage: callText, time: timeStr } : c,
+          ),
+        ),
+      );
+    },
+    [dispatch],
+  );
+
+  // Hook callService to log calls into chats automatically
+  useEffect(() => {
+    return callService.onCallCompleted((log) => {
+      if (log.conversationId) {
+        addCallLogMessage(
+          log.conversationId,
+          log.callType,
+          log.status,
+          log.durationSeconds,
+          log.isCaller,
+        );
+      }
+    });
+  }, [addCallLogMessage]);
+
   return (
     <ChatContext.Provider
       value={{
@@ -1480,6 +1663,13 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         markConversationRead,
         openChatRoom,
         closeChatRoom,
+        blockedUserIds,
+        blockedByUserIds,
+        isUserBlocked,
+        isBlockedBy,
+        blockUser,
+        unblockUser,
+        addCallLogMessage,
       }}
     >
       {children}

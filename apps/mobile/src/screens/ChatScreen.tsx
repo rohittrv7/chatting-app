@@ -79,6 +79,8 @@ import {
   LocateFixed,
   StopCircle,
   Compass,
+  ShieldAlert,
+  Ban,
 } from 'lucide-react-native';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Chat'>;
@@ -296,6 +298,10 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
     queryPresence,
     userProfile,
     isUserTyping,
+    isUserBlocked,
+    isBlockedBy,
+    blockUser,
+    unblockUser,
   } = useChat();
 
   const { themeMode, colors } = useTheme();
@@ -408,6 +414,26 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
   };
 
   const lastSeenLabel = isTargetOnline ? 'Online' : formatLastSeen(lastSeenStr);
+
+  // ── Block Status ──────────────────────────────────────────────────────────
+  const isBlockedByMe = isUserBlocked(effectiveRecipientId || recipientDbId || conversationId);
+  const isBlockedByThem = isBlockedBy(effectiveRecipientId || recipientDbId || conversationId);
+
+  const displayAvatarUrl = isBlockedByMe || isBlockedByThem ? undefined : targetAvatarUrl;
+  const displayStatus =
+    isBlockedByMe || isBlockedByThem ? '' : isTargetOnline ? 'Online' : lastSeenLabel;
+
+  const handleToggleBlock = async () => {
+    const targetId = effectiveRecipientId || recipientDbId || conversationId;
+    if (!targetId) return;
+    if (isBlockedByMe) {
+      await unblockUser(targetId);
+      showToast('Contact unblocked 🔓', 'success', 1500);
+    } else {
+      await blockUser(targetId);
+      showToast('Contact blocked 🚫', 'info', 1500);
+    }
+  };
 
   // ── State ─────────────────────────────────────────────────────────────────
   const [inputText, setInputText] = useState('');
@@ -1232,6 +1258,73 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
                   </View>
                 )}
 
+                {/* 📞 WhatsApp-Style In-Chat Call Log Item */}
+                {msg.callLog ? (
+                  <View style={styles.callLogBubbleContent}>
+                    <View
+                      style={[
+                        styles.callLogIconCircle,
+                        {
+                          backgroundColor:
+                            msg.callLog.status === 'missed'
+                              ? 'rgba(239, 68, 68, 0.15)'
+                              : 'rgba(16, 185, 129, 0.15)',
+                        },
+                      ]}
+                    >
+                      {msg.callLog.callType === 'video' ? (
+                        <Video
+                          size={18}
+                          color={msg.callLog.status === 'missed' ? '#EF4444' : '#10B981'}
+                        />
+                      ) : (
+                        <Phone
+                          size={18}
+                          color={msg.callLog.status === 'missed' ? '#EF4444' : '#10B981'}
+                        />
+                      )}
+                    </View>
+                    <View style={{ flex: 1, marginLeft: 10 }}>
+                      <Text
+                        style={[
+                          styles.callLogTitleText,
+                          { color: isMe ? '#FFF' : colors.textPrimary },
+                          msg.callLog.status === 'missed' && { color: '#EF4444' },
+                        ]}
+                      >
+                        {msg.callLog.status === 'missed'
+                          ? `Missed ${msg.callLog.callType} call`
+                          : msg.callLog.status === 'declined'
+                            ? `Declined ${msg.callLog.callType} call`
+                            : `${msg.callLog.callType === 'video' ? 'Video' : 'Voice'} call (${Math.floor((msg.callLog.durationSeconds || 0) / 60)}:${((msg.callLog.durationSeconds || 0) % 60).toString().padStart(2, '0')})`}
+                      </Text>
+                      <Text
+                        style={[
+                          styles.callLogSubtext,
+                          { color: isMe ? 'rgba(255,255,255,0.7)' : colors.textSecondary },
+                        ]}
+                      >
+                        {msg.callLog.status === 'missed'
+                          ? 'Tap to call back'
+                          : msg.callLog.isCaller
+                            ? 'Outgoing'
+                            : 'Incoming'}
+                      </Text>
+                    </View>
+                    <TouchableOpacity
+                      style={styles.callLogCallBackBtn}
+                      onPress={() => handleTriggerCall(msg.callLog?.callType || 'audio')}
+                      activeOpacity={0.8}
+                    >
+                      {msg.callLog.callType === 'video' ? (
+                        <Video size={16} color="#38BDF8" />
+                      ) : (
+                        <Phone size={16} color="#10B981" />
+                      )}
+                    </TouchableOpacity>
+                  </View>
+                ) : null}
+
                 {/* Image */}
                 {msg.imagePath ? (
                   <TouchableOpacity
@@ -1687,46 +1780,50 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
           >
             <View style={styles.avatarWrapper}>
               <SmartAvatar
-                avatarUrl={targetAvatarUrl}
+                avatarUrl={displayAvatarUrl}
                 name={resolvedDisplayName}
                 size={40}
                 groupBg={colors.cardBorder}
               />
-              <View
-                style={[
-                  styles.presenceDot,
-                  {
-                    backgroundColor: isTargetOnline ? '#10B981' : '#6B7280',
-                    borderColor: colors.surface,
-                  },
-                ]}
-              />
+              {!isBlockedByMe && !isBlockedByThem && (
+                <View
+                  style={[
+                    styles.presenceDot,
+                    {
+                      backgroundColor: isTargetOnline ? '#10B981' : '#6B7280',
+                      borderColor: colors.surface,
+                    },
+                  ]}
+                />
+              )}
             </View>
             <View style={{ marginLeft: 10, flex: 1 }}>
               <Text style={[styles.headerTitle, { color: colors.textPrimary }]} numberOfLines={1}>
                 {resolvedDisplayName}
               </Text>
-              <Text
-                style={{
-                  fontSize: 12,
-                  color:
-                    isTargetOnline ||
-                    isRemoteTyping ||
-                    isUserTyping(conversationId, effectiveRecipientId)
-                      ? '#10B981'
-                      : colors.textSecondary,
-                  fontWeight:
-                    isRemoteTyping || isUserTyping(conversationId, effectiveRecipientId)
-                      ? '700'
-                      : isTargetOnline
-                        ? '600'
-                        : '400',
-                }}
-              >
-                {isRemoteTyping || isUserTyping(conversationId, effectiveRecipientId)
-                  ? 'typing...'
-                  : lastSeenLabel}
-              </Text>
+              {displayStatus ? (
+                <Text
+                  style={{
+                    fontSize: 12,
+                    color:
+                      isTargetOnline ||
+                      isRemoteTyping ||
+                      isUserTyping(conversationId, effectiveRecipientId)
+                        ? '#10B981'
+                        : colors.textSecondary,
+                    fontWeight:
+                      isRemoteTyping || isUserTyping(conversationId, effectiveRecipientId)
+                        ? '700'
+                        : isTargetOnline
+                          ? '600'
+                          : '400',
+                  }}
+                >
+                  {isRemoteTyping || isUserTyping(conversationId, effectiveRecipientId)
+                    ? 'typing...'
+                    : displayStatus}
+                </Text>
+              ) : null}
             </View>
           </TouchableOpacity>
         </View>
@@ -1873,67 +1970,88 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
           </View>
         )}
 
-        {/* ── Input bar ────────────────────────────────────────────────── */}
-        <View
-          style={[
-            styles.inputBarContainer,
-            { backgroundColor: colors.surface, borderTopColor: colors.cardBorder },
-          ]}
-        >
-          <TouchableOpacity
-            style={[styles.plusBtn, { backgroundColor: colors.cardBorder }]}
-            onPress={() => setShowAttachMenu((v) => !v)}
-          >
-            {showAttachMenu ? (
-              <X size={20} color={colors.primaryIndigo} />
-            ) : (
-              <Plus size={20} color={colors.primaryIndigo} />
-            )}
-          </TouchableOpacity>
-
+        {/* ── Input bar / Blocked Banner ────────────────────────────────── */}
+        {isBlockedByMe ? (
           <View
             style={[
-              styles.inputFieldWrapper,
-              { backgroundColor: colors.inputBg, borderColor: colors.cardBorder },
+              styles.blockedBannerContainer,
+              { backgroundColor: colors.surface, borderTopColor: colors.cardBorder },
             ]}
           >
-            <TextInput
-              ref={textInputRef}
-              style={[styles.textInput, { color: colors.textPrimary }]}
-              placeholder="Type a message..."
-              placeholderTextColor={colors.textSecondary}
-              value={inputText}
-              onChangeText={handleInputChange}
-              onKeyPress={handleKeyPress}
-              returnKeyType="send"
-              onSubmitEditing={handleSendMessage}
-              blurOnSubmit={false}
-              multiline
-            />
+            <ShieldAlert size={20} color="#EF4444" style={{ marginRight: 8 }} />
+            <Text style={[styles.blockedBannerText, { color: colors.textSecondary }]}>
+              You blocked this contact. Tap to unblock.
+            </Text>
             <TouchableOpacity
-              style={{ padding: 4, marginRight: 6 }}
-              onPress={() => setShowEmojiPicker(!showEmojiPicker)}
+              onPress={handleToggleBlock}
+              style={[styles.unblockBannerBtn, { backgroundColor: colors.primaryIndigo }]}
+              activeOpacity={0.8}
             >
-              <Smile
-                size={20}
-                color={showEmojiPicker ? colors.primaryIndigo : colors.textSecondary}
-              />
+              <Text style={styles.unblockBannerBtnText}>Unblock</Text>
             </TouchableOpacity>
           </View>
-
-          {inputText.trim().length > 0 ? (
+        ) : (
+          <View
+            style={[
+              styles.inputBarContainer,
+              { backgroundColor: colors.surface, borderTopColor: colors.cardBorder },
+            ]}
+          >
             <TouchableOpacity
-              style={[styles.sendBtn, { backgroundColor: colors.primaryIndigo }]}
-              onPress={handleSendMessage}
+              style={[styles.plusBtn, { backgroundColor: colors.cardBorder }]}
+              onPress={() => setShowAttachMenu((v) => !v)}
             >
-              <Send size={18} color="#FFF" />
+              {showAttachMenu ? (
+                <X size={20} color={colors.primaryIndigo} />
+              ) : (
+                <Plus size={20} color={colors.primaryIndigo} />
+              )}
             </TouchableOpacity>
-          ) : (
-            <TouchableOpacity style={[styles.sendBtn, { backgroundColor: colors.cardBorder }]}>
-              <Mic size={18} color={colors.textSecondary} />
-            </TouchableOpacity>
-          )}
-        </View>
+
+            <View
+              style={[
+                styles.inputFieldWrapper,
+                { backgroundColor: colors.inputBg, borderColor: colors.cardBorder },
+              ]}
+            >
+              <TextInput
+                ref={textInputRef}
+                style={[styles.textInput, { color: colors.textPrimary }]}
+                placeholder="Type a message..."
+                placeholderTextColor={colors.textSecondary}
+                value={inputText}
+                onChangeText={handleInputChange}
+                onKeyPress={handleKeyPress}
+                returnKeyType="send"
+                onSubmitEditing={handleSendMessage}
+                blurOnSubmit={false}
+                multiline
+              />
+              <TouchableOpacity
+                style={{ padding: 4, marginRight: 6 }}
+                onPress={() => setShowEmojiPicker(!showEmojiPicker)}
+              >
+                <Smile
+                  size={20}
+                  color={showEmojiPicker ? colors.primaryIndigo : colors.textSecondary}
+                />
+              </TouchableOpacity>
+            </View>
+
+            {inputText.trim().length > 0 ? (
+              <TouchableOpacity
+                style={[styles.sendBtn, { backgroundColor: colors.primaryIndigo }]}
+                onPress={handleSendMessage}
+              >
+                <Send size={18} color="#FFF" />
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity style={[styles.sendBtn, { backgroundColor: colors.cardBorder }]}>
+                <Mic size={18} color={colors.textSecondary} />
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
       </KeyboardAvoidingView>
 
       {/* ── Quick Reaction picker modal ───────────────────────────────── */}
@@ -2250,6 +2368,28 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
                 style={styles.profileActionRowItem}
                 onPress={() => {
                   setShowUserProfileModal(false);
+                  handleToggleBlock();
+                }}
+              >
+                {isBlockedByMe ? (
+                  <ShieldCheck size={20} color="#10B981" />
+                ) : (
+                  <Ban size={20} color="#EF4444" />
+                )}
+                <Text
+                  style={[
+                    styles.profileActionRowText,
+                    { color: isBlockedByMe ? '#10B981' : '#EF4444', fontWeight: '700' },
+                  ]}
+                >
+                  {isBlockedByMe ? 'Unblock Contact' : 'Block Contact'}
+                </Text>
+              </TouchableOpacity>
+              <View style={[styles.profileActionDivider, { backgroundColor: colors.cardBorder }]} />
+              <TouchableOpacity
+                style={styles.profileActionRowItem}
+                onPress={() => {
+                  setShowUserProfileModal(false);
                   setShowClearModal(true);
                 }}
               >
@@ -2305,6 +2445,27 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
             >
               <User size={18} color={colors.primaryIndigo} />
               <Text style={[styles.menuItemText, { color: colors.textPrimary }]}>Contact Info</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={() => {
+                setShowMoreMenuModal(false);
+                handleToggleBlock();
+              }}
+            >
+              {isBlockedByMe ? (
+                <ShieldCheck size={18} color="#10B981" />
+              ) : (
+                <Ban size={18} color="#EF4444" />
+              )}
+              <Text
+                style={[
+                  styles.menuItemText,
+                  { color: isBlockedByMe ? '#10B981' : '#EF4444', fontWeight: '700' },
+                ]}
+              >
+                {isBlockedByMe ? 'Unblock Contact' : 'Block Contact'}
+              </Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={styles.menuItem}
@@ -3569,6 +3730,66 @@ const styles = StyleSheet.create({
   shareLiveBtnText: {
     color: '#FFF',
     fontSize: 15,
+    fontWeight: '700',
+  },
+  // ── Call Log Bubble Styles ──────────────────────────────────────────────
+  callLogBubbleContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 6,
+    minWidth: 210,
+  },
+  callLogIconCircle: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  callLogTitleText: {
+    fontSize: 14,
+    fontWeight: '700',
+    lineHeight: 18,
+  },
+  callLogSubtext: {
+    fontSize: 11,
+    marginTop: 2,
+    fontWeight: '500',
+  },
+  callLogCallBackBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginLeft: 8,
+  },
+  // ── Blocked Banner Styles ───────────────────────────────────────────────
+  blockedBannerContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderTopWidth: 1,
+  },
+  blockedBannerText: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '500',
+    lineHeight: 18,
+  },
+  unblockBannerBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 18,
+    marginLeft: 12,
+  },
+  unblockBannerBtnText: {
+    color: '#FFF',
+    fontSize: 13,
     fontWeight: '700',
   },
 });

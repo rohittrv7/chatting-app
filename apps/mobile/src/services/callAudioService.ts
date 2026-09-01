@@ -2,30 +2,30 @@ import { Audio } from 'expo-av';
 import * as FileSystem from 'expo-file-system/legacy';
 import { socketService } from './socket';
 
-// HD Voice Wideband Preset (24kHz Mono AAC — standard for VoIP Voice Clarity)
-const VoIPRecordingOptions: Audio.RecordingOptions = {
+// Ultra-Low-Latency, High-Sensitivity VoIP Audio Preset (32kHz High-Fidelity Voice)
+const UltraVoIPAudioPreset: Audio.RecordingOptions = {
   isMeteringEnabled: false,
   android: {
     extension: '.m4a',
     outputFormat: Audio.AndroidOutputFormat.MPEG_4,
     audioEncoder: Audio.AndroidAudioEncoder.AAC,
-    sampleRate: 24000,
+    sampleRate: 32000,
     numberOfChannels: 1,
-    bitRate: 64000,
+    bitRate: 48000,
   },
   ios: {
     extension: '.m4a',
     audioQuality: Audio.IOSAudioQuality.HIGH,
-    sampleRate: 24000,
+    sampleRate: 32000,
     numberOfChannels: 1,
-    bitRate: 64000,
+    bitRate: 48000,
     linearPCMBitDepth: 16,
     linearPCMIsBigEndian: false,
     linearPCMIsFloat: false,
   },
   web: {
     mimeType: 'audio/webm',
-    bitsPerSecond: 64000,
+    bitsPerSecond: 48000,
   },
 };
 
@@ -132,12 +132,12 @@ class CallAudioService {
 
     try {
       const recording = new Audio.Recording();
-      await recording.prepareToRecordAsync(VoIPRecordingOptions);
+      await recording.prepareToRecordAsync(UltraVoIPAudioPreset);
       await recording.startAsync();
       this.currentRecording = recording;
 
-      // 1000ms duration per packet ensures complete speech syllables without clipping
-      await new Promise((res) => setTimeout(res, 1000));
+      // 350ms chunk for ultra-low latency real-time voice delivery
+      await new Promise((res) => setTimeout(res, 350));
 
       if (!this.isEngineRunning) {
         await recording.stopAndUnloadAsync().catch(() => {});
@@ -148,18 +148,18 @@ class CallAudioService {
       const uri = recording.getURI();
       this.currentRecording = null;
 
-      // Immediately launch next recording pass so there is zero gap in voice capture
+      // Seamlessly start next recording without waiting for previous file I/O
       if (this.isEngineRunning) {
         this._startContinuousRecordingLoop();
       }
 
-      // Process and stream previous chunk asynchronously
+      // Asynchronously process and stream previous chunk
       if (uri && !this.isMuted && this.targetUserId && this.currentCallId) {
         this._sendAudioFile(uri, this.currentCallId, this.targetUserId);
       }
     } catch (e) {
       if (this.isEngineRunning) {
-        setTimeout(() => this._startContinuousRecordingLoop(), 200);
+        setTimeout(() => this._startContinuousRecordingLoop(), 100);
       }
     }
   }
@@ -167,7 +167,7 @@ class CallAudioService {
   private async _sendAudioFile(uri: string, callId: string, targetUserId: string) {
     try {
       const fileInfo = await FileSystem.getInfoAsync(uri);
-      if (fileInfo.exists && (fileInfo.size || 0) > 100) {
+      if (fileInfo.exists && (fileInfo.size || 0) > 40) {
         const base64 = await FileSystem.readAsStringAsync(uri, {
           encoding: FileSystem.EncodingType.Base64,
         });
@@ -188,8 +188,8 @@ class CallAudioService {
   }
 
   private enqueueAudioChunk(base64: string) {
-    if (this.playQueue.length > 8) {
-      this.playQueue.shift(); // Drop overflow to prevent lag
+    if (this.playQueue.length > 6) {
+      this.playQueue.shift(); // Drop stale chunks to avoid buildup lag
     }
     this.playQueue.push(base64);
     if (!this.isPlayingQueue) {

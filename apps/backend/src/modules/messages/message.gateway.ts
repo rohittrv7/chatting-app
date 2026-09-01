@@ -333,13 +333,19 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       createdAt,
     };
 
-    // ── STEP 3: Emit to receiver's personal room ──────────────────────────
-    // This happens in the same tick as the DB write resolving — zero delay.
-    this.server.to(`user:${receiverId}`).emit(EVT_MESSAGE_NEW, {
-      ...messagePayload,
-      status: 'DELIVERED',
+    // ── Check if receiver has blocked sender (WhatsApp block enforcement) ──
+    const isBlockedByReceiver = await this.prisma.blockedUser.findFirst({
+      where: { blockerId: receiverId, blockedId: senderId },
     });
-    this.otelService?.recordSocketEvent(EVT_MESSAGE_NEW, receiverId);
+
+    if (!isBlockedByReceiver) {
+      // ── STEP 3: Emit to receiver's personal room ──────────────────────────
+      this.server.to(`user:${receiverId}`).emit(EVT_MESSAGE_NEW, {
+        ...messagePayload,
+        status: 'DELIVERED',
+      });
+      this.otelService?.recordSocketEvent(EVT_MESSAGE_NEW, receiverId);
+    }
 
     // ── STEP 4: Ack back to sender (single grey tick → confirmed in DB) ───
     client.emit(EVT_MESSAGE_ACK, {
@@ -749,6 +755,22 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     const targetUserId =
       (await this._resolveUserId(payload.receiverId, payload.conversationId, senderId)) ||
       payload.receiverId;
+
+    // Check if target user has blocked caller
+    const isBlockedByTarget = await this.prisma.blockedUser.findFirst({
+      where: { blockerId: targetUserId, blockedId: senderId },
+    });
+
+    if (isBlockedByTarget) {
+      // Caller hears calling endlessly, receiver is never notified (WhatsApp block behavior)
+      client.emit('call:status', {
+        callId: payload.callId,
+        status: 'CALLING',
+        isOnline: false,
+      });
+      return;
+    }
+
     const isReceiverOnline = this._isOnline(targetUserId) || this._isOnline(payload.receiverId);
 
     this.logger.log(
@@ -1023,27 +1045,27 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     payload: {
       callId: string;
       targetUserId: string;
-      audioBase64: string;
+      audioBase64?: string;
+      chunkBase64?: string;
       chunkIndex?: number;
     },
   ) {
     const senderId = (client as any)._userId || client.data?.userId;
-    if (!senderId || !payload.targetUserId || !payload.audioBase64) return;
+    const audioData = payload.audioBase64 || payload.chunkBase64;
+    if (!senderId || !payload.targetUserId || !audioData) return;
 
     const targetUserId = (await this._resolveUserId(payload.targetUserId)) || payload.targetUserId;
-    this.server.to(`user:${targetUserId}`).emit('call:audio-chunk', {
+    const chunkObj = {
       callId: payload.callId,
       senderId,
-      audioBase64: payload.audioBase64,
+      audioBase64: audioData,
+      chunkBase64: audioData,
       chunkIndex: payload.chunkIndex,
-    });
+    };
+
+    this.server.to(`user:${targetUserId}`).emit('call:audio-chunk', chunkObj);
     if (payload.targetUserId !== targetUserId) {
-      this.server.to(`user:${payload.targetUserId}`).emit('call:audio-chunk', {
-        callId: payload.callId,
-        senderId,
-        audioBase64: payload.audioBase64,
-        chunkIndex: payload.chunkIndex,
-      });
+      this.server.to(`user:${payload.targetUserId}`).emit('call:audio-chunk', chunkObj);
     }
   }
 
@@ -1073,5 +1095,37 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     if (payload.targetUserId !== targetUserId) {
       this.server.to(`user:${payload.targetUserId}`).emit('call:video-frame', frameData);
     }
+  }
+
+  @SubscribeMessage('user:block')
+  async handleUserBlock(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { targetUserId: string },
+  ) {
+    const senderId = (client as any)._userId || client.data?.userId;
+    if (!senderId || !payload?.targetUserId) return;
+    const targetUserId = (await this._resolveUserId(payload.targetUserId)) || payload.targetUserId;
+    await this.prisma.blockedUser.upsert({
+      where: { blockerId_blockedId: { blockerId: senderId, blockedId: targetUserId } },
+      update: {},
+      create: { blockerId: senderId, blockedId: targetUserId },
+    });
+    this.server.to(`user:${targetUserId}`).emit('user:blocked', { blockerId: senderId });
+    client.emit('user:blocked', { blockedId: targetUserId });
+  }
+
+  @SubscribeMessage('user:unblock')
+  async handleUserUnblock(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { targetUserId: string },
+  ) {
+    const senderId = (client as any)._userId || client.data?.userId;
+    if (!senderId || !payload?.targetUserId) return;
+    const targetUserId = (await this._resolveUserId(payload.targetUserId)) || payload.targetUserId;
+    await this.prisma.blockedUser.deleteMany({
+      where: { blockerId: senderId, blockedId: targetUserId },
+    });
+    this.server.to(`user:${targetUserId}`).emit('user:unblocked', { blockerId: senderId });
+    client.emit('user:unblocked', { blockedId: targetUserId });
   }
 }
