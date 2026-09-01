@@ -307,6 +307,7 @@ class RealtimeSocketService {
     const lastMessageId = (await safeStorage.getItem('@chat_last_message_id')) ?? undefined;
 
     try {
+      console.log('📡 [Socket] Connecting to:', url);
       this.socket = io(url, {
         transports: ['polling', 'websocket'],
         upgrade: true,
@@ -325,7 +326,7 @@ class RealtimeSocketService {
 
       this._registerListeners();
     } catch (err: any) {
-      console.warn('[Socket] setup error:', err?.message);
+      console.warn('🔴 [Socket] setup error:', err?.message);
     }
   }
 
@@ -341,10 +342,12 @@ class RealtimeSocketService {
     }
 
     this.socket.on('connect', () => {
+      console.log('🟢 [Socket] Connected successfully! Socket ID:', this.socket?.id);
       this.callbacks.onConnect?.();
     });
 
     this.socket.on('disconnect', (reason: string) => {
+      console.log('🟡 [Socket] Disconnected. Reason:', reason);
       this.callbacks.onDisconnect?.(reason);
 
       if (reason === 'io server disconnect') {
@@ -370,6 +373,7 @@ class RealtimeSocketService {
     });
 
     this.socket.on('connect_error', (err: any) => {
+      console.warn('🔴 [Socket] Connection error:', err?.message);
       const msg = (err?.message || '').toLowerCase();
       if (msg.includes('token') || msg.includes('auth') || msg.includes('unauthorized')) {
         apiService
