@@ -309,7 +309,7 @@ importers:
         specifier: ~0.21.0
         version: 0.21.2(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
       react-native-webrtc:
-        specifier: ^124.0.4
+        specifier: ^124.0.8
         version: 124.0.8(react-native@0.81.5(@babel/core@7.29.7)(@types/react@19.1.17)(react@19.1.0))
       react-redux:
         specifier: ^9.3.0
