@@ -59,6 +59,9 @@ export interface ChatMessage {
     durationSeconds?: number;
     isCaller: boolean;
   };
+  /** Media metadata for receiver download cards */
+  mediaSize?: string;
+  isDownloaded?: boolean;
 }
 
 export interface UserProfile {
@@ -82,7 +85,13 @@ export type RootStackParamList = {
     phone?: string;
     recipientDbId?: string;
   };
-  Call: { callId: string; targetUserId: string; isCaller: boolean; isVideo: boolean };
+  Call: {
+    callId: string;
+    targetUserId: string;
+    targetUserName?: string;
+    isCaller: boolean;
+    isVideo: boolean;
+  };
   Contacts: undefined;
   EditProfile: undefined;
   AccountSettings: undefined;

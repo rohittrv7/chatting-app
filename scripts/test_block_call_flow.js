@@ -10,7 +10,7 @@ const jwt = require('jsonwebtoken');
 const http = require('http');
 
 const JWT_SECRET = 'super_secret_jwt_access_key_12345';
-const SERVER_URL = 'http://10.96.71.14:3000';
+const SERVER_URL = process.env.SERVER_URL || 'http://10.248.132.14:3000';
 
 const USER_A_ID = '724a3472-f453-4a3d-89f1-3e4103a6b4e2';
 const USER_B_ID = '0630106c-a6d9-4255-acfb-87dba1318af3';

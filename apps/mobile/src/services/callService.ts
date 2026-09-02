@@ -8,10 +8,12 @@ import {
   EVT_CALL_END,
   EVT_CALL_ENDED,
   EVT_CALL_SWITCH_VIDEO,
+  EVT_WEBRTC_OFFER,
+  EVT_WEBRTC_ANSWER,
 } from './socket';
 import { soundService } from './soundService';
 import { callHistoryService } from './callHistoryService';
-import { callAudioService } from './callAudioService';
+import { webrtcService } from './webrtcService';
 
 export type CallType = 'audio' | 'video';
 
@@ -42,6 +44,7 @@ export interface ActiveCallSession {
   isSpeakerOn: boolean;
   isVideoEnabled: boolean;
   conversationId?: string;
+  sdp?: any;
 }
 
 export type CallCompletedLog = {
@@ -65,6 +68,7 @@ class CallService {
   private durationTimer: any = null;
   private callTimeoutTimer: any = null;
   private isInitialized = false;
+  private loggedCallIds: Set<string> = new Set();
 
   constructor() {
     this.init();
@@ -103,11 +107,6 @@ class CallService {
           this.currentSession.state = 'CONNECTED';
           this.currentSession.startedAt = this.currentSession.startedAt || Date.now();
           this.startDurationTimer();
-          callAudioService.startVoiceSession(
-            this.currentSession.callId,
-            this.currentSession.targetUserId,
-            this.currentSession.isSpeakerOn,
-          );
           this.notify();
         } else if (payload.status === 'RINGING') {
           if (this.currentSession.state !== 'CONNECTED') {
@@ -121,7 +120,7 @@ class CallService {
           }
         } else if (payload.status === 'ENDED') {
           this.clearCallTimeout();
-          callAudioService.stopVoiceSession();
+          webrtcService.closeSession();
           this._saveCallLog(
             payload.reason === 'rejected' || payload.reason === 'declined' ? 'declined' : undefined,
           );
@@ -136,7 +135,7 @@ class CallService {
               this.currentSession = null;
               this.notify();
             }
-          }, 1500);
+          }, 1200);
         }
       },
     );
@@ -146,7 +145,7 @@ class CallService {
       console.log('📞 Incoming call event received:', payload);
       if (!payload?.callId || !payload?.callerId) return;
 
-      // If already in a call with a DIFFERENT call ID, reject incoming call as busy
+      // If already in an active call, reject as busy
       if (
         this.currentSession &&
         this.currentSession.callId !== payload.callId &&
@@ -161,7 +160,7 @@ class CallService {
         return;
       }
 
-      // If already ringing with this exact call ID, avoid resetting
+      // Avoid resetting if already ringing
       if (
         this.currentSession &&
         this.currentSession.callId === payload.callId &&
@@ -187,6 +186,7 @@ class CallService {
         isSpeakerOn: payload.callType === 'video',
         isVideoEnabled: payload.callType === 'video',
         conversationId: payload.conversationId,
+        sdp: payload.sdp,
       };
 
       // Acknowledge back to server that receiver device received call and is ringing
@@ -204,7 +204,7 @@ class CallService {
     });
 
     // ── Call Accepted by receiver ───────────────────────────────────────────
-    socketService.on(EVT_CALL_ACCEPTED, (payload: any) => {
+    socketService.on(EVT_CALL_ACCEPTED, async (payload: any) => {
       console.log('📞 Call accepted by remote party:', payload);
       if (!this.currentSession) return;
       if (
@@ -222,17 +222,39 @@ class CallService {
       this.currentSession.state = 'CONNECTED';
       this.currentSession.startedAt = this.currentSession.startedAt || Date.now();
       this.startDurationTimer();
-      callAudioService.startVoiceSession(
-        this.currentSession.callId,
-        this.currentSession.targetUserId,
-        this.currentSession.isSpeakerOn,
-      );
+
+      // Handle SDP Answer on Caller side
+      if (payload.sdp && this.currentSession.isCaller) {
+        try {
+          await webrtcService.handleIncomingAnswer(payload.sdp);
+        } catch (err) {
+          console.warn('⚠️ [WebRTC] Error handling incoming answer:', err);
+        }
+      }
+
       this.notify();
     });
 
-    // ── Call Ended / Rejected ───────────────────────────────────────────────
-    socketService.on(EVT_CALL_ENDED, (payload: any) => {
-      console.log('📞 Call ended by remote party:', payload);
+    // ── Dedicated WebRTC Offer / Answer Listeners ───────────────────────────
+    socketService.on(EVT_WEBRTC_OFFER, async (payload: any) => {
+      if (payload?.sdp && this.currentSession && !this.currentSession.isCaller) {
+        this.currentSession.sdp = payload.sdp;
+      }
+    });
+
+    socketService.on(EVT_WEBRTC_ANSWER, async (payload: any) => {
+      if (payload?.sdp && this.currentSession && this.currentSession.isCaller) {
+        try {
+          await webrtcService.handleIncomingAnswer(payload.sdp);
+        } catch (err) {
+          console.warn('⚠️ [WebRTC] Error handling answer event:', err);
+        }
+      }
+    });
+
+    // ── Call Ended / Rejected Universal Handlers ───────────────────────────
+    const handleRemoteEnd = (payload: any) => {
+      console.log('📞 Call ended signal received:', payload);
       if (!this.currentSession) return;
       if (
         payload?.callId &&
@@ -243,9 +265,9 @@ class CallService {
       }
 
       this.clearCallTimeout();
-      callAudioService.stopVoiceSession();
+      webrtcService.closeSession();
       this._saveCallLog(
-        payload.reason === 'rejected' || payload.reason === 'declined' ? 'declined' : undefined,
+        payload?.reason === 'rejected' || payload?.reason === 'declined' ? 'declined' : undefined,
       );
       soundService.stopCallSounds();
       soundService.playCallEndedSound();
@@ -253,13 +275,22 @@ class CallService {
       this.currentSession.state = 'ENDED';
       this.notify();
 
-      // Reset after brief delay
+      // Reset session after brief transition
       setTimeout(() => {
         if (this.currentSession?.state === 'ENDED') {
           this.currentSession = null;
           this.notify();
         }
-      }, 1500);
+      }, 800);
+    };
+
+    socketService.on(EVT_CALL_ENDED, handleRemoteEnd);
+    socketService.on('call:end', handleRemoteEnd);
+    socketService.on('v1.call.end', handleRemoteEnd);
+    socketService.on('call:status', (payload: any) => {
+      if (payload?.status === 'ENDED') {
+        handleRemoteEnd(payload);
+      }
     });
 
     // ── Video Switch Request / Accept / Reject ───────────────────────────────
@@ -274,6 +305,7 @@ class CallService {
       if (isVideo) {
         this.currentSession.isSpeakerOn = true;
       }
+      webrtcService.setVideoEnabled(isVideo);
       this.notify();
     });
   }
@@ -291,6 +323,7 @@ class CallService {
     conversationId?: string;
   }): ActiveCallSession {
     const callId = `call_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const isVideo = params.callType === 'video';
 
     this.currentSession = {
       callId,
@@ -303,33 +336,54 @@ class CallService {
       targetUserAvatar: params.targetUserAvatar,
       isCaller: true,
       callType: params.callType,
-      state: 'OUTGOING_CALLING', // Initial state until server checks online status
+      state: 'OUTGOING_CALLING',
       durationSeconds: 0,
       isMuted: false,
-      isSpeakerOn: params.callType === 'video',
-      isVideoEnabled: params.callType === 'video',
+      isSpeakerOn: isVideo,
+      isVideoEnabled: isVideo,
       conversationId: params.conversationId,
     };
 
-    // Emit initiate signal to server
-    socketService.emit(EVT_CALL_INITIATE, {
-      callId,
-      receiverId: params.targetUserId,
-      callType: params.callType,
-      callerName: params.myName,
-      callerAvatar: params.myAvatar,
-      conversationId: params.conversationId,
-    });
+    // Initialize WebRTC and create SDP Offer in background
+    (async () => {
+      try {
+        await webrtcService.startLocalStream(isVideo);
+        await webrtcService.initPeerConnection(callId, params.targetUserId, true);
+        const offer = await webrtcService.createOffer();
 
-    // Start outgoing ringback dial tone (tring... tring...)
+        // Emit initiate signal to server with SDP offer attached
+        socketService.emit(EVT_CALL_INITIATE, {
+          callId,
+          receiverId: params.targetUserId,
+          callType: params.callType,
+          callerName: params.myName,
+          callerAvatar: params.myAvatar,
+          conversationId: params.conversationId,
+          sdp: offer,
+        });
+      } catch (err) {
+        console.warn('⚠️ [WebRTC] Failed to create call offer:', err);
+        // Fallback initiation without offer if media access delayed
+        socketService.emit(EVT_CALL_INITIATE, {
+          callId,
+          receiverId: params.targetUserId,
+          callType: params.callType,
+          callerName: params.myName,
+          callerAvatar: params.myAvatar,
+          conversationId: params.conversationId,
+        });
+      }
+    })();
+
+    // Start outgoing ringback dial tone
     soundService.startOutgoingRingbackTone();
-    // 45s outgoing call timeout (auto-cut if nobody answers)
+    // 45s outgoing call timeout
     this.startCallTimeout(45000);
     this.notify();
     return this.currentSession;
   }
 
-  public acceptCall(callId?: string) {
+  public async acceptCall(callId?: string) {
     if (!this.currentSession) return;
     if (callId && this.currentSession.callId !== callId) return;
 
@@ -340,17 +394,36 @@ class CallService {
     this.currentSession.state = 'CONNECTED';
     this.currentSession.startedAt = Date.now();
 
-    socketService.emit(EVT_CALL_ACCEPT, {
-      callId: this.currentSession.callId,
-      callerId: this.currentSession.callerId,
-    });
+    const isVideo = this.currentSession.callType === 'video';
+
+    // Initialize WebRTC, process offer, and create answer
+    try {
+      await webrtcService.startLocalStream(isVideo);
+      await webrtcService.initPeerConnection(
+        this.currentSession.callId,
+        this.currentSession.callerId,
+        false,
+      );
+
+      let answerSdp: any = null;
+      if (this.currentSession.sdp) {
+        answerSdp = await webrtcService.handleIncomingOffer(this.currentSession.sdp);
+      }
+
+      socketService.emit(EVT_CALL_ACCEPT, {
+        callId: this.currentSession.callId,
+        callerId: this.currentSession.callerId,
+        sdp: answerSdp,
+      });
+    } catch (err) {
+      console.warn('⚠️ [WebRTC] Error during acceptCall handshake:', err);
+      socketService.emit(EVT_CALL_ACCEPT, {
+        callId: this.currentSession.callId,
+        callerId: this.currentSession.callerId,
+      });
+    }
 
     this.startDurationTimer();
-    callAudioService.startVoiceSession(
-      this.currentSession.callId,
-      this.currentSession.targetUserId,
-      this.currentSession.isSpeakerOn,
-    );
     this.notify();
   }
 
@@ -359,7 +432,7 @@ class CallService {
     if (callId && this.currentSession.callId !== callId) return;
 
     this.clearCallTimeout();
-    callAudioService.stopVoiceSession();
+    webrtcService.closeSession();
     this._saveCallLog(reason === 'declined' ? 'declined' : 'missed');
     soundService.stopCallSounds();
     soundService.playCallEndedSound();
@@ -385,7 +458,7 @@ class CallService {
     if (callId && this.currentSession.callId !== callId) return;
 
     this.clearCallTimeout();
-    callAudioService.stopVoiceSession();
+    webrtcService.closeSession();
     this._saveCallLog(reason === 'no_answer' ? 'declined' : undefined);
     soundService.stopCallSounds();
     soundService.playCallEndedSound();
@@ -409,7 +482,7 @@ class CallService {
   public toggleMute(): boolean {
     if (!this.currentSession) return false;
     this.currentSession.isMuted = !this.currentSession.isMuted;
-    callAudioService.setMute(this.currentSession.isMuted);
+    webrtcService.setMute(this.currentSession.isMuted);
     this.notify();
     return this.currentSession.isMuted;
   }
@@ -417,7 +490,6 @@ class CallService {
   public toggleSpeaker(): boolean {
     if (!this.currentSession) return false;
     this.currentSession.isSpeakerOn = !this.currentSession.isSpeakerOn;
-    callAudioService.setSpeaker(this.currentSession.isSpeakerOn);
     this.notify();
     return this.currentSession.isSpeakerOn;
   }
@@ -429,8 +501,8 @@ class CallService {
     this.currentSession.callType = newVideoState ? 'video' : 'audio';
     if (newVideoState) {
       this.currentSession.isSpeakerOn = true;
-      callAudioService.setSpeaker(true);
     }
+    webrtcService.setVideoEnabled(newVideoState);
 
     socketService.emit(EVT_CALL_SWITCH_VIDEO, {
       callId: this.currentSession.callId,
@@ -443,13 +515,20 @@ class CallService {
     return newVideoState;
   }
 
+  public switchCamera() {
+    webrtcService.switchCamera();
+  }
+
   public getSession(): ActiveCallSession | null {
     return this.currentSession;
   }
 
-  public addListener(listener: CallListener) {
+  public addListener(listener: CallListener): () => void {
     this.listeners.add(listener);
     listener(this.currentSession);
+    return () => {
+      this.listeners.delete(listener);
+    };
   }
 
   public removeListener(listener: CallListener) {
@@ -510,6 +589,9 @@ class CallService {
   private _saveCallLog(statusOverride?: 'completed' | 'missed' | 'declined' | 'failed') {
     if (!this.currentSession) return;
     const session = this.currentSession;
+    if (this.loggedCallIds.has(session.callId)) return;
+    this.loggedCallIds.add(session.callId);
+
     const isConnected = session.durationSeconds > 0 || session.state === 'CONNECTED';
 
     let direction: 'outgoing' | 'incoming' | 'missed' = session.isCaller ? 'outgoing' : 'incoming';

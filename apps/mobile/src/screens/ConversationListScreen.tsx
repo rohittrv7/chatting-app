@@ -1439,7 +1439,8 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
       });
       navigation.navigate('Call', {
         callId: session.callId,
-        targetUserId: log.targetUserName || log.targetUserId,
+        targetUserId: log.targetUserId,
+        targetUserName: log.targetUserName,
         isCaller: true,
         isVideo: log.callType === 'video',
       });
@@ -2520,8 +2521,13 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                   const p = selectedAvatarProfile;
                   setSelectedAvatarProfile(null);
                   if (p) {
+                    const recipientId =
+                      (p as any).recipientDbId ||
+                      (p as any).recipientId ||
+                      (p as any).participantId ||
+                      p.id;
                     const session = callService.startCall({
-                      targetUserId: (p as any).recipientId || (p as any).participantId || p.title,
+                      targetUserId: recipientId,
                       targetUserName: p.title,
                       targetUserAvatar: p.avatarUrl,
                       callType: 'audio',
@@ -2532,7 +2538,8 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                     });
                     navigation.navigate('Call', {
                       callId: session.callId,
-                      targetUserId: p.title,
+                      targetUserId: recipientId,
+                      targetUserName: p.title,
                       isCaller: true,
                       isVideo: false,
                     });
@@ -2549,8 +2556,13 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                   const p = selectedAvatarProfile;
                   setSelectedAvatarProfile(null);
                   if (p) {
+                    const recipientId =
+                      (p as any).recipientDbId ||
+                      (p as any).recipientId ||
+                      (p as any).participantId ||
+                      p.id;
                     const session = callService.startCall({
-                      targetUserId: (p as any).recipientId || (p as any).participantId || p.title,
+                      targetUserId: recipientId,
                       targetUserName: p.title,
                       targetUserAvatar: p.avatarUrl,
                       callType: 'video',
@@ -2561,7 +2573,8 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                     });
                     navigation.navigate('Call', {
                       callId: session.callId,
-                      targetUserId: p.title,
+                      targetUserId: recipientId,
+                      targetUserName: p.title,
                       isCaller: true,
                       isVideo: true,
                     });
@@ -2905,8 +2918,13 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                   const p = selectedInfoProfile;
                   setSelectedInfoProfile(null);
                   if (p) {
+                    const recipientId =
+                      (p as any).recipientDbId ||
+                      (p as any).recipientId ||
+                      (p as any).participantId ||
+                      p.id;
                     const session = callService.startCall({
-                      targetUserId: (p as any).recipientId || (p as any).participantId || p.title,
+                      targetUserId: recipientId,
                       targetUserName: p.title,
                       targetUserAvatar: p.avatarUrl,
                       callType: 'audio',
@@ -2917,7 +2935,8 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                     });
                     navigation.navigate('Call', {
                       callId: session.callId,
-                      targetUserId: p.title,
+                      targetUserId: recipientId,
+                      targetUserName: p.title,
                       isCaller: true,
                       isVideo: false,
                     });
@@ -2944,8 +2963,13 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                   const p = selectedInfoProfile;
                   setSelectedInfoProfile(null);
                   if (p) {
+                    const recipientId =
+                      (p as any).recipientDbId ||
+                      (p as any).recipientId ||
+                      (p as any).participantId ||
+                      p.id;
                     const session = callService.startCall({
-                      targetUserId: (p as any).recipientId || (p as any).participantId || p.title,
+                      targetUserId: recipientId,
                       targetUserName: p.title,
                       targetUserAvatar: p.avatarUrl,
                       callType: 'video',
@@ -2956,7 +2980,8 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                     });
                     navigation.navigate('Call', {
                       callId: session.callId,
-                      targetUserId: p.title,
+                      targetUserId: recipientId,
+                      targetUserName: p.title,
                       isCaller: true,
                       isVideo: true,
                     });

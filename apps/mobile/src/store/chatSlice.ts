@@ -84,11 +84,25 @@ export const chatSlice = createSlice({
       }
       const msgs = state.messagesMap[conversationId];
 
-      // Dedup: skip if exact same id already exists
-      const exactIdx = msgs.findIndex((m) => m.id === message.id);
+      // Dedup: skip if exact same id already exists or duplicate call log within 20 seconds
+      const exactIdx = msgs.findIndex((m) => {
+        if (m.id === message.id) return true;
+        if (message.callLog && m.callLog) {
+          if (
+            m.id.startsWith('call_log_') &&
+            message.id.startsWith('call_log_') &&
+            m.callLog.callType === message.callLog.callType &&
+            Math.abs((m.createdAtMs || 0) - (message.createdAtMs || Date.now())) < 20000
+          ) {
+            return true;
+          }
+        }
+        return false;
+      });
+
       if (exactIdx >= 0) {
         // Update existing (e.g. status change)
-        msgs[exactIdx] = { ...msgs[exactIdx], ...message };
+        msgs[exactIdx] = { ...msgs[exactIdx], ...message, id: msgs[exactIdx].id };
         safeStorage.setItem(CHAT_STORAGE_KEYS.MESSAGES, JSON.stringify(state.messagesMap));
         safeStorage.setItem(CHAT_STORAGE_KEYS.CONVERSATIONS, JSON.stringify(state.conversations));
         return;
@@ -180,6 +194,28 @@ export const chatSlice = createSlice({
             if (msg.id === messageId) {
               msg.uploadProgress = uploadProgress;
               msg.isUploading = isUploading;
+              if (imagePath) msg.imagePath = imagePath;
+            }
+          }
+        }
+      }
+      safeStorage.setItem(CHAT_STORAGE_KEYS.MESSAGES, JSON.stringify(state.messagesMap));
+    },
+    updateMessageMediaDownloaded: (
+      state,
+      action: PayloadAction<{
+        messageId: string;
+        imagePath?: string;
+        isDownloaded: boolean;
+      }>,
+    ) => {
+      const { messageId, imagePath, isDownloaded } = action.payload;
+      for (const cId of Object.keys(state.messagesMap)) {
+        const msgs = state.messagesMap[cId];
+        if (msgs && Array.isArray(msgs)) {
+          for (const msg of msgs) {
+            if (msg.id === messageId) {
+              msg.isDownloaded = isDownloaded;
               if (imagePath) msg.imagePath = imagePath;
             }
           }
@@ -323,6 +359,7 @@ export const {
   appendMessage,
   updateMessageStatus,
   updateMessageProgress,
+  updateMessageMediaDownloaded,
   markAllMessagesRead,
   toggleStarMessage,
   toggleMessageReaction,

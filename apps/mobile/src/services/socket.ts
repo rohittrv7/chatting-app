@@ -43,6 +43,7 @@ export const EVT_CALL_BUSY = 'call:busy';
 export const EVT_WEBRTC_OFFER = 'webrtc:offer';
 export const EVT_WEBRTC_ANSWER = 'webrtc:answer';
 export const EVT_WEBRTC_ICE_CANDIDATE = 'webrtc:ice-candidate';
+export const EVT_CALL_ICE_CANDIDATE = 'call:ice-candidate';
 export const EVT_CALL_SWITCH_VIDEO = 'call:switch-to-video';
 
 // ─── Payload types ────────────────────────────────────────────────────────────
@@ -220,6 +221,7 @@ class RealtimeSocketService {
     };
     document?: { uri: string; name: string; size?: number | string; mimeType?: string };
     contact?: { name: string; phone: string; username?: string };
+    mediaSize?: string;
     type?: string;
   }): void {
     if (!this.socket?.connected) return;
@@ -309,8 +311,8 @@ class RealtimeSocketService {
     try {
       console.log('📡 [Socket] Connecting to:', url);
       this.socket = io(url, {
-        transports: ['polling', 'websocket'],
-        upgrade: true,
+        transports: ['websocket', 'polling'],
+        upgrade: false,
         autoConnect: true,
         reconnection: true,
         reconnectionAttempts: Infinity,

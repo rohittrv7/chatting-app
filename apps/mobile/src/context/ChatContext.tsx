@@ -19,6 +19,7 @@ import {
   appendMessage,
   updateMessageStatus,
   updateMessageProgress,
+  updateMessageMediaDownloaded as updateMessageMediaDownloadedRedux,
   markAllMessagesRead,
   toggleStarMessage as toggleStarRedux,
   toggleMessageReaction as toggleReactionRedux,
@@ -100,6 +101,11 @@ interface ChatContextType {
     isUploading: boolean,
     imagePath?: string,
   ) => void;
+  updateMessageMediaDownloaded: (
+    messageId: string,
+    imagePath?: string,
+    isDownloaded?: boolean,
+  ) => void;
   addConversation: (
     title: string,
     username?: string,
@@ -160,6 +166,7 @@ const ChatContext = createContext<ChatContextType>({
   loadHistoricalMessagesForConversation: async () => {},
   addMessage: () => {},
   updateMessageUploadProgress: () => {},
+  updateMessageMediaDownloaded: () => {},
   addConversation: () => {},
   deleteConversation: () => {},
   clearMessages: () => {},
@@ -558,6 +565,8 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       createdAtMs: payload.createdAt ? new Date(payload.createdAt).getTime() : Date.now(),
       createdAt: payload.createdAt || now.toISOString(),
       imagePath: payload.imagePath,
+      mediaSize: (payload as any).mediaSize || (payload as any).fileSize,
+      isDownloaded: false,
       location: payload.location,
       document: payload.document,
       contact: payload.contact,
@@ -1259,6 +1268,14 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     dispatch(updateMessageProgress({ messageId, uploadProgress, isUploading, imagePath }));
   };
 
+  const updateMessageMediaDownloaded = (
+    messageId: string,
+    imagePath?: string,
+    isDownloaded = true,
+  ) => {
+    dispatch(updateMessageMediaDownloadedRedux({ messageId, imagePath, isDownloaded }));
+  };
+
   const toggleStarMessage = (conversationId: string, messageId: string): boolean => {
     dispatch(toggleStarRedux({ conversationId, messageId }));
     const msg = (messagesMap[conversationId] || []).find((m) => m.id === messageId);
@@ -1581,8 +1598,12 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       callStatus: 'completed' | 'missed' | 'declined',
       durationSeconds: number,
       isCaller: boolean,
+      callId?: string,
     ) => {
-      const msgId = `call_log_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      const msgId = callId ? `call_log_${callId}` : `call_log_${Date.now()}`;
+      const currentMsgs = messagesMapRef.current[conversationId] || [];
+      if (currentMsgs.some((m) => m.id === msgId)) return;
+
       const now = new Date();
       const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
@@ -1631,6 +1652,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
           log.status,
           log.durationSeconds,
           log.isCaller,
+          log.callId,
         );
       }
     });
@@ -1653,6 +1675,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         loadHistoricalMessagesForConversation,
         addMessage,
         updateMessageUploadProgress,
+        updateMessageMediaDownloaded,
         addConversation,
         deleteConversation,
         clearMessages,

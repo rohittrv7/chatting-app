@@ -117,7 +117,7 @@ export const IncomingCallModal: React.FC<Props> = ({ navigationRef }) => {
     if (nav?.navigate && session) {
       nav.navigate('Call', {
         callId: session.callId,
-        targetUserId: session.callerName || session.callerId,
+        targetUserId: session.callerId || session.targetUserId,
         isCaller: false,
         isVideo: session.callType === 'video',
       });

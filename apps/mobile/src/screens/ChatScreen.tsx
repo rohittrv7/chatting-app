@@ -285,6 +285,7 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
     messagesMap,
     addMessage,
     updateMessageUploadProgress,
+    updateMessageMediaDownloaded,
     toggleStarMessage,
     reactToMessage,
     resendMessage,
@@ -726,17 +727,55 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
     }
   };
 
+  const [downloadingMediaIds, setDownloadingMediaIds] = useState<Set<string>>(new Set());
+
+  const handleDownloadMedia = async (msg: ChatMessage) => {
+    if (!msg.imagePath || downloadingMediaIds.has(msg.id)) return;
+    setDownloadingMediaIds((prev) => new Set(prev).add(msg.id));
+    try {
+      const remoteUrl = apiService.getResolvedMediaUrl(msg.imagePath);
+      const filename = `photo_${msg.id}_${Date.now()}.jpg`;
+      const localUri = `${FileSystem.cacheDirectory}${filename}`;
+      const result = await FileSystem.downloadAsync(remoteUrl, localUri);
+      if (result.status === 200) {
+        updateMessageMediaDownloaded(msg.id, result.uri, true);
+        showToast('Photo downloaded', 'success');
+      } else {
+        showToast('Download failed', 'error');
+      }
+    } catch {
+      showToast('Could not download photo', 'error');
+    } finally {
+      setDownloadingMediaIds((prev) => {
+        const next = new Set(prev);
+        next.delete(msg.id);
+        return next;
+      });
+    }
+  };
+
   const handleSendMediaPreview = () => {
     if (!pendingMediaList.length || !recipientDbId) return;
     const list = [...pendingMediaList];
     const cap = mediaCaption.trim();
     setPendingMediaList([]);
     setMediaCaption('');
+
     list.forEach(async (media, idx) => {
       const captionToUse = idx === 0 ? cap : '';
-      let mediaUrlToSend = media.uri;
 
-      // Ensure base64 is available for upload
+      // 1. Instantly add optimistic message to chat with local URI and instant preview
+      addMessage(
+        conversationId,
+        captionToUse,
+        true,
+        media.uri,
+        undefined,
+        recipientDbId,
+        resolvedDisplayName,
+      );
+
+      // 2. Perform background upload
       let base64Data = media.base64;
       if (!base64Data && media.uri) {
         try {
@@ -746,30 +785,16 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
         } catch {}
       }
 
-      // Upload directly to server & Backblaze B2 via backend API
       if (token && base64Data) {
         try {
-          const uploadRes = await apiService.uploadMediaFile(
+          await apiService.uploadMediaFile(
             token,
             base64Data,
             media.name || `photo_${Date.now()}.jpg`,
             'image/jpeg',
           );
-          if (uploadRes.success && uploadRes.url) {
-            mediaUrlToSend = uploadRes.url;
-          }
         } catch {}
       }
-
-      addMessage(
-        conversationId,
-        captionToUse,
-        true,
-        mediaUrlToSend,
-        undefined,
-        recipientDbId,
-        resolvedDisplayName,
-      );
     });
   };
 
@@ -1128,7 +1153,8 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
     });
     navigation.navigate('Call', {
       callId: session.callId,
-      targetUserId: resolvedDisplayName || title,
+      targetUserId: finalTargetId,
+      targetUserName: resolvedDisplayName || title,
       isCaller: true,
       isVideo: callType === 'video',
     });
@@ -1327,27 +1353,63 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
 
                 {/* Image */}
                 {msg.imagePath ? (
-                  <TouchableOpacity
-                    activeOpacity={0.9}
-                    onPress={() => setSelectedPhotoMsg(msg)}
-                    style={styles.imageBubbleWrapper}
-                  >
-                    <Image
-                      source={{ uri: apiService.getResolvedMediaUrl(msg.imagePath) }}
-                      style={styles.chatImageBubble}
-                      resizeMode="cover"
-                    />
-                    {msg.isUploading ? (
-                      <View style={styles.uploadProgressOverlay}>
-                        <ActivityIndicator size="small" color="#FFF" />
-                        <Text style={styles.uploadProgressText}>{msg.uploadProgress ?? 45}%</Text>
-                      </View>
+                  <View style={styles.imageBubbleWrapper}>
+                    {isMe ||
+                    msg.isDownloaded ||
+                    (typeof msg.imagePath === 'string' && msg.imagePath.startsWith('file://')) ? (
+                      <TouchableOpacity
+                        activeOpacity={0.9}
+                        onPress={() => setSelectedPhotoMsg(msg)}
+                        style={styles.imageBubbleTouch}
+                      >
+                        <Image
+                          source={{ uri: apiService.getResolvedMediaUrl(msg.imagePath) }}
+                          style={styles.chatImageBubble}
+                          resizeMode="cover"
+                        />
+                        {msg.isUploading ? (
+                          <View style={styles.uploadProgressOverlay}>
+                            <ActivityIndicator size="small" color="#FFF" />
+                            <Text style={styles.uploadProgressText}>
+                              {msg.uploadProgress ?? 45}%
+                            </Text>
+                          </View>
+                        ) : (
+                          <View style={styles.imageOverlayBadge}>
+                            <ZoomIn size={13} color="#FFF" />
+                          </View>
+                        )}
+                      </TouchableOpacity>
                     ) : (
-                      <View style={styles.imageOverlayBadge}>
-                        <ZoomIn size={13} color="#FFF" />
-                      </View>
+                      /* 📥 WhatsApp-Style Receiver Download Tile */
+                      <TouchableOpacity
+                        activeOpacity={0.85}
+                        onPress={() => handleDownloadMedia(msg)}
+                        style={styles.receiverMediaDownloadCard}
+                      >
+                        <Image
+                          source={{ uri: apiService.getResolvedMediaUrl(msg.imagePath) }}
+                          style={[styles.chatImageBubble, { opacity: 0.25 }]}
+                          resizeMode="cover"
+                          blurRadius={10}
+                        />
+                        <View style={styles.downloadCenterOverlay}>
+                          <View style={styles.downloadCircleBtn}>
+                            {downloadingMediaIds.has(msg.id) ? (
+                              <ActivityIndicator size="small" color="#FFF" />
+                            ) : (
+                              <Download size={20} color="#FFF" />
+                            )}
+                          </View>
+                          <View style={styles.mediaSizeBadge}>
+                            <Text style={styles.mediaSizeText}>
+                              {msg.mediaSize || 'Photo • Tap to Download'}
+                            </Text>
+                          </View>
+                        </View>
+                      </TouchableOpacity>
                     )}
-                  </TouchableOpacity>
+                  </View>
                 ) : null}
 
                 {/* Document attachment */}
@@ -3077,7 +3139,49 @@ const styles = StyleSheet.create({
   reactEmoji: { fontSize: 26 },
   // Image bubble
   imageBubbleWrapper: { position: 'relative', borderRadius: 14, overflow: 'hidden' },
+  imageBubbleTouch: { position: 'relative', borderRadius: 14, overflow: 'hidden' },
   chatImageBubble: { width: 220, height: 160, borderRadius: 14 },
+  receiverMediaDownloadCard: {
+    width: 220,
+    height: 160,
+    borderRadius: 14,
+    overflow: 'hidden',
+    position: 'relative',
+    backgroundColor: '#1E293B',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  downloadCenterOverlay: {
+    position: 'absolute',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 10,
+  },
+  downloadCircleBtn: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: '#10B981',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.35,
+    shadowRadius: 4,
+    elevation: 4,
+  },
+  mediaSizeBadge: {
+    marginTop: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    borderRadius: 12,
+    backgroundColor: 'rgba(0,0,0,0.65)',
+  },
+  mediaSizeText: {
+    color: '#FFF',
+    fontSize: 11,
+    fontWeight: '700',
+  },
   uploadProgressOverlay: {
     position: 'absolute',
     top: 0,

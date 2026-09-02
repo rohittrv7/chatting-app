@@ -66,8 +66,9 @@ export const EVT_MISSED_MESSAGES = 'messages:missed'; // offline gap fill on rec
   cors: { origin: '*', credentials: true },
   namespace: '/',
   transports: ['polling', 'websocket'],
-  pingTimeout: 45000,
-  pingInterval: 15000,
+  maxHttpBufferSize: 5e7, // 50MB buffer to prevent transport close on high-res video/audio streaming
+  pingTimeout: 60000,
+  pingInterval: 25000,
 })
 export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()
@@ -250,19 +251,22 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       }
     }
 
-    // ── Resolve conversationId: must be a real DB UUID ────────────────────
-    // If client sends a string like "direct_riyal_rohit", auto-create / find the real conv.
+    // ── Enforce strict 1-to-1 conversation isolation ──────────────────────
+    // Regardless of what temporary ID client sent, lock 1-to-1 direct chat to verified DB conversation UUID
     let conversationId = payload.conversationId;
-
-    if (!UUID_RE.test(conversationId)) {
-      try {
-        const conv = await this.conversationService.getOrCreateDirect(senderId, receiverId);
+    try {
+      const conv = await this.conversationService.getOrCreateDirect(senderId, receiverId);
+      if (conv?.id) {
         conversationId = conv.id;
-      } catch {
+      }
+    } catch {
+      if (!UUID_RE.test(conversationId)) {
         client.emit(EVT_MESSAGE_ACK, { clientMessageId, error: 'Could not create conversation' });
         return;
       }
     }
+
+    const mediaSize = (payload as any).mediaSize || (payload as any).fileSize;
 
     // ── STEP 1: Synchronous DB write (blocking — durability first) ────────
     let savedMessage: any;
@@ -272,7 +276,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
         conversationId,
         receiverId,
         type: msgType as any,
-        ciphertexts: { text: text ?? '', imagePath, location, document, contact } as any,
+        ciphertexts: { text: text ?? '', imagePath, location, document, contact, mediaSize } as any,
       });
     } catch (err: any) {
       // Idempotency: if clientMessageId already exists for this sender, fetch existing row
@@ -328,6 +332,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       location,
       document,
       contact,
+      mediaSize,
       type: msgType,
       status: 'SERVER_RECEIVED',
       createdAt,
@@ -792,6 +797,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       callerAvatar: payload.callerAvatar,
       callType: payload.callType || 'audio',
       conversationId: payload.conversationId,
+      sdp: (payload as any).sdp,
     };
 
     // Broadcast incoming call to receiver's personal room
@@ -831,7 +837,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
   @SubscribeMessage(EVT_CALL_ACCEPT)
   async handleCallAccept(
     @ConnectedSocket() client: Socket,
-    @MessageBody() payload: { callId: string; callerId: string },
+    @MessageBody() payload: { callId: string; callerId: string; sdp?: any },
   ) {
     const senderId = (client as any)._userId || client.data?.userId;
     if (!senderId || !payload.callerId) return;
@@ -845,6 +851,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     const acceptData = {
       callId: payload.callId,
       receiverId: senderId,
+      sdp: payload.sdp,
     };
 
     this.server.to(`user:${targetCallerId}`).emit(EVT_CALL_ACCEPTED, acceptData);
@@ -913,6 +920,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       reason: payload.reason || 'ended',
     };
 
+    // Broadcast to target user room
     this.server.to(`user:${targetUserId}`).emit(EVT_CALL_ENDED, endData);
     this.server.to(`user:${targetUserId}`).emit('call:status', {
       callId: payload.callId,
@@ -927,6 +935,14 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
         reason: payload.reason || 'ended',
       });
     }
+
+    // Also notify sender socket/room to guarantee synchronized cleanup
+    client.emit(EVT_CALL_ENDED, endData);
+    client.emit('call:status', {
+      callId: payload.callId,
+      status: 'ENDED',
+      reason: payload.reason || 'ended',
+    });
   }
 
   @SubscribeMessage(EVT_WEBRTC_OFFER)
@@ -970,6 +986,32 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     if (!senderId || !payload.targetUserId) return;
 
     const targetUserId = (await this._resolveUserId(payload.targetUserId)) || payload.targetUserId;
+    this.server.to(`user:${targetUserId}`).emit(EVT_WEBRTC_ICE_CANDIDATE, {
+      callId: payload.callId,
+      candidate: payload.candidate,
+      senderId,
+    });
+    this.server.to(`user:${targetUserId}`).emit('call:ice-candidate', {
+      callId: payload.callId,
+      candidate: payload.candidate,
+      senderId,
+    });
+  }
+
+  @SubscribeMessage('call:ice-candidate')
+  async handleCallIceCandidate(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { callId: string; targetUserId: string; candidate: any },
+  ) {
+    const senderId = (client as any)._userId || client.data?.userId;
+    if (!senderId || !payload.targetUserId) return;
+
+    const targetUserId = (await this._resolveUserId(payload.targetUserId)) || payload.targetUserId;
+    this.server.to(`user:${targetUserId}`).emit('call:ice-candidate', {
+      callId: payload.callId,
+      candidate: payload.candidate,
+      senderId,
+    });
     this.server.to(`user:${targetUserId}`).emit(EVT_WEBRTC_ICE_CANDIDATE, {
       callId: payload.callId,
       candidate: payload.candidate,

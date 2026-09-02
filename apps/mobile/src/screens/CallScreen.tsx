@@ -8,7 +8,6 @@ import {
   Animated,
   Platform,
   useWindowDimensions,
-  Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -25,12 +24,10 @@ import {
   VolumeX,
   ArrowLeft,
   RefreshCw,
-  Camera,
 } from 'lucide-react-native';
-import { CameraView, CameraType, useCameraPermissions } from 'expo-camera';
+import { RTCView, MediaStream } from 'react-native-webrtc';
 import { callService, ActiveCallSession } from '../services/callService';
-import { soundService } from '../services/soundService';
-import { socketService } from '../services/socket';
+import { webrtcService } from '../services/webrtcService';
 import { SmartAvatar } from '../components/SmartAvatar';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Call'>;
@@ -58,11 +55,16 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
   const [isVideo, setIsVideo] = useState(initialIsVideo || false);
   const [isConnected, setIsConnected] = useState(false);
   const [secondsElapsed, setSecondsElapsed] = useState(0);
-  const [cameraFacing, setCameraFacing] = useState<CameraType>('front');
-  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
-  const [remoteVideoFrame, setRemoteVideoFrame] = useState<string | null>(null);
+  const [cameraFacing, setCameraFacing] = useState<'front' | 'back'>('front');
 
-  const cameraRef = useRef<CameraView>(null);
+  // WebRTC Live Media Streams
+  const [localStream, setLocalStream] = useState<MediaStream | null>(
+    webrtcService.getLocalStream(),
+  );
+  const [remoteStream, setRemoteStream] = useState<MediaStream | null>(
+    webrtcService.getRemoteStream(),
+  );
+
   const hasNavigatedBack = useRef(false);
 
   const safeGoBack = useCallback(() => {
@@ -73,83 +75,20 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
     }
   }, [navigation]);
 
-  // Request camera permission when video is enabled
+  // Subscribe to live WebRTC media streams
   useEffect(() => {
-    if (isVideo && !cameraPermission?.granted) {
-      requestCameraPermission();
-    }
-  }, [isVideo, cameraPermission, requestCameraPermission]);
+    const unsubLocal = webrtcService.subscribeLocalStream((stream) => {
+      setLocalStream(stream);
+    });
+    const unsubRemote = webrtcService.subscribeRemoteStream((stream) => {
+      setRemoteStream(stream);
+    });
 
-  // Listen for remote video stream frames
-  useEffect(() => {
-    const handleRemoteFrame = (data: { callId: string; frameBase64: string }) => {
-      if (data?.frameBase64) {
-        setRemoteVideoFrame(data.frameBase64);
-      }
-    };
-
-    socketService.on('call:video-frame', handleRemoteFrame);
     return () => {
-      socketService.off('call:video-frame', handleRemoteFrame);
+      unsubLocal();
+      unsubRemote();
     };
   }, []);
-
-  // Continuous live camera frame capture loop for video streaming
-  useEffect(() => {
-    let isStreaming = true;
-    let timer: any = null;
-
-    const captureAndStreamFrame = async () => {
-      if (!isStreaming || !isVideo || !cameraPermission?.granted || !cameraRef.current) {
-        return;
-      }
-
-      try {
-        const targetId = callSession?.targetUserId || targetUserId;
-        const currentCallId = callSession?.callId || callId;
-
-        if (targetId && currentCallId && isConnected) {
-          const photo = await cameraRef.current.takePictureAsync({
-            quality: 0.25,
-            base64: true,
-            skipProcessing: true,
-            shutterSound: false,
-          });
-
-          if (photo?.base64 && isStreaming) {
-            const dataUri = `data:image/jpeg;base64,${photo.base64}`;
-            socketService.emit('call:video-frame', {
-              callId: currentCallId,
-              targetUserId: targetId,
-              frameBase64: dataUri,
-              timestamp: Date.now(),
-            });
-          }
-        }
-      } catch (_) {}
-
-      if (isStreaming && isVideo) {
-        timer = setTimeout(captureAndStreamFrame, 900);
-      }
-    };
-
-    if (isVideo && isConnected && cameraPermission?.granted) {
-      timer = setTimeout(captureAndStreamFrame, 1000);
-    }
-
-    return () => {
-      isStreaming = false;
-      if (timer) clearTimeout(timer);
-    };
-  }, [
-    isVideo,
-    isConnected,
-    cameraPermission?.granted,
-    callSession?.targetUserId,
-    callSession?.callId,
-    targetUserId,
-    callId,
-  ]);
 
   // Animated pulse rings for ringing/active state
   const pulseAnim1 = useRef(new Animated.Value(1)).current;
@@ -157,109 +96,114 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
   const fadeAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    const handleCallState = (session: ActiveCallSession | null) => {
-      setCallSession(session);
-      if (!session || session.state === 'ENDED') {
-        soundService.stopCallSounds();
-        setTimeout(() => {
-          safeGoBack();
-        }, 500);
-        return;
-      }
-
-      if (session.state === 'CONNECTED') {
-        soundService.stopCallSounds();
-      }
-
-      setIsConnected(session.state === 'CONNECTED');
-      setIsMuted(session.isMuted);
-      setIsSpeakerOn(session.isSpeakerOn);
-      setIsVideo(session.callType === 'video' || session.isVideoEnabled);
-      setSecondsElapsed(session.durationSeconds);
-    };
-
-    callService.addListener(handleCallState);
-    return () => {
-      callService.removeListener(handleCallState);
-      soundService.stopCallSounds();
-    };
-  }, [safeGoBack]);
-
-  useEffect(() => {
     Animated.timing(fadeAnim, {
       toValue: 1,
-      duration: 500,
+      duration: 400,
       useNativeDriver: true,
     }).start();
 
-    const createPulse = (anim: Animated.Value, delay: number) => {
-      return Animated.loop(
-        Animated.sequence([
-          Animated.delay(delay),
-          Animated.timing(anim, {
-            toValue: 1.4,
-            duration: 1200,
-            useNativeDriver: true,
-          }),
-          Animated.timing(anim, {
-            toValue: 1,
-            duration: 1200,
-            useNativeDriver: true,
-          }),
-        ]),
-      );
-    };
+    const ring1 = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseAnim1, {
+          toValue: 1.3,
+          duration: 1500,
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulseAnim1, {
+          toValue: 1,
+          duration: 1500,
+          useNativeDriver: true,
+        }),
+      ]),
+    );
 
-    const p1 = createPulse(pulseAnim1, 0);
-    const p2 = createPulse(pulseAnim2, 400);
+    const ring2 = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseAnim2, {
+          toValue: 1.5,
+          duration: 2000,
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulseAnim2, {
+          toValue: 1,
+          duration: 2000,
+          useNativeDriver: true,
+        }),
+      ]),
+    );
 
-    p1.start();
-    p2.start();
+    ring1.start();
+    ring2.start();
 
     return () => {
-      p1.stop();
-      p2.stop();
+      ring1.stop();
+      ring2.stop();
     };
   }, []);
 
-  const formatDuration = (secs: number) => {
-    const mins = Math.floor(secs / 60);
-    const remSecs = secs % 60;
-    return `${mins.toString().padStart(2, '0')}:${remSecs.toString().padStart(2, '0')}`;
-  };
+  // Sync call state with CallService
+  useEffect(() => {
+    const unsubscribe = callService.addListener((session) => {
+      setCallSession(session);
+      if (session) {
+        setIsMuted(session.isMuted);
+        setIsSpeakerOn(session.isSpeakerOn);
+        setIsVideo(session.isVideoEnabled);
+        setIsConnected(session.state === 'CONNECTED');
+        setSecondsElapsed(session.durationSeconds);
+      } else {
+        safeGoBack();
+      }
+    });
 
-  const handlePickUp = () => {
-    callService.acceptCall();
-    setIsConnected(true);
-  };
+    return () => {
+      unsubscribe();
+    };
+  }, [safeGoBack]);
 
-  const handleEndCall = () => {
-    if (callSession) {
-      callService.endCall();
+  // Handle call termination auto-navigation
+  useEffect(() => {
+    if (callSession?.state === 'ENDED') {
+      const timer = setTimeout(() => {
+        safeGoBack();
+      }, 800);
+      return () => clearTimeout(timer);
     }
-    safeGoBack();
-  };
+  }, [callSession?.state, safeGoBack]);
 
   const handleToggleMute = () => {
-    const muted = callService.toggleMute();
-    setIsMuted(muted);
+    const newMute = callService.toggleMute();
+    setIsMuted(newMute);
   };
 
   const handleToggleSpeaker = () => {
-    const speaker = callService.toggleSpeaker();
-    setIsSpeakerOn(speaker);
+    const newSpeaker = callService.toggleSpeaker();
+    setIsSpeakerOn(newSpeaker);
   };
 
   const handleToggleVideo = () => {
-    const videoOn = callService.toggleVideoSwitch();
-    setIsVideo(videoOn);
+    const newVideo = callService.toggleVideoSwitch();
+    setIsVideo(newVideo);
   };
 
   const handleFlipCamera = () => {
+    webrtcService.switchCamera();
     setCameraFacing((prev) => (prev === 'front' ? 'back' : 'front'));
   };
 
-  const displayName = callSession?.targetUserName || targetUserId || 'Contact';
+  const handleEndCall = () => {
+    callService.endCall(callSession?.callId || callId);
+    safeGoBack();
+  };
+
+  const formatDuration = (totalSeconds: number): string => {
+    const m = Math.floor(totalSeconds / 60);
+    const s = totalSeconds % 60;
+    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  };
+
+  const displayName =
+    callSession?.targetUserName || (route.params as any)?.targetUserName || 'Contact';
   const avatarUrl = callSession?.targetUserAvatar;
 
   const isRinging = callSession?.state === 'OUTGOING_RINGING';
@@ -275,14 +219,23 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
           ? 'Calling...'
           : 'Incoming Call...';
 
-  const statusDotColor = isConnected || isRinging ? '#10B981' : '#F59E0B';
-  const statusTextColor = isConnected || isRinging ? '#34D399' : '#FBBF24';
-  const statusBadgeBg =
-    isConnected || isRinging ? 'rgba(16, 185, 129, 0.15)' : 'rgba(245, 158, 11, 0.15)';
-  const statusBadgeBorder =
-    isConnected || isRinging ? 'rgba(16, 185, 129, 0.3)' : 'rgba(245, 158, 11, 0.3)';
+  const statusBadgeBg = isConnected
+    ? 'rgba(16, 185, 129, 0.15)'
+    : isRinging
+      ? 'rgba(59, 130, 246, 0.15)'
+      : 'rgba(245, 158, 11, 0.15)';
 
-  // Responsive scaling
+  const statusBadgeBorder = isConnected
+    ? 'rgba(16, 185, 129, 0.35)'
+    : isRinging
+      ? 'rgba(59, 130, 246, 0.35)'
+      : 'rgba(245, 158, 11, 0.35)';
+
+  const statusDotColor = isConnected ? '#10B981' : isRinging ? '#3B82F6' : '#F59E0B';
+  const statusTextColor = isConnected ? '#10B981' : isRinging ? '#60A5FA' : '#FBBF24';
+
+  const hasRemoteVideo = isVideo && remoteStream && remoteStream.getVideoTracks().length > 0;
+  const hasLocalVideo = isVideo && localStream && localStream.getVideoTracks().length > 0;
   const avatarSize = screenHeight < 700 ? 90 : 110;
 
   return (
@@ -300,7 +253,7 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
           <Text style={styles.securityText}>End-to-End Encrypted</Text>
         </View>
 
-        {isVideo && cameraPermission?.granted ? (
+        {isVideo && hasLocalVideo ? (
           <TouchableOpacity
             style={styles.flipCameraHeaderBtn}
             onPress={handleFlipCamera}
@@ -313,18 +266,19 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
         )}
       </View>
 
-      {/* Main Body */}
+      {/* Main Video or Voice Call Body */}
       {isVideo ? (
-        // 📹 TWO-WAY VIDEO CALL LAYOUT
+        // 📹 TRUE WEBRTC VIDEO CALL LAYOUT
         <View style={styles.videoMainContainer}>
           {/* Remote Video Stream Area */}
           <View style={styles.remoteVideoBackdrop}>
-            {remoteVideoFrame ? (
+            {hasRemoteVideo ? (
               <View style={styles.remoteVideoWrapper}>
-                <Image
-                  source={{ uri: remoteVideoFrame }}
+                <RTCView
+                  streamURL={remoteStream!.toURL()}
                   style={StyleSheet.absoluteFillObject}
-                  resizeMode="cover"
+                  objectFit="cover"
+                  zOrder={0}
                 />
                 <View style={styles.remoteOverlayInfo}>
                   <Text style={styles.remoteOverlayName} numberOfLines={1}>
@@ -357,42 +311,33 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
                   <View style={[styles.statusDot, { backgroundColor: statusDotColor }]} />
                   <Text style={[styles.statusText, { color: statusTextColor }]}>{statusText}</Text>
                 </View>
-                <Text style={styles.callTypeLabel}>WhatsApp Live HD Video</Text>
+                <Text style={styles.callTypeLabel}>WebRTC Live HD Video</Text>
               </View>
             )}
           </View>
 
-          {/* Picture-in-Picture (PiP) Local Camera Tile */}
-          {cameraPermission?.granted ? (
+          {/* Picture-in-Picture (PiP) Local Video Tile */}
+          {hasLocalVideo && (
             <View style={styles.pipContainer}>
-              <CameraView
-                ref={cameraRef}
-                facing={cameraFacing}
+              <RTCView
+                streamURL={localStream!.toURL()}
                 style={styles.pipCamera}
-                mute={true}
+                objectFit="cover"
+                zOrder={1}
+                mirror={cameraFacing === 'front'}
+              />
+              <TouchableOpacity
+                style={styles.pipFlipBtn}
+                onPress={handleFlipCamera}
+                activeOpacity={0.8}
               >
-                <TouchableOpacity
-                  style={styles.pipFlipBtn}
-                  onPress={handleFlipCamera}
-                  activeOpacity={0.8}
-                >
-                  <RefreshCw size={14} color="#FFF" />
-                </TouchableOpacity>
-              </CameraView>
+                <RefreshCw size={14} color="#FFF" />
+              </TouchableOpacity>
             </View>
-          ) : (
-            <TouchableOpacity
-              style={styles.pipPermissionCard}
-              onPress={requestCameraPermission}
-              activeOpacity={0.8}
-            >
-              <Camera size={20} color="#10B981" />
-              <Text style={styles.pipPermissionText}>Enable Camera</Text>
-            </TouchableOpacity>
           )}
         </View>
       ) : (
-        // 📞 VOICE CALL LAYOUT
+        // 📞 TRUE WEBRTC VOICE CALL LAYOUT
         <Animated.View style={[styles.centerContainer, { opacity: fadeAnim }]}>
           <View style={styles.avatarSection}>
             {/* Outer Pulse Rings */}
@@ -433,17 +378,15 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
               name={displayName}
               size={avatarSize}
               borderRadius={avatarSize / 2}
-              style={{
-                borderWidth: 3,
-                borderColor: isConnected || isRinging ? '#10B981' : '#F59E0B',
-              }}
+              style={styles.avatar}
             />
           </View>
 
-          <Text style={styles.nameText} numberOfLines={1} ellipsizeMode="tail">
+          <Text style={styles.callerName} numberOfLines={1}>
             {displayName}
           </Text>
 
+          {/* Live Status Badge */}
           <View
             style={[
               styles.statusBadge,
@@ -457,109 +400,62 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
             <Text style={[styles.statusText, { color: statusTextColor }]}>{statusText}</Text>
           </View>
 
-          <Text style={styles.callTypeLabel}>WhatsApp Encrypted Voice Call</Text>
+          <Text style={styles.callTypeLabel}>WebRTC HD Voice Call</Text>
         </Animated.View>
       )}
 
       {/* Control Buttons Bar */}
-      <View style={styles.bottomControls}>
-        {isConnected ? (
-          // Active Connected Call Controls (Speaker, Mute, Video, End)
-          <View style={styles.connectedControlsGrid}>
-            <View style={styles.controlItem}>
-              <TouchableOpacity
-                style={[styles.controlBtn, isSpeakerOn && styles.controlBtnActive]}
-                onPress={handleToggleSpeaker}
-                activeOpacity={0.8}
-              >
-                {isSpeakerOn ? (
-                  <Volume2 size={22} color="#000" />
-                ) : (
-                  <VolumeX size={22} color="#FFF" />
-                )}
-              </TouchableOpacity>
-              <Text style={styles.btnLabel}>Speaker</Text>
-            </View>
+      <View style={styles.controlsWrapper}>
+        <View style={styles.controlsCard}>
+          {/* Mute Button */}
+          <TouchableOpacity
+            style={[styles.controlBtn, isMuted && styles.controlBtnActive]}
+            onPress={handleToggleMute}
+            activeOpacity={0.7}
+          >
+            {isMuted ? <MicOff size={22} color="#EF4444" /> : <Mic size={22} color="#F8FAFC" />}
+            <Text style={[styles.controlLabel, isMuted && { color: '#EF4444' }]}>
+              {isMuted ? 'Muted' : 'Mute'}
+            </Text>
+          </TouchableOpacity>
 
-            <View style={styles.controlItem}>
-              <TouchableOpacity
-                style={[styles.controlBtn, isMuted && styles.controlBtnActive]}
-                onPress={handleToggleMute}
-                activeOpacity={0.8}
-              >
-                {isMuted ? <MicOff size={22} color="#000" /> : <Mic size={22} color="#FFF" />}
-              </TouchableOpacity>
-              <Text style={styles.btnLabel}>{isMuted ? 'Unmute' : 'Mute'}</Text>
-            </View>
+          {/* Speaker Button */}
+          <TouchableOpacity
+            style={[styles.controlBtn, isSpeakerOn && styles.controlBtnActiveGreen]}
+            onPress={handleToggleSpeaker}
+            activeOpacity={0.7}
+          >
+            {isSpeakerOn ? (
+              <Volume2 size={22} color="#10B981" />
+            ) : (
+              <VolumeX size={22} color="#94A3B8" />
+            )}
+            <Text style={[styles.controlLabel, isSpeakerOn && { color: '#10B981' }]}>
+              {isSpeakerOn ? 'Speaker' : 'Earpiece'}
+            </Text>
+          </TouchableOpacity>
 
-            <View style={styles.controlItem}>
-              <TouchableOpacity
-                style={[styles.controlBtn, isVideo && styles.controlBtnActive]}
-                onPress={handleToggleVideo}
-                activeOpacity={0.8}
-              >
-                {isVideo ? (
-                  <VideoIcon size={22} color="#000" />
-                ) : (
-                  <VideoOff size={22} color="#FFF" />
-                )}
-              </TouchableOpacity>
-              <Text style={styles.btnLabel}>{isVideo ? 'Audio' : 'Video'}</Text>
-            </View>
+          {/* Video Toggle Button */}
+          <TouchableOpacity
+            style={[styles.controlBtn, isVideo && styles.controlBtnActiveBlue]}
+            onPress={handleToggleVideo}
+            activeOpacity={0.7}
+          >
+            {isVideo ? (
+              <VideoIcon size={22} color="#3B82F6" />
+            ) : (
+              <VideoOff size={22} color="#94A3B8" />
+            )}
+            <Text style={[styles.controlLabel, isVideo && { color: '#3B82F6' }]}>
+              {isVideo ? 'Video On' : 'Video Off'}
+            </Text>
+          </TouchableOpacity>
 
-            <View style={styles.controlItem}>
-              <TouchableOpacity
-                style={styles.endCallBtn}
-                onPress={handleEndCall}
-                activeOpacity={0.85}
-              >
-                <PhoneOff size={24} color="#FFF" />
-              </TouchableOpacity>
-              <Text style={[styles.btnLabel, { color: '#EF4444' }]}>End</Text>
-            </View>
-          </View>
-        ) : isCaller ? (
-          // Outgoing Call Controls: Cancel Call
-          <View style={styles.singleActionRow}>
-            <View style={styles.controlItem}>
-              <TouchableOpacity
-                style={styles.endCallBtnLarge}
-                onPress={handleEndCall}
-                activeOpacity={0.85}
-              >
-                <PhoneOff size={28} color="#FFF" />
-              </TouchableOpacity>
-              <Text style={[styles.btnLabel, { color: '#EF4444', fontWeight: '700' }]}>
-                Cancel Call
-              </Text>
-            </View>
-          </View>
-        ) : (
-          // Incoming Call Controls: Decline (Red) & Accept (Green)
-          <View style={styles.incomingControlsRow}>
-            <View style={styles.controlItem}>
-              <TouchableOpacity
-                style={styles.endCallBtnLarge}
-                onPress={handleEndCall}
-                activeOpacity={0.85}
-              >
-                <PhoneOff size={26} color="#FFF" />
-              </TouchableOpacity>
-              <Text style={[styles.btnLabel, { color: '#EF4444' }]}>Decline</Text>
-            </View>
-
-            <View style={styles.controlItem}>
-              <TouchableOpacity
-                style={styles.pickUpBtnLarge}
-                onPress={handlePickUp}
-                activeOpacity={0.85}
-              >
-                <Phone size={28} color="#FFF" />
-              </TouchableOpacity>
-              <Text style={[styles.btnLabel, { color: '#10B981', fontWeight: '700' }]}>Accept</Text>
-            </View>
-          </View>
-        )}
+          {/* End Call Button */}
+          <TouchableOpacity style={styles.endCallBtn} onPress={handleEndCall} activeOpacity={0.8}>
+            <PhoneOff size={26} color="#FFF" />
+          </TouchableOpacity>
+        </View>
       </View>
     </SafeAreaView>
   );
@@ -576,7 +472,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 20,
-    paddingVertical: 10,
+    paddingTop: Platform.OS === 'android' ? 14 : 6,
     zIndex: 10,
   },
   backButton: {
@@ -584,56 +480,58 @@ const styles = StyleSheet.create({
     height: 38,
     borderRadius: 19,
     backgroundColor: 'rgba(255, 255, 255, 0.08)',
-    justifyContent: 'center',
     alignItems: 'center',
+    justifyContent: 'center',
+  },
+  securityPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.25)',
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 20,
+  },
+  securityText: {
+    color: '#10B981',
+    fontSize: 11,
+    fontWeight: '600',
+    marginLeft: 6,
   },
   flipCameraHeaderBtn: {
     width: 38,
     height: 38,
     borderRadius: 19,
-    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    alignItems: 'center',
     justifyContent: 'center',
-    alignItems: 'center',
-  },
-  securityPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(16, 185, 129, 0.12)',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.25)',
-  },
-  securityText: {
-    color: '#10B981',
-    fontSize: 12,
-    fontWeight: '600',
-    marginLeft: 6,
   },
   centerContainer: {
-    flex: 1,
-    justifyContent: 'center',
     alignItems: 'center',
+    justifyContent: 'center',
     paddingHorizontal: 24,
+    flex: 1,
   },
   avatarSection: {
-    position: 'relative',
-    justifyContent: 'center',
     alignItems: 'center',
+    justifyContent: 'center',
     marginBottom: 24,
   },
   pulseRing: {
     position: 'absolute',
-    borderWidth: 2,
+    borderWidth: 1.5,
   },
-  nameText: {
+  avatar: {
+    borderWidth: 3,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+  },
+  callerName: {
     fontSize: 26,
-    fontWeight: '800',
+    fontWeight: '700',
     color: '#F8FAFC',
+    marginBottom: 8,
     textAlign: 'center',
-    marginBottom: 10,
-    maxWidth: '85%',
   },
   statusBadge: {
     flexDirection: 'row',
@@ -651,211 +549,163 @@ const styles = StyleSheet.create({
     marginRight: 8,
   },
   statusText: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '700',
+    letterSpacing: 0.3,
   },
   callTypeLabel: {
-    fontSize: 13,
-    color: '#94A3B8',
-    fontWeight: '600',
+    fontSize: 12,
+    color: '#64748B',
+    fontWeight: '500',
     marginTop: 4,
   },
-  // 📹 Video Call Specific Styles
   videoMainContainer: {
     flex: 1,
     position: 'relative',
-    justifyContent: 'center',
-    alignItems: 'center',
+    marginHorizontal: 12,
+    marginVertical: 10,
+    borderRadius: 24,
+    overflow: 'hidden',
   },
   remoteVideoBackdrop: {
     flex: 1,
-    width: '100%',
-    justifyContent: 'center',
-    alignItems: 'center',
     backgroundColor: '#0F172A',
     borderRadius: 24,
-    marginVertical: 8,
     overflow: 'hidden',
   },
   remoteVideoWrapper: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: '#000',
-    justifyContent: 'flex-end',
+    flex: 1,
+    width: '100%',
+    height: '100%',
   },
   remoteOverlayInfo: {
     position: 'absolute',
-    bottom: 16,
+    top: 16,
     left: 16,
-    backgroundColor: 'rgba(0, 0, 0, 0.65)',
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.15)',
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 12,
   },
   remoteOverlayName: {
     color: '#FFF',
-    fontSize: 16,
+    fontSize: 13,
     fontWeight: '700',
   },
   remoteOverlayDuration: {
     color: '#10B981',
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '600',
     marginTop: 2,
   },
   remoteVideoAvatarContainer: {
-    justifyContent: 'center',
+    flex: 1,
     alignItems: 'center',
-    paddingHorizontal: 20,
+    justifyContent: 'center',
+    padding: 24,
   },
   remoteVideoAvatar: {
+    borderWidth: 3,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
     marginBottom: 16,
-    shadowColor: '#38BDF8',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.4,
-    shadowRadius: 18,
-    elevation: 12,
   },
   remoteVideoName: {
-    fontSize: 24,
-    fontWeight: '800',
     color: '#FFF',
-    marginBottom: 4,
+    fontSize: 22,
+    fontWeight: '700',
     textAlign: 'center',
   },
   pipContainer: {
     position: 'absolute',
     top: 16,
     right: 16,
-    width: 115,
-    height: 165,
-    borderRadius: 18,
+    width: 100,
+    height: 140,
+    borderRadius: 16,
     overflow: 'hidden',
     borderWidth: 2,
-    borderColor: '#38BDF8',
+    borderColor: 'rgba(255,255,255,0.25)',
     backgroundColor: '#000',
+    elevation: 8,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.6,
-    shadowRadius: 12,
-    elevation: 14,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 6,
   },
   pipCamera: {
     flex: 1,
-    position: 'relative',
+    width: '100%',
+    height: '100%',
   },
   pipFlipBtn: {
     position: 'absolute',
-    top: 8,
-    right: 8,
-    backgroundColor: 'rgba(0, 0, 0, 0.6)',
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    justifyContent: 'center',
+    bottom: 6,
+    right: 6,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: 'rgba(0,0,0,0.65)',
     alignItems: 'center',
-  },
-  pipPermissionCard: {
-    position: 'absolute',
-    top: 16,
-    right: 16,
-    width: 115,
-    height: 150,
-    borderRadius: 18,
-    backgroundColor: 'rgba(15, 23, 42, 0.9)',
+    justifyContent: 'center',
     borderWidth: 1,
-    borderColor: 'rgba(56, 189, 248, 0.4)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 8,
+    borderColor: 'rgba(255,255,255,0.2)',
   },
-  pipPermissionText: {
-    color: '#38BDF8',
-    fontSize: 11,
-    fontWeight: '700',
-    textAlign: 'center',
-    marginTop: 6,
-  },
-  // Bottom Controls
-  bottomControls: {
-    paddingBottom: Platform.OS === 'ios' ? 36 : 28,
-    paddingHorizontal: 24,
-  },
-  connectedControlsGrid: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    alignItems: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
-    paddingVertical: 16,
-    paddingHorizontal: 10,
-    borderRadius: 28,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-  },
-  singleActionRow: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 10,
-  },
-  incomingControlsRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    alignItems: 'center',
+  controlsWrapper: {
     paddingHorizontal: 20,
+    paddingBottom: Platform.OS === 'android' ? 24 : 12,
+    zIndex: 10,
   },
-  controlItem: {
+  controlsCard: {
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-around',
+    backgroundColor: 'rgba(30, 41, 59, 0.75)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 28,
+    paddingVertical: 14,
+    paddingHorizontal: 12,
   },
   controlBtn: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    backgroundColor: 'rgba(255, 255, 255, 0.12)',
-    justifyContent: 'center',
     alignItems: 'center',
+    justifyContent: 'center',
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
   },
   controlBtnActive: {
-    backgroundColor: '#FFF',
+    backgroundColor: 'rgba(239, 68, 68, 0.18)',
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.4)',
+  },
+  controlBtnActiveGreen: {
+    backgroundColor: 'rgba(16, 185, 129, 0.18)',
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.4)',
+  },
+  controlBtnActiveBlue: {
+    backgroundColor: 'rgba(59, 130, 246, 0.18)',
+    borderWidth: 1,
+    borderColor: 'rgba(59, 130, 246, 0.4)',
+  },
+  controlLabel: {
+    fontSize: 10,
+    color: '#94A3B8',
+    fontWeight: '600',
+    marginTop: 4,
   },
   endCallBtn: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
+    width: 62,
+    height: 62,
+    borderRadius: 31,
     backgroundColor: '#EF4444',
-    justifyContent: 'center',
     alignItems: 'center',
-  },
-  endCallBtnLarge: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: '#EF4444',
     justifyContent: 'center',
-    alignItems: 'center',
+    elevation: 4,
     shadowColor: '#EF4444',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.4,
-    shadowRadius: 10,
-    elevation: 6,
-  },
-  pickUpBtnLarge: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: '#10B981',
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: '#10B981',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.4,
-    shadowRadius: 10,
-    elevation: 6,
-  },
-  btnLabel: {
-    fontSize: 12,
-    color: '#94A3B8',
-    marginTop: 6,
-    fontWeight: '600',
+    shadowRadius: 8,
   },
 });
