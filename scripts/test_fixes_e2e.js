@@ -200,11 +200,113 @@ async function runTests() {
     throw new Error('Call termination failed to reach User B');
   }
 
+  // ── TEST 4: Caller-Side Online Presence & Calling/Ringing State ──
+  console.log('--- TEST 4: Caller Presence Check (Ringing vs Calling) ---');
+  const OFFLINE_USER_ID = '99999999-8888-7777-6666-555555555555';
+  let onlineStatusReceived = null;
+  let offlineStatusReceived = null;
+
+  const testOnlineCallId = `call_pres_on_${Date.now()}`;
+  const testOfflineCallId = `call_pres_off_${Date.now()}`;
+
+  socketA.on('call:status', (payload) => {
+    if (payload.callId === testOnlineCallId) {
+      onlineStatusReceived = payload.status;
+    }
+    if (payload.callId === testOfflineCallId) {
+      offlineStatusReceived = payload.status;
+    }
+  });
+
+  // Call online user B
+  socketA.emit('call:initiate', {
+    callId: testOnlineCallId,
+    receiverId: USER_B_ID,
+    callType: 'audio',
+    callerName: 'User A',
+  });
+
+  // Call offline user
+  socketA.emit('call:initiate', {
+    callId: testOfflineCallId,
+    receiverId: OFFLINE_USER_ID,
+    callType: 'audio',
+    callerName: 'User A',
+  });
+
+  await new Promise((r) => setTimeout(r, 800));
+
+  if (onlineStatusReceived === 'RINGING' && offlineStatusReceived === 'CALLING') {
+    console.log(
+      '✔ Presence Check Verified: Online recipient -> "RINGING" (plays ringback tone), Offline recipient -> "CALLING" (no tone) ✅\n',
+    );
+  } else {
+    throw new Error(
+      `Presence check failed! onlineStatus=${onlineStatusReceived}, offlineStatus=${offlineStatusReceived}`,
+    );
+  }
+
+  // ── TEST 5: Cancel-Before-Answer (Caller Cancels While Ringing) ──
+  console.log('--- TEST 5: Cancel-Before-Answer (Caller Cancels While Ringing) ---');
+  const cancelTestCallId = `call_cancel_${Date.now()}`;
+  let userBGotIncoming = false;
+  let userBGotEnded = false;
+  let userBGotCancelled = false;
+
+  socketB.on('call:incoming', (payload) => {
+    if (payload.callId === cancelTestCallId) {
+      userBGotIncoming = true;
+    }
+  });
+
+  socketB.on('call:ended', (payload) => {
+    if (payload.callId === cancelTestCallId) {
+      userBGotEnded = true;
+    }
+  });
+
+  socketB.on('call:cancelled', (payload) => {
+    if (payload.callId === cancelTestCallId) {
+      userBGotCancelled = true;
+    }
+  });
+
+  // 1. Caller starts call
+  socketA.emit('call:initiate', {
+    callId: cancelTestCallId,
+    receiverId: USER_B_ID,
+    callType: 'audio',
+    callerName: 'User A',
+  });
+
+  await new Promise((r) => setTimeout(r, 400));
+
+  // 2. Caller cancels within 1-2 seconds (before callee accepts/rejects)
+  socketA.emit('call:cancel', {
+    callId: cancelTestCallId,
+    targetUserId: USER_B_ID,
+    reason: 'cancelled',
+  });
+
+  await new Promise((r) => setTimeout(r, 800));
+
+  if (userBGotIncoming && userBGotEnded && userBGotCancelled) {
+    console.log(
+      '✔ Cancel-Before-Answer Verified: Callee received incoming, then instant ended + cancelled signals to dismiss UI and stop ringtone ✅\n',
+    );
+  } else {
+    throw new Error(
+      `Cancel-Before-Answer failed! incoming=${userBGotIncoming}, ended=${userBGotEnded}, cancelled=${userBGotCancelled}`,
+    );
+  }
+
   socketA.disconnect();
   socketB.disconnect();
   socketC.disconnect();
 
-  console.log('🎉 ALL WEBRTC MEDIA & MESSAGING WORKFLOWS VERIFIED 100% SUCCESSFUL!\n');
+  console.log(
+    '🎉 ALL WEBRTC MEDIA, MESSAGING & CALL CANCELLATION WORKFLOWS VERIFIED 100% SUCCESSFUL!\n',
+  );
   process.exit(0);
 }
 

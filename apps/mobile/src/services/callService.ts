@@ -111,31 +111,20 @@ class CallService {
         } else if (payload.status === 'RINGING') {
           if (this.currentSession.state !== 'CONNECTED') {
             this.currentSession.state = 'OUTGOING_RINGING';
+            // Start ringback tone only when receiver is confirmed online/ringing
+            if (this.currentSession.isCaller) {
+              soundService.startOutgoingRingbackTone();
+            }
             this.notify();
           }
         } else if (payload.status === 'CALLING') {
           if (this.currentSession.state !== 'CONNECTED') {
             this.currentSession.state = 'OUTGOING_CALLING';
+            // Receiver is offline / ringing not confirmed yet — do not play ringback tone yet
             this.notify();
           }
         } else if (payload.status === 'ENDED') {
-          this.clearCallTimeout();
-          webrtcService.closeSession();
-          this._saveCallLog(
-            payload.reason === 'rejected' || payload.reason === 'declined' ? 'declined' : undefined,
-          );
-          soundService.stopCallSounds();
-          soundService.playCallEndedSound();
-          this.stopDurationTimer();
-          this.currentSession.state = 'ENDED';
-          this.notify();
-
-          setTimeout(() => {
-            if (this.currentSession?.state === 'ENDED') {
-              this.currentSession = null;
-              this.notify();
-            }
-          }, 1200);
+          handleRemoteEnd(payload);
         }
       },
     );
@@ -252,22 +241,36 @@ class CallService {
       }
     });
 
-    // ── Call Ended / Rejected Universal Handlers ───────────────────────────
+    // ── Call Ended / Cancelled / Rejected Universal Handlers ───────────────────────────
     const handleRemoteEnd = (payload: any) => {
-      console.log('📞 Call ended signal received:', payload);
+      console.log('📞 [CallService] Call ended/cancelled signal received:', payload);
       if (!this.currentSession) return;
       if (
         payload?.callId &&
         this.currentSession.callId &&
         this.currentSession.callId !== payload.callId
       ) {
+        console.log(
+          '⚠️ [CallService] Ignored end signal for different callId:',
+          payload?.callId,
+          'vs current:',
+          this.currentSession.callId,
+        );
         return;
       }
 
+      console.log(
+        `🛑 [CallService] Dismissing session immediately (was state: ${this.currentSession.state}, isCaller: ${this.currentSession.isCaller}, reason: ${payload?.reason})`,
+      );
+
       this.clearCallTimeout();
-      webrtcService.closeSession();
+      webrtcService.closeSession(); // Purely optional and safe even if WebRTC peer connection was never initiated
       this._saveCallLog(
-        payload?.reason === 'rejected' || payload?.reason === 'declined' ? 'declined' : undefined,
+        payload?.reason === 'rejected' ||
+          payload?.reason === 'declined' ||
+          payload?.reason === 'cancelled'
+          ? 'declined'
+          : undefined,
       );
       soundService.stopCallSounds();
       soundService.playCallEndedSound();
@@ -275,17 +278,19 @@ class CallService {
       this.currentSession.state = 'ENDED';
       this.notify();
 
-      // Reset session after brief transition
+      // Reset session immediately
       setTimeout(() => {
         if (this.currentSession?.state === 'ENDED') {
           this.currentSession = null;
           this.notify();
         }
-      }, 800);
+      }, 350);
     };
 
     socketService.on(EVT_CALL_ENDED, handleRemoteEnd);
     socketService.on('call:end', handleRemoteEnd);
+    socketService.on('call:cancelled', handleRemoteEnd);
+    socketService.on('call:cancel', handleRemoteEnd);
     socketService.on('v1.call.end', handleRemoteEnd);
     socketService.on('call:status', (payload: any) => {
       if (payload?.status === 'ENDED') {
@@ -351,6 +356,19 @@ class CallService {
         await webrtcService.initPeerConnection(callId, params.targetUserId, true);
         const offer = await webrtcService.createOffer();
 
+        // If call was cancelled or ended while offer was being created, ABORT!
+        if (
+          !this.currentSession ||
+          this.currentSession.callId !== callId ||
+          this.currentSession.state === 'ENDED'
+        ) {
+          console.log(
+            '🛑 [CallService] Call was cancelled before offer completed — aborting initiate signal',
+          );
+          webrtcService.closeSession();
+          return;
+        }
+
         // Emit initiate signal to server with SDP offer attached
         socketService.emit(EVT_CALL_INITIATE, {
           callId,
@@ -363,6 +381,13 @@ class CallService {
         });
       } catch (err) {
         console.warn('⚠️ [WebRTC] Failed to create call offer:', err);
+        if (
+          !this.currentSession ||
+          this.currentSession.callId !== callId ||
+          this.currentSession.state === 'ENDED'
+        ) {
+          return;
+        }
         // Fallback initiation without offer if media access delayed
         socketService.emit(EVT_CALL_INITIATE, {
           callId,
@@ -375,8 +400,6 @@ class CallService {
       }
     })();
 
-    // Start outgoing ringback dial tone
-    soundService.startOutgoingRingbackTone();
     // 45s outgoing call timeout
     this.startCallTimeout(45000);
     this.notify();
@@ -431,6 +454,10 @@ class CallService {
     if (!this.currentSession) return;
     if (callId && this.currentSession.callId !== callId) return;
 
+    console.log(
+      `📞 [CallService] Callee rejecting call (callId=${this.currentSession.callId}, reason=${reason})`,
+    );
+
     this.clearCallTimeout();
     webrtcService.closeSession();
     this._saveCallLog(reason === 'declined' ? 'declined' : 'missed');
@@ -441,6 +468,7 @@ class CallService {
     socketService.emit(EVT_CALL_REJECT, {
       callId: this.currentSession.callId,
       callerId: this.currentSession.callerId,
+      targetUserId: this.currentSession.callerId,
       reason,
     });
 
@@ -448,18 +476,30 @@ class CallService {
     this.notify();
 
     setTimeout(() => {
-      this.currentSession = null;
-      this.notify();
-    }, 1000);
+      if (this.currentSession?.state === 'ENDED') {
+        this.currentSession = null;
+        this.notify();
+      }
+    }, 400);
   }
 
   public endCall(callId?: string, reason = 'ended') {
     if (!this.currentSession) return;
     if (callId && this.currentSession.callId !== callId) return;
 
+    const isPreAnswer =
+      this.currentSession.state === 'OUTGOING_CALLING' ||
+      this.currentSession.state === 'OUTGOING_RINGING' ||
+      this.currentSession.state === 'INCOMING_RINGING';
+
+    const finalReason = isPreAnswer ? 'cancelled' : reason;
+    console.log(
+      `📞 [CallService] Ending call (isPreAnswer=${isPreAnswer}, reason=${finalReason}, callId=${this.currentSession.callId})`,
+    );
+
     this.clearCallTimeout();
     webrtcService.closeSession();
-    this._saveCallLog(reason === 'no_answer' ? 'declined' : undefined);
+    this._saveCallLog(isPreAnswer ? 'declined' : undefined);
     soundService.stopCallSounds();
     soundService.playCallEndedSound();
     this.stopDurationTimer();
@@ -467,16 +507,25 @@ class CallService {
     socketService.emit(EVT_CALL_END, {
       callId: this.currentSession.callId,
       targetUserId: this.currentSession.targetUserId,
-      reason,
+      receiverId: this.currentSession.targetUserId,
+      reason: finalReason,
+    });
+    socketService.emit('call:cancel', {
+      callId: this.currentSession.callId,
+      targetUserId: this.currentSession.targetUserId,
+      receiverId: this.currentSession.targetUserId,
+      reason: finalReason,
     });
 
     this.currentSession.state = 'ENDED';
     this.notify();
 
     setTimeout(() => {
-      this.currentSession = null;
-      this.notify();
-    }, 1000);
+      if (this.currentSession?.state === 'ENDED') {
+        this.currentSession = null;
+        this.notify();
+      }
+    }, 400);
   }
 
   public toggleMute(): boolean {

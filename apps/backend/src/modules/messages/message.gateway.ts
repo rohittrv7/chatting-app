@@ -78,6 +78,11 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
   /** userId → Set<socketId> — in-process presence tracking */
   private readonly onlineSockets = new Map<string, Set<string>>();
+  private readonly activeCalls = new Map<
+    string,
+    { callId: string; callerId: string; receiverId: string }
+  >();
+  private readonly cancelledCallIds = new Set<string>();
 
   constructor(
     private readonly jwtService: JwtService,
@@ -776,6 +781,25 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       return;
     }
 
+    // If call was already cancelled before initiate arrived, abort immediately!
+    if (this.cancelledCallIds.has(payload.callId)) {
+      this.logger.log(
+        `📞 [Call Initiate Aborted] callId=${payload.callId} was already cancelled by caller`,
+      );
+      client.emit('call:status', {
+        callId: payload.callId,
+        status: 'ENDED',
+        reason: 'cancelled',
+      });
+      return;
+    }
+
+    this.activeCalls.set(payload.callId, {
+      callId: payload.callId,
+      callerId: senderId,
+      receiverId: targetUserId,
+    });
+
     const isReceiverOnline = this._isOnline(targetUserId) || this._isOnline(payload.receiverId);
 
     this.logger.log(
@@ -873,63 +897,97 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
   @SubscribeMessage(EVT_CALL_REJECT)
   async handleCallReject(
     @ConnectedSocket() client: Socket,
-    @MessageBody() payload: { callId: string; callerId: string; reason?: string },
+    @MessageBody()
+    payload: { callId: string; callerId?: string; targetUserId?: string; reason?: string },
   ) {
     const senderId = (client as any)._userId || client.data?.userId;
-    if (!senderId || !payload.callerId) return;
+    if (!senderId || !payload?.callId) return;
 
-    const targetCallerId = (await this._resolveUserId(payload.callerId)) || payload.callerId;
-    this.logger.log(`📞 [Call Rejected] callId=${payload.callId} by=${senderId}`);
+    this.cancelledCallIds.add(payload.callId);
+    setTimeout(() => this.cancelledCallIds.delete(payload.callId), 60000);
+
+    const callRecord = this.activeCalls.get(payload.callId);
+    this.activeCalls.delete(payload.callId);
+
+    const rawTarget = payload.callerId || payload.targetUserId || callRecord?.callerId;
+    const targetCallerId = rawTarget ? (await this._resolveUserId(rawTarget)) || rawTarget : null;
+    this.logger.log(
+      `📞 [Call Rejected] callId=${payload.callId} by=${senderId} target=${targetCallerId}`,
+    );
 
     const endData = {
       callId: payload.callId,
       reason: payload.reason || 'rejected',
+      cancelledBy: senderId,
     };
 
-    this.server.to(`user:${targetCallerId}`).emit(EVT_CALL_ENDED, endData);
-    this.server.to(`user:${targetCallerId}`).emit('call:status', {
-      callId: payload.callId,
-      status: 'ENDED',
-      reason: payload.reason || 'rejected',
-    });
-    if (payload.callerId !== targetCallerId) {
-      this.server.to(`user:${payload.callerId}`).emit(EVT_CALL_ENDED, endData);
-      this.server.to(`user:${payload.callerId}`).emit('call:status', {
+    if (targetCallerId) {
+      this.server.to(`user:${targetCallerId}`).emit(EVT_CALL_ENDED, endData);
+      this.server.to(`user:${targetCallerId}`).emit('call:cancelled', endData);
+      this.server.to(`user:${targetCallerId}`).emit('call:status', {
         callId: payload.callId,
         status: 'ENDED',
         reason: payload.reason || 'rejected',
       });
     }
+
+    client.emit(EVT_CALL_ENDED, endData);
+    client.emit('call:cancelled', endData);
+    client.emit('call:status', {
+      callId: payload.callId,
+      status: 'ENDED',
+      reason: payload.reason || 'rejected',
+    });
   }
 
   @SubscribeMessage(EVT_CALL_END)
+  @SubscribeMessage('call:cancel')
   async handleCallEnd(
     @ConnectedSocket() client: Socket,
-    @MessageBody() payload: { callId: string; targetUserId: string; reason?: string },
+    @MessageBody()
+    payload: {
+      callId: string;
+      targetUserId?: string;
+      receiverId?: string;
+      callerId?: string;
+      reason?: string;
+    },
   ) {
     const senderId = (client as any)._userId || client.data?.userId;
-    if (!senderId || !payload.targetUserId) return;
+    if (!senderId || !payload?.callId) return;
 
-    const targetUserId = (await this._resolveUserId(payload.targetUserId)) || payload.targetUserId;
+    // Guard against late call:initiate race conditions
+    this.cancelledCallIds.add(payload.callId);
+    setTimeout(() => this.cancelledCallIds.delete(payload.callId), 60000);
+
+    const callRecord = this.activeCalls.get(payload.callId);
+    this.activeCalls.delete(payload.callId);
+
+    const rawTarget =
+      payload.targetUserId ||
+      payload.receiverId ||
+      (callRecord
+        ? callRecord.callerId === senderId
+          ? callRecord.receiverId
+          : callRecord.callerId
+        : null);
+    const targetUserId = rawTarget ? (await this._resolveUserId(rawTarget)) || rawTarget : null;
+
     this.logger.log(
-      `📞 [Call Ended] callId=${payload.callId} by=${senderId} target=${targetUserId}`,
+      `📞 [Call Ended/Cancelled] callId=${payload.callId} by=${senderId} target=${targetUserId} reason=${payload.reason || 'ended'}`,
     );
 
     const endData = {
       callId: payload.callId,
       reason: payload.reason || 'ended',
+      cancelledBy: senderId,
     };
 
-    // Broadcast to target user room
-    this.server.to(`user:${targetUserId}`).emit(EVT_CALL_ENDED, endData);
-    this.server.to(`user:${targetUserId}`).emit('call:status', {
-      callId: payload.callId,
-      status: 'ENDED',
-      reason: payload.reason || 'ended',
-    });
-    if (payload.targetUserId !== targetUserId) {
-      this.server.to(`user:${payload.targetUserId}`).emit(EVT_CALL_ENDED, endData);
-      this.server.to(`user:${payload.targetUserId}`).emit('call:status', {
+    // Broadcast cancel/end signal to target user room
+    if (targetUserId) {
+      this.server.to(`user:${targetUserId}`).emit(EVT_CALL_ENDED, endData);
+      this.server.to(`user:${targetUserId}`).emit('call:cancelled', endData);
+      this.server.to(`user:${targetUserId}`).emit('call:status', {
         callId: payload.callId,
         status: 'ENDED',
         reason: payload.reason || 'ended',
@@ -938,6 +996,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
     // Also notify sender socket/room to guarantee synchronized cleanup
     client.emit(EVT_CALL_ENDED, endData);
+    client.emit('call:cancelled', endData);
     client.emit('call:status', {
       callId: payload.callId,
       status: 'ENDED',

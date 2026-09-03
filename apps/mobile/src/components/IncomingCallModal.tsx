@@ -22,6 +22,7 @@ import {
 } from 'lucide-react-native';
 import { callService, ActiveCallSession } from '../services/callService';
 import { soundService } from '../services/soundService';
+import { socketService } from '../services/socket';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -46,9 +47,29 @@ export const IncomingCallModal: React.FC<Props> = ({ navigationRef }) => {
       }
     };
 
+    const handleDirectCancelOrEnd = (payload: any) => {
+      console.log('📞 [IncomingCallModal] Direct cancel/end event received:', payload);
+      soundService.stopCallSounds();
+      setCallSession(null);
+    };
+
     callService.addListener(handleCallState);
+    socketService.on('call:ended', handleDirectCancelOrEnd);
+    socketService.on('call:cancelled', handleDirectCancelOrEnd);
+    socketService.on('call:cancel', handleDirectCancelOrEnd);
+    socketService.on('call:end', handleDirectCancelOrEnd);
+    const handleStatus = (data: any) => {
+      if (data?.status === 'ENDED') handleDirectCancelOrEnd(data);
+    };
+    socketService.on('call:status', handleStatus);
+
     return () => {
       callService.removeListener(handleCallState);
+      socketService.off('call:ended', handleDirectCancelOrEnd);
+      socketService.off('call:cancelled', handleDirectCancelOrEnd);
+      socketService.off('call:cancel', handleDirectCancelOrEnd);
+      socketService.off('call:end', handleDirectCancelOrEnd);
+      socketService.off('call:status', handleStatus);
       soundService.stopCallSounds();
     };
   }, []);

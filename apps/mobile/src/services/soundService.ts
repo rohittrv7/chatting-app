@@ -262,7 +262,7 @@ class SoundService {
         await Audio.setAudioModeAsync({
           playsInSilentModeIOS: true,
           allowsRecordingIOS: false,
-          staysActiveInBackground: false,
+          staysActiveInBackground: true,
           shouldDuckAndroid: true,
           playThroughEarpieceAndroid: false,
         });
@@ -440,12 +440,17 @@ class SoundService {
     try {
       await this.stopCallSounds();
       await this._initNativeAudio();
-      if (this.currentSoundGeneration !== gen || !Audio || !this.ringbackFileUri) return;
+      if (this.currentSoundGeneration !== gen || !Audio) return;
 
-      const { sound } = await Audio.Sound.createAsync(
-        { uri: this.ringbackFileUri },
-        { shouldPlay: true, isLooping: true, volume: 0.9 },
-      );
+      const source = this.ringbackFileUri
+        ? { uri: this.ringbackFileUri }
+        : { uri: `data:audio/wav;base64,${RINGBACK_BASE64}` };
+
+      const { sound } = await Audio.Sound.createAsync(source, {
+        shouldPlay: true,
+        isLooping: true,
+        volume: 0.9,
+      });
       if (this.currentSoundGeneration !== gen) {
         sound.stopAsync().catch(() => {});
         sound.unloadAsync().catch(() => {});
@@ -453,6 +458,7 @@ class SoundService {
       }
       this.activeLoopingSound = sound;
       this.activeSounds.add(sound);
+      console.log('🔔 [SoundService] Outgoing ringback tone playing');
     } catch (e) {
       console.warn('Could not start ringback tone:', e);
     }
@@ -466,12 +472,17 @@ class SoundService {
     try {
       await this.stopCallSounds();
       await this._initNativeAudio();
-      if (this.currentSoundGeneration !== gen || !Audio || !this.incomingRingtoneFileUri) return;
+      if (this.currentSoundGeneration !== gen || !Audio) return;
 
-      const { sound } = await Audio.Sound.createAsync(
-        { uri: this.incomingRingtoneFileUri },
-        { shouldPlay: true, isLooping: true, volume: 1.0 },
-      );
+      const source = this.incomingRingtoneFileUri
+        ? { uri: this.incomingRingtoneFileUri }
+        : { uri: `data:audio/wav;base64,${INCOMING_RINGTONE_BASE64}` };
+
+      const { sound } = await Audio.Sound.createAsync(source, {
+        shouldPlay: true,
+        isLooping: true,
+        volume: 1.0,
+      });
       if (this.currentSoundGeneration !== gen) {
         sound.stopAsync().catch(() => {});
         sound.unloadAsync().catch(() => {});
@@ -479,6 +490,7 @@ class SoundService {
       }
       this.activeLoopingSound = sound;
       this.activeSounds.add(sound);
+      console.log('🔔 [SoundService] Incoming call ringtone playing');
     } catch (e) {
       console.warn('Could not start incoming ringtone:', e);
     }
