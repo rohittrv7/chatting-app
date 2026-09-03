@@ -7,6 +7,7 @@ import {
   StatusBar,
   Animated,
   Platform,
+  Modal,
   useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -18,19 +19,32 @@ import {
   Video as VideoIcon,
   VideoOff,
   PhoneOff,
-  Phone,
-  ShieldCheck,
   Volume2,
   VolumeX,
   ArrowLeft,
   RefreshCw,
+  MessageSquare,
+  Check,
+  Lock,
+  Activity,
+  Bluetooth,
+  Headphones,
+  Smartphone,
+  X,
 } from 'lucide-react-native';
 import { RTCView, MediaStream } from 'react-native-webrtc';
 import { callService, ActiveCallSession } from '../services/callService';
 import { webrtcService } from '../services/webrtcService';
+import {
+  audioRoutingService,
+  AudioRoute,
+  AudioDeviceStatus,
+} from '../services/audioRoutingService';
 import { SmartAvatar } from '../components/SmartAvatar';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Call'>;
+
+const EMOJI_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
 
 export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
   const {
@@ -56,6 +70,21 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
   const [isConnected, setIsConnected] = useState(false);
   const [secondsElapsed, setSecondsElapsed] = useState(0);
   const [cameraFacing, setCameraFacing] = useState<'front' | 'back'>('front');
+
+  // Audio Routing & Bluetooth
+  const [audioStatus, setAudioStatus] = useState<AudioDeviceStatus>(
+    audioRoutingService.getStatus(),
+  );
+  const [isRouteModalVisible, setIsRouteModalVisible] = useState(false);
+
+  // Runtime Noise Cancellation
+  const [isNoiseCancellationOn, setIsNoiseCancellationOn] = useState(
+    callSession?.isNoiseSuppressionOn || false,
+  );
+
+  // Floating Reaction
+  const [floatingReaction, setFloatingReaction] = useState<string | null>(null);
+  const reactionAnim = useRef(new Animated.Value(0)).current;
 
   // WebRTC Live Media Streams
   const [localStream, setLocalStream] = useState<MediaStream | null>(
@@ -88,6 +117,16 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
       unsubLocal();
       unsubRemote();
     };
+  }, []);
+
+  // Subscribe to live Audio Routing device changes
+  useEffect(() => {
+    const unsubAudio = audioRoutingService.addListener((status) => {
+      setAudioStatus(status);
+      setIsSpeakerOn(status.selectedDevice === 'SPEAKER_PHONE');
+    });
+
+    return unsubAudio;
   }, []);
 
   // Animated pulse rings for ringing/active state
@@ -151,6 +190,7 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
         setIsVideo(session.isVideoEnabled);
         setIsConnected(session.state === 'CONNECTED');
         setSecondsElapsed(session.durationSeconds);
+        setIsNoiseCancellationOn(session.isNoiseSuppressionOn);
       } else {
         safeGoBack();
       }
@@ -176,9 +216,25 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
     setIsMuted(newMute);
   };
 
-  const handleToggleSpeaker = () => {
-    const newSpeaker = callService.toggleSpeaker();
-    setIsSpeakerOn(newSpeaker);
+  const handleAudioRoutePress = () => {
+    // If bluetooth or headset is available, or multiple devices exist, open route picker modal
+    if (
+      audioStatus.hasBluetooth ||
+      audioStatus.hasWiredHeadset ||
+      audioStatus.availableDevices.length > 2
+    ) {
+      setIsRouteModalVisible(true);
+    } else {
+      // Direct toggle between Speaker and Earpiece
+      const targetRoute: AudioRoute =
+        audioStatus.selectedDevice === 'SPEAKER_PHONE' ? 'EARPIECE' : 'SPEAKER_PHONE';
+      audioRoutingService.chooseAudioRoute(targetRoute);
+    }
+  };
+
+  const selectAudioRoute = (route: AudioRoute) => {
+    audioRoutingService.chooseAudioRoute(route);
+    setIsRouteModalVisible(false);
   };
 
   const handleToggleVideo = () => {
@@ -194,6 +250,32 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
   const handleEndCall = () => {
     callService.endCall(callSession?.callId || callId);
     safeGoBack();
+  };
+
+  const handleToggleNoiseCancellation = async () => {
+    const newState = await callService.toggleNoiseSuppression();
+    setIsNoiseCancellationOn(newState);
+  };
+
+  const handleReaction = (emoji: string) => {
+    setFloatingReaction(emoji);
+    reactionAnim.setValue(0);
+    Animated.sequence([
+      Animated.timing(reactionAnim, {
+        toValue: 1,
+        duration: 1200,
+        useNativeDriver: true,
+      }),
+    ]).start(() => setFloatingReaction(null));
+  };
+
+  const handleSendMessage = () => {
+    navigation.navigate('Chat', {
+      conversationId: callSession?.conversationId || (route.params as any)?.conversationId || '',
+      title: displayName,
+      recipientDbId: targetUserId,
+      avatarUrl: avatarUrl,
+    });
   };
 
   const formatDuration = (totalSeconds: number): string => {
@@ -219,54 +301,89 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
           ? 'Calling...'
           : 'Incoming Call...';
 
-  const statusBadgeBg = isConnected
-    ? 'rgba(16, 185, 129, 0.15)'
-    : isRinging
-      ? 'rgba(59, 130, 246, 0.15)'
-      : 'rgba(245, 158, 11, 0.15)';
-
-  const statusBadgeBorder = isConnected
-    ? 'rgba(16, 185, 129, 0.35)'
-    : isRinging
-      ? 'rgba(59, 130, 246, 0.35)'
-      : 'rgba(245, 158, 11, 0.35)';
-
-  const statusDotColor = isConnected ? '#10B981' : isRinging ? '#3B82F6' : '#F59E0B';
-  const statusTextColor = isConnected ? '#10B981' : isRinging ? '#60A5FA' : '#FBBF24';
-
   const hasRemoteVideo = isVideo && remoteStream && remoteStream.getVideoTracks().length > 0;
   const hasLocalVideo = isVideo && localStream && localStream.getVideoTracks().length > 0;
-  const avatarSize = screenHeight < 700 ? 90 : 110;
+  const avatarSize = screenHeight < 700 ? 110 : 130;
+
+  // Active audio route icon helper
+  const renderAudioRouteIcon = (size = 22, color = '#FFF') => {
+    if (audioStatus.selectedDevice === 'BLUETOOTH') {
+      return <Bluetooth size={size} color={color} />;
+    }
+    if (audioStatus.selectedDevice === 'WIRED_HEADSET') {
+      return <Headphones size={size} color={color} />;
+    }
+    if (audioStatus.selectedDevice === 'SPEAKER_PHONE') {
+      return <Volume2 size={size} color={color} />;
+    }
+    return <Smartphone size={size} color={color} />;
+  };
+
+  const getAudioRouteLabel = () => {
+    if (audioStatus.selectedDevice === 'BLUETOOTH') return 'Bluetooth';
+    if (audioStatus.selectedDevice === 'WIRED_HEADSET') return 'Headset';
+    if (audioStatus.selectedDevice === 'SPEAKER_PHONE') return 'Speaker';
+    return 'Earpiece';
+  };
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom', 'left', 'right']}>
-      <StatusBar barStyle="light-content" backgroundColor="#070A12" />
+      <StatusBar barStyle="light-content" backgroundColor="#0B1014" />
 
-      {/* Top Header with Back button & E2EE Info */}
+      {/* Floating Animated Reaction */}
+      {floatingReaction && (
+        <Animated.View
+          style={[
+            styles.floatingReactionContainer,
+            {
+              opacity: reactionAnim.interpolate({
+                inputRange: [0, 0.2, 0.8, 1],
+                outputRange: [0, 1, 1, 0],
+              }),
+              transform: [
+                {
+                  translateY: reactionAnim.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [0, -160],
+                  }),
+                },
+                {
+                  scale: reactionAnim.interpolate({
+                    inputRange: [0, 0.3, 1],
+                    outputRange: [0.6, 1.4, 1],
+                  }),
+                },
+              ],
+            },
+          ]}
+          pointerEvents="none"
+        >
+          <Text style={styles.floatingReactionText}>{floatingReaction}</Text>
+        </Animated.View>
+      )}
+
+      {/* Top Header matching WhatsApp Layout */}
       <View style={styles.topHeader}>
-        <TouchableOpacity style={styles.backButton} onPress={safeGoBack} activeOpacity={0.7}>
-          <ArrowLeft size={20} color="#94A3B8" />
+        {/* Left: Signal / Audio indicator pill */}
+        <TouchableOpacity style={styles.headerPillBtn} onPress={safeGoBack} activeOpacity={0.7}>
+          <Activity size={18} color="#10B981" />
         </TouchableOpacity>
 
-        <View style={styles.securityPill}>
-          <ShieldCheck size={13} color="#10B981" />
-          <Text style={styles.securityText}>End-to-End Encrypted</Text>
+        {/* Center: Recipient Name & Live Status Duration */}
+        <View style={styles.headerCenter}>
+          <Text style={styles.headerTitle} numberOfLines={1}>
+            {displayName}
+          </Text>
+          <Text style={styles.headerSubtitle}>{statusText}</Text>
         </View>
 
-        {isVideo && hasLocalVideo ? (
-          <TouchableOpacity
-            style={styles.flipCameraHeaderBtn}
-            onPress={handleFlipCamera}
-            activeOpacity={0.7}
-          >
-            <RefreshCw size={18} color="#FFF" />
-          </TouchableOpacity>
-        ) : (
-          <View style={{ width: 38 }} />
-        )}
+        {/* Right: End-to-End Encryption Lock Pill */}
+        <View style={styles.headerPillBtn}>
+          <Lock size={16} color="#FFFFFF" />
+        </View>
       </View>
 
-      {/* Main Video or Voice Call Body */}
+      {/* Main Body */}
       {isVideo ? (
         // 📹 TRUE WEBRTC VIDEO CALL LAYOUT
         <View style={styles.videoMainContainer}>
@@ -292,26 +409,13 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
                 <SmartAvatar
                   avatarUrl={avatarUrl}
                   name={displayName}
-                  size={110}
+                  size={120}
                   style={styles.remoteVideoAvatar}
                 />
                 <Text style={styles.remoteVideoName} numberOfLines={1}>
                   {displayName}
                 </Text>
-                <View
-                  style={[
-                    styles.statusBadge,
-                    {
-                      backgroundColor: statusBadgeBg,
-                      borderColor: statusBadgeBorder,
-                      marginTop: 6,
-                    },
-                  ]}
-                >
-                  <View style={[styles.statusDot, { backgroundColor: statusDotColor }]} />
-                  <Text style={[styles.statusText, { color: statusTextColor }]}>{statusText}</Text>
-                </View>
-                <Text style={styles.callTypeLabel}>WebRTC Live HD Video</Text>
+                <Text style={styles.statusSubText}>{statusText}</Text>
               </View>
             )}
           </View>
@@ -337,21 +441,20 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
           )}
         </View>
       ) : (
-        // 📞 TRUE WEBRTC VOICE CALL LAYOUT
-        <Animated.View style={[styles.centerContainer, { opacity: fadeAnim }]}>
+        // 📞 TRUE WEBRTC VOICE CALL LAYOUT (Matching Screenshot)
+        <Animated.View style={[styles.voiceCenterContainer, { opacity: fadeAnim }]}>
           <View style={styles.avatarSection}>
-            {/* Outer Pulse Rings */}
+            {/* Animated Pulse Waves */}
             <Animated.View
               style={[
                 styles.pulseRing,
                 {
-                  width: avatarSize + 48,
-                  height: avatarSize + 48,
-                  borderRadius: (avatarSize + 48) / 2,
-                  borderColor:
-                    isConnected || isRinging
-                      ? 'rgba(16, 185, 129, 0.25)'
-                      : 'rgba(245, 158, 11, 0.25)',
+                  width: avatarSize + 56,
+                  height: avatarSize + 56,
+                  borderRadius: (avatarSize + 56) / 2,
+                  borderColor: isConnected
+                    ? 'rgba(16, 185, 129, 0.25)'
+                    : 'rgba(59, 130, 246, 0.25)',
                   transform: [{ scale: pulseAnim1 }],
                 },
               ]}
@@ -360,19 +463,16 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
               style={[
                 styles.pulseRing,
                 {
-                  width: avatarSize + 24,
-                  height: avatarSize + 24,
-                  borderRadius: (avatarSize + 24) / 2,
-                  borderColor:
-                    isConnected || isRinging
-                      ? 'rgba(16, 185, 129, 0.4)'
-                      : 'rgba(245, 158, 11, 0.4)',
+                  width: avatarSize + 28,
+                  height: avatarSize + 28,
+                  borderRadius: (avatarSize + 28) / 2,
+                  borderColor: isConnected ? 'rgba(16, 185, 129, 0.4)' : 'rgba(59, 130, 246, 0.4)',
                   transform: [{ scale: pulseAnim2 }],
                 },
               ]}
             />
 
-            {/* Main SmartAvatar */}
+            {/* Main Centered Circular Avatar */}
             <SmartAvatar
               avatarUrl={avatarUrl}
               name={displayName}
@@ -381,35 +481,76 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
               style={styles.avatar}
             />
           </View>
-
-          <Text style={styles.callerName} numberOfLines={1}>
-            {displayName}
-          </Text>
-
-          {/* Live Status Badge */}
-          <View
-            style={[
-              styles.statusBadge,
-              {
-                backgroundColor: statusBadgeBg,
-                borderColor: statusBadgeBorder,
-              },
-            ]}
-          >
-            <View style={[styles.statusDot, { backgroundColor: statusDotColor }]} />
-            <Text style={[styles.statusText, { color: statusTextColor }]}>{statusText}</Text>
-          </View>
-
-          <Text style={styles.callTypeLabel}>WebRTC HD Voice Call</Text>
         </Animated.View>
       )}
 
-      {/* Control Buttons Bar */}
-      <View style={styles.controlsWrapper}>
-        <View style={styles.controlsCard}>
+      {/* Bottom Section */}
+      <View style={styles.bottomSection}>
+        {/* Floating Emoji Reactions Bar (Matches Screenshot) */}
+        <View style={styles.reactionsBar}>
+          {EMOJI_REACTIONS.map((emoji) => (
+            <TouchableOpacity
+              key={emoji}
+              style={styles.reactionBtn}
+              onPress={() => handleReaction(emoji)}
+              activeOpacity={0.6}
+            >
+              <Text style={styles.reactionEmoji}>{emoji}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+
+        {/* WhatsApp-Style Action Card (Send message & Noise cancellation) */}
+        <View style={styles.actionCard}>
+          {/* Row 1: Send message */}
+          <TouchableOpacity
+            style={styles.actionRow}
+            onPress={handleSendMessage}
+            activeOpacity={0.7}
+          >
+            <View style={styles.actionIconCircle}>
+              <MessageSquare size={18} color="#FFFFFF" />
+            </View>
+            <Text style={styles.actionText}>Send message</Text>
+          </TouchableOpacity>
+
+          <View style={styles.actionDivider} />
+
+          {/* Row 2: Noise cancellation Toggle Switch */}
+          <TouchableOpacity
+            style={styles.actionRow}
+            onPress={handleToggleNoiseCancellation}
+            activeOpacity={0.8}
+          >
+            <View style={styles.actionIconCircle}>
+              <Mic size={18} color="#FFFFFF" />
+            </View>
+            <Text style={styles.actionText}>Noise cancellation</Text>
+
+            {/* WhatsApp Styled Toggle Switch with Checkmark */}
+            <View
+              style={[
+                styles.switchTrack,
+                isNoiseCancellationOn ? styles.switchTrackOn : styles.switchTrackOff,
+              ]}
+            >
+              <View
+                style={[
+                  styles.switchThumb,
+                  isNoiseCancellationOn ? styles.switchThumbOn : styles.switchThumbOff,
+                ]}
+              >
+                {isNoiseCancellationOn && <Check size={12} color="#000000" strokeWidth={3} />}
+              </View>
+            </View>
+          </TouchableOpacity>
+        </View>
+
+        {/* Primary Call Controls Bar */}
+        <View style={styles.controlsBar}>
           {/* Mute Button */}
           <TouchableOpacity
-            style={[styles.controlBtn, isMuted && styles.controlBtnActive]}
+            style={[styles.controlBtn, isMuted && styles.controlBtnActiveRed]}
             onPress={handleToggleMute}
             activeOpacity={0.7}
           >
@@ -419,19 +560,38 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
             </Text>
           </TouchableOpacity>
 
-          {/* Speaker Button */}
+          {/* Audio Route Selector Button (Bluetooth / Speaker / Earpiece) */}
           <TouchableOpacity
-            style={[styles.controlBtn, isSpeakerOn && styles.controlBtnActiveGreen]}
-            onPress={handleToggleSpeaker}
+            style={[
+              styles.controlBtn,
+              audioStatus.selectedDevice === 'BLUETOOTH'
+                ? styles.controlBtnActiveBlue
+                : isSpeakerOn
+                  ? styles.controlBtnActiveGreen
+                  : null,
+            ]}
+            onPress={handleAudioRoutePress}
             activeOpacity={0.7}
           >
-            {isSpeakerOn ? (
-              <Volume2 size={22} color="#10B981" />
-            ) : (
-              <VolumeX size={22} color="#94A3B8" />
+            {renderAudioRouteIcon(
+              22,
+              audioStatus.selectedDevice === 'BLUETOOTH'
+                ? '#3B82F6'
+                : isSpeakerOn
+                  ? '#10B981'
+                  : '#F8FAFC',
             )}
-            <Text style={[styles.controlLabel, isSpeakerOn && { color: '#10B981' }]}>
-              {isSpeakerOn ? 'Speaker' : 'Earpiece'}
+            <Text
+              style={[
+                styles.controlLabel,
+                audioStatus.selectedDevice === 'BLUETOOTH'
+                  ? { color: '#3B82F6' }
+                  : isSpeakerOn
+                    ? { color: '#10B981' }
+                    : null,
+              ]}
+            >
+              {getAudioRouteLabel()}
             </Text>
           </TouchableOpacity>
 
@@ -447,7 +607,7 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
               <VideoOff size={22} color="#94A3B8" />
             )}
             <Text style={[styles.controlLabel, isVideo && { color: '#3B82F6' }]}>
-              {isVideo ? 'Video On' : 'Video Off'}
+              {isVideo ? 'Video On' : 'Video'}
             </Text>
           </TouchableOpacity>
 
@@ -457,6 +617,112 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
           </TouchableOpacity>
         </View>
       </View>
+
+      {/* Audio Route Selection Bottom Sheet Modal */}
+      <Modal
+        visible={isRouteModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setIsRouteModalVisible(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalBackdrop}
+          activeOpacity={1}
+          onPress={() => setIsRouteModalVisible(false)}
+        >
+          <View style={styles.routeSheetContainer}>
+            <View style={styles.routeSheetHeader}>
+              <Text style={styles.routeSheetTitle}>Select Audio Output</Text>
+              <TouchableOpacity
+                onPress={() => setIsRouteModalVisible(false)}
+                style={styles.closeBtn}
+              >
+                <X size={20} color="#94A3B8" />
+              </TouchableOpacity>
+            </View>
+
+            {/* Bluetooth Route (if available) */}
+            {audioStatus.hasBluetooth && (
+              <TouchableOpacity
+                style={[
+                  styles.routeOption,
+                  audioStatus.selectedDevice === 'BLUETOOTH' && styles.routeOptionActive,
+                ]}
+                onPress={() => selectAudioRoute('BLUETOOTH')}
+              >
+                <View style={styles.routeOptionLeft}>
+                  <Bluetooth size={22} color="#3B82F6" />
+                  <View style={styles.routeTextCol}>
+                    <Text style={styles.routeOptionTitle}>Bluetooth Device</Text>
+                    <Text style={styles.routeOptionSub}>Connected headset</Text>
+                  </View>
+                </View>
+                {audioStatus.selectedDevice === 'BLUETOOTH' && <Check size={20} color="#3B82F6" />}
+              </TouchableOpacity>
+            )}
+
+            {/* Wired Headset (if available) */}
+            {audioStatus.hasWiredHeadset && (
+              <TouchableOpacity
+                style={[
+                  styles.routeOption,
+                  audioStatus.selectedDevice === 'WIRED_HEADSET' && styles.routeOptionActive,
+                ]}
+                onPress={() => selectAudioRoute('WIRED_HEADSET')}
+              >
+                <View style={styles.routeOptionLeft}>
+                  <Headphones size={22} color="#10B981" />
+                  <View style={styles.routeTextCol}>
+                    <Text style={styles.routeOptionTitle}>Wired Headphones</Text>
+                    <Text style={styles.routeOptionSub}>Connected via 3.5mm / Type-C</Text>
+                  </View>
+                </View>
+                {audioStatus.selectedDevice === 'WIRED_HEADSET' && (
+                  <Check size={20} color="#10B981" />
+                )}
+              </TouchableOpacity>
+            )}
+
+            {/* Speakerphone */}
+            <TouchableOpacity
+              style={[
+                styles.routeOption,
+                audioStatus.selectedDevice === 'SPEAKER_PHONE' && styles.routeOptionActive,
+              ]}
+              onPress={() => selectAudioRoute('SPEAKER_PHONE')}
+            >
+              <View style={styles.routeOptionLeft}>
+                <Volume2 size={22} color="#10B981" />
+                <View style={styles.routeTextCol}>
+                  <Text style={styles.routeOptionTitle}>Speaker</Text>
+                  <Text style={styles.routeOptionSub}>Loudspeaker output</Text>
+                </View>
+              </View>
+              {audioStatus.selectedDevice === 'SPEAKER_PHONE' && (
+                <Check size={20} color="#10B981" />
+              )}
+            </TouchableOpacity>
+
+            {/* Phone Earpiece */}
+            <TouchableOpacity
+              style={[
+                styles.routeOption,
+                audioStatus.selectedDevice === 'EARPIECE' && styles.routeOptionActive,
+              ]}
+              onPress={() => selectAudioRoute('EARPIECE')}
+            >
+              <View style={styles.routeOptionLeft}>
+                <Smartphone size={22} color="#94A3B8" />
+                <View style={styles.routeTextCol}>
+                  <Text style={styles.routeOptionTitle}>Phone Earpiece</Text>
+                  <Text style={styles.routeOptionSub}>Hold phone to ear</Text>
+                </View>
+              </View>
+              {audioStatus.selectedDevice === 'EARPIECE' && <Check size={20} color="#10B981" />}
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
     </SafeAreaView>
   );
 };
@@ -464,50 +730,47 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#070A12',
+    backgroundColor: '#0B1014',
     justifyContent: 'space-between',
   },
   topHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingTop: Platform.OS === 'android' ? 14 : 6,
+    paddingHorizontal: 16,
+    paddingTop: Platform.OS === 'android' ? 14 : 8,
     zIndex: 10,
   },
-  backButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+  headerPillBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: 'rgba(30, 36, 43, 0.85)',
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  securityPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(16, 185, 129, 0.1)',
     borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.25)',
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-    borderRadius: 20,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
   },
-  securityText: {
-    color: '#10B981',
-    fontSize: 11,
-    fontWeight: '600',
-    marginLeft: 6,
-  },
-  flipCameraHeaderBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+  headerCenter: {
     alignItems: 'center',
     justifyContent: 'center',
+    flex: 1,
+    paddingHorizontal: 8,
   },
-  centerContainer: {
+  headerTitle: {
+    color: '#FFFFFF',
+    fontSize: 18,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  headerSubtitle: {
+    color: '#94A3B8',
+    fontSize: 13,
+    fontWeight: '500',
+    marginTop: 2,
+    textAlign: 'center',
+  },
+  voiceCenterContainer: {
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 24,
@@ -516,48 +779,161 @@ const styles = StyleSheet.create({
   avatarSection: {
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 24,
   },
   pulseRing: {
     position: 'absolute',
     borderWidth: 1.5,
   },
   avatar: {
-    borderWidth: 3,
-    borderColor: 'rgba(255, 255, 255, 0.15)',
+    borderWidth: 3.5,
+    borderColor: 'rgba(255, 255, 255, 0.16)',
   },
-  callerName: {
-    fontSize: 26,
-    fontWeight: '700',
-    color: '#F8FAFC',
-    marginBottom: 8,
-    textAlign: 'center',
+  bottomSection: {
+    paddingHorizontal: 16,
+    paddingBottom: Platform.OS === 'android' ? 20 : 10,
+    zIndex: 10,
   },
-  statusBadge: {
+  reactionsBar: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-around',
+    backgroundColor: 'rgba(30, 36, 43, 0.92)',
+    borderRadius: 28,
+    paddingVertical: 8,
     paddingHorizontal: 14,
-    paddingVertical: 6,
-    borderRadius: 20,
+    marginBottom: 12,
     borderWidth: 1,
-    marginBottom: 8,
+    borderColor: 'rgba(255, 255, 255, 0.06)',
   },
-  statusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    marginRight: 8,
+  reactionBtn: {
+    padding: 6,
   },
-  statusText: {
-    fontSize: 13,
-    fontWeight: '700',
-    letterSpacing: 0.3,
+  reactionEmoji: {
+    fontSize: 24,
   },
-  callTypeLabel: {
-    fontSize: 12,
-    color: '#64748B',
-    fontWeight: '500',
+  floatingReactionContainer: {
+    position: 'absolute',
+    top: '40%',
+    alignSelf: 'center',
+    zIndex: 50,
+  },
+  floatingReactionText: {
+    fontSize: 72,
+  },
+  actionCard: {
+    backgroundColor: 'rgba(30, 36, 43, 0.95)',
+    borderRadius: 22,
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  actionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+  },
+  actionIconCircle: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 14,
+  },
+  actionText: {
+    flex: 1,
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  actionDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    marginLeft: 50,
+  },
+  switchTrack: {
+    width: 50,
+    height: 30,
+    borderRadius: 15,
+    padding: 3,
+    justifyContent: 'center',
+  },
+  switchTrackOn: {
+    backgroundColor: '#FFFFFF',
+  },
+  switchTrackOff: {
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  switchThumb: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  switchThumbOn: {
+    backgroundColor: '#000000',
+    alignSelf: 'flex-end',
+  },
+  switchThumbOff: {
+    backgroundColor: '#FFFFFF',
+    alignSelf: 'flex-start',
+  },
+  controlsBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-around',
+    backgroundColor: 'rgba(30, 36, 43, 0.85)',
+    borderRadius: 28,
+    paddingVertical: 12,
+    paddingHorizontal: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  controlBtn: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  controlBtnActiveRed: {
+    backgroundColor: 'rgba(239, 68, 68, 0.2)',
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.4)',
+  },
+  controlBtnActiveGreen: {
+    backgroundColor: 'rgba(16, 185, 129, 0.2)',
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.4)',
+  },
+  controlBtnActiveBlue: {
+    backgroundColor: 'rgba(59, 130, 246, 0.2)',
+    borderWidth: 1,
+    borderColor: 'rgba(59, 130, 246, 0.4)',
+  },
+  controlLabel: {
+    fontSize: 10,
+    color: '#94A3B8',
+    fontWeight: '600',
     marginTop: 4,
+  },
+  endCallBtn: {
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    backgroundColor: '#EF4444',
+    alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 4,
+    shadowColor: '#EF4444',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 8,
   },
   videoMainContainer: {
     flex: 1,
@@ -615,6 +991,12 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     textAlign: 'center',
   },
+  statusSubText: {
+    color: '#10B981',
+    fontSize: 13,
+    fontWeight: '600',
+    marginTop: 6,
+  },
   pipContainer: {
     position: 'absolute',
     top: 16,
@@ -627,10 +1009,6 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.25)',
     backgroundColor: '#000',
     elevation: 8,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.4,
-    shadowRadius: 6,
   },
   pipCamera: {
     flex: 1,
@@ -650,62 +1028,68 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.2)',
   },
-  controlsWrapper: {
-    paddingHorizontal: 20,
-    paddingBottom: Platform.OS === 'android' ? 24 : 12,
-    zIndex: 10,
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.65)',
+    justifyContent: 'flex-end',
   },
-  controlsCard: {
+  routeSheetContainer: {
+    backgroundColor: '#1E242B',
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: Platform.OS === 'android' ? 32 : 40,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  routeSheetHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-around',
-    backgroundColor: 'rgba(30, 41, 59, 0.75)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-    borderRadius: 28,
+    justifyContent: 'space-between',
+    marginBottom: 16,
+    paddingBottom: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(255, 255, 255, 0.12)',
+  },
+  routeSheetTitle: {
+    color: '#FFFFFF',
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  closeBtn: {
+    padding: 4,
+  },
+  routeOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     paddingVertical: 14,
     paddingHorizontal: 12,
+    borderRadius: 16,
+    marginBottom: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
   },
-  controlBtn: {
+  routeOptionActive: {
+    backgroundColor: 'rgba(16, 185, 129, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.3)',
+  },
+  routeOptionLeft: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: 'rgba(255, 255, 255, 0.06)',
   },
-  controlBtnActive: {
-    backgroundColor: 'rgba(239, 68, 68, 0.18)',
-    borderWidth: 1,
-    borderColor: 'rgba(239, 68, 68, 0.4)',
+  routeTextCol: {
+    marginLeft: 14,
   },
-  controlBtnActiveGreen: {
-    backgroundColor: 'rgba(16, 185, 129, 0.18)',
-    borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.4)',
-  },
-  controlBtnActiveBlue: {
-    backgroundColor: 'rgba(59, 130, 246, 0.18)',
-    borderWidth: 1,
-    borderColor: 'rgba(59, 130, 246, 0.4)',
-  },
-  controlLabel: {
-    fontSize: 10,
-    color: '#94A3B8',
+  routeOptionTitle: {
+    color: '#FFFFFF',
+    fontSize: 15,
     fontWeight: '600',
-    marginTop: 4,
   },
-  endCallBtn: {
-    width: 62,
-    height: 62,
-    borderRadius: 31,
-    backgroundColor: '#EF4444',
-    alignItems: 'center',
-    justifyContent: 'center',
-    elevation: 4,
-    shadowColor: '#EF4444',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.4,
-    shadowRadius: 8,
+  routeOptionSub: {
+    color: '#94A3B8',
+    fontSize: 12,
+    marginTop: 2,
   },
 });

@@ -14,6 +14,7 @@ import {
 import { soundService } from './soundService';
 import { callHistoryService } from './callHistoryService';
 import { webrtcService } from './webrtcService';
+import { audioRoutingService } from './audioRoutingService';
 
 export type CallType = 'audio' | 'video';
 
@@ -43,6 +44,7 @@ export interface ActiveCallSession {
   isMuted: boolean;
   isSpeakerOn: boolean;
   isVideoEnabled: boolean;
+  isNoiseSuppressionOn: boolean;
   conversationId?: string;
   sdp?: any;
 }
@@ -106,6 +108,7 @@ class CallService {
           soundService.playCallConnectedSound();
           this.currentSession.state = 'CONNECTED';
           this.currentSession.startedAt = this.currentSession.startedAt || Date.now();
+          audioRoutingService.start(this.currentSession.callType === 'video');
           this.startDurationTimer();
           this.notify();
         } else if (payload.status === 'RINGING') {
@@ -174,6 +177,7 @@ class CallService {
         isMuted: false,
         isSpeakerOn: payload.callType === 'video',
         isVideoEnabled: payload.callType === 'video',
+        isNoiseSuppressionOn: false,
         conversationId: payload.conversationId,
         sdp: payload.sdp,
       };
@@ -265,6 +269,7 @@ class CallService {
 
       this.clearCallTimeout();
       webrtcService.closeSession(); // Purely optional and safe even if WebRTC peer connection was never initiated
+      audioRoutingService.stop();
       this._saveCallLog(
         payload?.reason === 'rejected' ||
           payload?.reason === 'declined' ||
@@ -346,6 +351,7 @@ class CallService {
       isMuted: false,
       isSpeakerOn: isVideo,
       isVideoEnabled: isVideo,
+      isNoiseSuppressionOn: false,
       conversationId: params.conversationId,
     };
 
@@ -418,6 +424,7 @@ class CallService {
     this.currentSession.startedAt = Date.now();
 
     const isVideo = this.currentSession.callType === 'video';
+    audioRoutingService.start(isVideo);
 
     // Initialize WebRTC, process offer, and create answer
     try {
@@ -460,6 +467,7 @@ class CallService {
 
     this.clearCallTimeout();
     webrtcService.closeSession();
+    audioRoutingService.stop();
     this._saveCallLog(reason === 'declined' ? 'declined' : 'missed');
     soundService.stopCallSounds();
     soundService.playCallEndedSound();
@@ -499,6 +507,7 @@ class CallService {
 
     this.clearCallTimeout();
     webrtcService.closeSession();
+    audioRoutingService.stop();
     this._saveCallLog(isPreAnswer ? 'declined' : undefined);
     soundService.stopCallSounds();
     soundService.playCallEndedSound();
@@ -539,8 +548,20 @@ class CallService {
   public toggleSpeaker(): boolean {
     if (!this.currentSession) return false;
     this.currentSession.isSpeakerOn = !this.currentSession.isSpeakerOn;
+    audioRoutingService.setSpeakerphoneOn(this.currentSession.isSpeakerOn);
     this.notify();
     return this.currentSession.isSpeakerOn;
+  }
+
+  public async toggleNoiseSuppression(): Promise<boolean> {
+    if (!this.currentSession) return false;
+    const targetState = !this.currentSession.isNoiseSuppressionOn;
+    const success = await webrtcService.setNoiseSuppression(targetState);
+    if (success) {
+      this.currentSession.isNoiseSuppressionOn = targetState;
+      this.notify();
+    }
+    return this.currentSession.isNoiseSuppressionOn;
   }
 
   public toggleVideoSwitch(): boolean {

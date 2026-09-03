@@ -436,6 +436,86 @@ class WebRTCService {
     this.isCaller = false;
   }
 
+  private isNoiseSuppressionEnabled = false;
+
+  public getNoiseSuppression(): boolean {
+    return this.isNoiseSuppressionEnabled;
+  }
+
+  /**
+   * Toggles noise suppression live without restarting the call or renegotiating SDP.
+   * Attempts applyConstraints first; if react-native-webrtc throws ("Only implemented for video tracks"),
+   * seamlessly replaces the audio track on RTCRtpSender live.
+   */
+  public async setNoiseSuppression(enabled: boolean): Promise<boolean> {
+    this.isNoiseSuppressionEnabled = enabled;
+    const audioTrack = this.localStream?.getAudioTracks()[0];
+    if (!audioTrack) {
+      console.warn('⚠️ [WebRTC] No local audio track available to toggle noise suppression');
+      return false;
+    }
+
+    // 1. Attempt standard applyConstraints()
+    try {
+      if (typeof (audioTrack as any).applyConstraints === 'function') {
+        await (audioTrack as any).applyConstraints({
+          noiseSuppression: enabled,
+          autoGainControl: enabled,
+        });
+        console.log(
+          `🎙️ [WebRTC] applyConstraints applied on audio track: noiseSuppression=${enabled}`,
+        );
+        return true;
+      }
+    } catch (err: any) {
+      console.log(
+        `ℹ️ [WebRTC] applyConstraints is not supported for audio tracks in react-native-webrtc (${err?.message}). Falling back to RTCRtpSender.replaceTrack()...`,
+      );
+    }
+
+    // 2. Seamless live track replacement via RTCRtpSender.replaceTrack()
+    try {
+      const newStream = (await mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: enabled,
+          autoGainControl: enabled,
+        },
+        video: false,
+      } as any)) as MediaStream;
+
+      const newAudioTrack = newStream.getAudioTracks()[0];
+      if (!newAudioTrack) return false;
+
+      // Preserve current mute state
+      newAudioTrack.enabled = audioTrack.enabled;
+
+      if (this.peerConnection) {
+        const senders = (this.peerConnection as any).getSenders
+          ? (this.peerConnection as any).getSenders()
+          : [];
+        const audioSender = senders.find((s: any) => s.track && s.track.kind === 'audio');
+
+        if (audioSender && typeof audioSender.replaceTrack === 'function') {
+          await audioSender.replaceTrack(newAudioTrack);
+          console.log(
+            `🎙️ [WebRTC] Replaced audio track live via RTCRtpSender.replaceTrack (noiseSuppression=${enabled})`,
+          );
+        }
+      }
+
+      // Replace track in local media stream
+      this.localStream?.removeTrack(audioTrack);
+      this.localStream?.addTrack(newAudioTrack);
+      audioTrack.stop();
+      this._notifyLocalStream(this.localStream);
+      return true;
+    } catch (replaceErr: any) {
+      console.warn('⚠️ [WebRTC] Failed to replace audio track for noise suppression:', replaceErr);
+      return false;
+    }
+  }
+
   /**
    * Applies 1.5 Mbps bitrate and 30fps to the video sender once connection is established (720p HD)
    */
