@@ -68,7 +68,11 @@ function getNativeSecureStore(): any {
     } else {
       cachedNativeStore = null;
     }
-  } catch {
+  } catch (err) {
+    console.error(
+      '🛑 [SafeSecureStore] Native expo-secure-store module missing or failed to load:',
+      err,
+    );
     cachedNativeStore = null;
   }
   return cachedNativeStore;
@@ -81,8 +85,8 @@ export const safeSecureStore = {
       try {
         return await store.getItemAsync(key);
       } catch (err) {
-        console.warn(
-          '⚠️ [SafeSecureStore] Native getItemAsync failed, falling back to AsyncStorage:',
+        console.error(
+          '🛑 [SafeSecureStore] Native getItemAsync failed, falling back to AsyncStorage:',
           err,
         );
       }
@@ -97,8 +101,8 @@ export const safeSecureStore = {
         await store.setItemAsync(key, value);
         return;
       } catch (err) {
-        console.warn(
-          '⚠️ [SafeSecureStore] Native setItemAsync failed, falling back to AsyncStorage:',
+        console.error(
+          '🛑 [SafeSecureStore] Native setItemAsync failed, falling back to AsyncStorage:',
           err,
         );
       }

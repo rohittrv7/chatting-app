@@ -1,18 +1,6 @@
-import './src/services/safeSecureStore';
 import { registerRootComponent } from 'expo';
 import { LogBox } from 'react-native';
 import App from './App';
-
-// Prevent unhandled JavaScript exceptions from hard-killing the Android Activity
-if (typeof global !== 'undefined' && global.ErrorUtils) {
-  const defaultHandler = global.ErrorUtils.getGlobalHandler();
-  global.ErrorUtils.setGlobalHandler((error, isFatal) => {
-    console.warn('⚠️ [Global Catch] Intercepted runtime error, preventing hard crash:', error);
-    if (defaultHandler) {
-      defaultHandler(error, false);
-    }
-  });
-}
 
 // Suppress benign Expo Go & third-party deprecation notices
 LogBox.ignoreLogs([
