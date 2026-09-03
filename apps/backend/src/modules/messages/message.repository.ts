@@ -9,7 +9,7 @@ interface CreateMessageInput {
   conversationId: string;
   receiverId?: string;
   type: 'TEXT' | 'IMAGE' | 'LOCATION' | 'VIDEO' | 'AUDIO' | 'DOCUMENT' | 'SYSTEM';
-  ciphertexts: Prisma.JsonObject;
+  ciphertexts: Prisma.JsonObject | Prisma.JsonArray | any;
   replyToId?: string;
 }
 
@@ -72,12 +72,9 @@ export class MessageRepository {
       where: { id: dto.conversationId },
       create: {
         id: dto.conversationId,
-        type: 'DIRECT',
-        createdAt: new Date(),
+        type: ConversationType.DIRECT,
       },
-      update: {
-        updatedAt: new Date(),
-      },
+      update: {},
     });
 
     // 4. Ensure sender is a member of this conversation
@@ -166,7 +163,7 @@ export class MessageRepository {
       }
     }
 
-    // 5. Create Message in PostgreSQL
+    // 5. Create Message Record
     return this.prisma.message.create({
       data: {
         clientMessageId: dto.clientMessageId,
@@ -174,7 +171,7 @@ export class MessageRepository {
         senderId: user.id,
         senderDeviceId: device.id,
         type: dto.type,
-        ciphertexts: dto.ciphertexts as unknown as Prisma.JsonObject,
+        ciphertexts: dto.ciphertexts as any,
         replyToId: dto.replyToId,
         status: DeliveryStatus.SERVER_RECEIVED,
       },

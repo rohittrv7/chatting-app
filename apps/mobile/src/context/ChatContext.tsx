@@ -36,6 +36,7 @@ import {
 import { safeStorage } from '../services/storageHelper';
 import { ConversationItem, ChatMessage, UserProfile } from '../types';
 import { soundService } from '../services/soundService';
+import * as FileSystem from 'expo-file-system/legacy';
 import {
   socketService,
   IncomingMessage,
@@ -55,6 +56,10 @@ import {
   syncContactsWithBackend,
 } from '../services/contactsService';
 import { callService } from '../services/callService';
+import { e2eCryptoService } from '../services/e2eCryptoService';
+import { signalService } from '../services/signalService';
+import nacl from 'tweetnacl';
+import { arrayBufferToBase64, base64ToArrayBuffer } from '../services/signalProtocolStore';
 
 const globalLoadedHistoricalConvs = new Set<string>();
 const globalLoadingHistoricalConvs = new Set<string>();
@@ -95,6 +100,18 @@ interface ChatContextType {
     document?: { uri: string; name: string; size?: number | string; mimeType?: string },
     contactPayload?: { name: string; phone: string; username?: string },
   ) => void;
+  sendMediaMessage: (params: {
+    conversationId: string;
+    mediaUri: string;
+    base64Data?: string;
+    fileName?: string;
+    mimeType?: string;
+    fileSize?: number;
+    caption?: string;
+    receiverId: string;
+    contactTitle?: string;
+    contactUsername?: string;
+  }) => Promise<string>;
   updateMessageUploadProgress: (
     messageId: string,
     uploadProgress: number,
@@ -135,6 +152,8 @@ interface ChatContextType {
   isBlockedBy: (targetUserId?: string) => boolean;
   blockUser: (targetUserId: string) => Promise<void>;
   unblockUser: (targetUserId: string) => Promise<void>;
+  secureStorageError: string | null;
+  retrySecureStorageInit: () => Promise<void>;
   addCallLogMessage: (
     conversationId: string,
     callType: 'audio' | 'video',
@@ -165,6 +184,7 @@ const ChatContext = createContext<ChatContextType>({
   syncServerConversations: async () => {},
   loadHistoricalMessagesForConversation: async () => {},
   addMessage: () => {},
+  sendMediaMessage: async () => '',
   updateMessageUploadProgress: () => {},
   updateMessageMediaDownloaded: () => {},
   addConversation: () => {},
@@ -183,6 +203,8 @@ const ChatContext = createContext<ChatContextType>({
   isBlockedBy: () => false,
   blockUser: async () => {},
   unblockUser: async () => {},
+  secureStorageError: null,
+  retrySecureStorageInit: async () => {},
   addCallLogMessage: () => {},
 });
 
@@ -210,6 +232,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [typingMap, setTypingMap] = useState<Record<string, boolean>>({});
   const [blockedUserIds, setBlockedUserIds] = useState<string[]>([]);
   const [blockedByUserIds, setBlockedByUserIds] = useState<string[]>([]);
+  const [secureStorageError, setSecureStorageError] = useState<string | null>(null);
   const typingTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   // Always-fresh refs — socket callbacks read these without stale closure issues
@@ -245,7 +268,34 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       })
       .catch(() => {});
-  }, [token]);
+
+    // ─── Signal Protocol: Initialize Device Keys on Login ────────────────────
+    (async () => {
+      try {
+        setSecureStorageError(null);
+        const myId = effectiveUserId || extractUserIdFromToken(token);
+        if (myId) {
+          await signalService.initDeviceKeys(myId, 1, token);
+        }
+      } catch (err: any) {
+        console.error('🛑 [Signal] Device key initialization on login failed:', err);
+        setSecureStorageError(err?.message || 'Secure storage is temporarily locked. Tap Retry.');
+      }
+    })();
+  }, [token, effectiveUserId]);
+
+  const retrySecureStorageInit = useCallback(async () => {
+    try {
+      setSecureStorageError(null);
+      const myId = effectiveUserId || (token ? extractUserIdFromToken(token) : '');
+      if (myId && token) {
+        await signalService.initDeviceKeys(myId, 1, token);
+      }
+    } catch (err: any) {
+      console.error('🛑 [Signal] Device key initialization retry failed:', err);
+      setSecureStorageError(err?.message || 'Secure storage is temporarily locked. Tap Retry.');
+    }
+  }, [effectiveUserId, token]);
 
   // ─── Real-Time Block / Unblock Socket Listener ───────────────────────────
   useEffect(() => {
@@ -267,12 +317,20 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     };
 
+    const onDeviceAdded = (data: { userId: string; deviceId: number }) => {
+      if (data?.userId) {
+        signalService.invalidateDeviceCache(data.userId);
+      }
+    };
+
     socketService.on('user:blocked', onUserBlocked);
     socketService.on('user:unblocked', onUserUnblocked);
+    socketService.on('device:added' as any, onDeviceAdded);
 
     return () => {
       socketService.off('user:blocked', onUserBlocked);
       socketService.off('user:unblocked', onUserUnblocked);
+      socketService.off('device:added' as any, onDeviceAdded);
     };
   }, []);
 
@@ -518,7 +576,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const _handleDisconnect = useCallback((_reason: string) => {}, []);
 
-  const _handleIncomingMessage = useCallback((payload: IncomingMessage) => {
+  const _handleIncomingMessage = useCallback(async (payload: IncomingMessage) => {
     const myDbId = (authUserIdRef.current ?? '').toLowerCase();
 
     // Echo guard — drop our own messages that bounce back from the server
@@ -555,10 +613,61 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       ? apiService.getResolvedMediaUrl(payload.senderAvatarUrl)
       : undefined;
 
+    // 🔐 Signal Protocol Multi-Device Decryption:
+    let decryptedText = payload.text || '';
+    if (payload.ciphertexts && Array.isArray(payload.ciphertexts)) {
+      const myDeviceId = signalService.getDeviceId();
+      const myEntry =
+        payload.ciphertexts.find((e: any) => e.deviceId === myDeviceId) || payload.ciphertexts[0];
+
+      if (myEntry?.ciphertext) {
+        try {
+          decryptedText = await signalService.decryptMessage(
+            payload.senderId,
+            myEntry.deviceId || 1,
+            myEntry.ciphertext,
+            myEntry.messageType || 1,
+          );
+        } catch (decErr) {
+          console.warn('⚠️ [Signal] Decryption error:', decErr);
+          decryptedText = '🔒 Encrypted message';
+        }
+      }
+    } else if (payload.nonce) {
+      // Fallback: legacy pre-Signal message
+      try {
+        const senderPubKey = await e2eCryptoService.getRecipientPublicKey(payload.senderId);
+        if (senderPubKey) {
+          decryptedText = await e2eCryptoService.decryptMessage(
+            payload.content || payload.text,
+            payload.nonce,
+            senderPubKey,
+          );
+        }
+      } catch (decErr) {}
+    }
+
+    let finalDecryptedText = decryptedText;
+    let attachmentCrypto: { fileKey: string; fileNonce: string } | undefined;
+    try {
+      if (decryptedText && decryptedText.startsWith('{"isEncryptedAttachment":true')) {
+        const parsed = JSON.parse(decryptedText);
+        finalDecryptedText = parsed.caption || '';
+        if (parsed.fileKey && parsed.fileNonce) {
+          attachmentCrypto = {
+            fileKey: parsed.fileKey,
+            fileNonce: parsed.fileNonce,
+          };
+        }
+      }
+    } catch (_) {}
+
     const incomingMsg: ChatMessage = {
       id: payload.serverMessageId,
       conversationId: convId,
-      text: payload.text || '',
+      text: finalDecryptedText,
+      ciphertexts: payload.ciphertexts,
+      attachmentCrypto,
       isMe: false,
       time: timeStr,
       status: 'DELIVERED',
@@ -587,7 +696,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     const previewSnippet =
-      payload.text ||
+      decryptedText ||
       (payload.imagePath
         ? '📷 Photo'
         : payload.document
@@ -1010,27 +1119,87 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       const myDbId = (authUserIdRef.current || extractUserIdFromToken(tok) || '').toLowerCase();
 
-      const formatted: ChatMessage[] = serverMsgs.map((m: any) => {
-        const ct = m.ciphertexts || {};
-        const senderLow = (m.senderId || '').toLowerCase();
-        const isMe = myDbId ? senderLow === myDbId : false;
-        const d = new Date(m.createdAt);
-        const timeStr = `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
+      const formatted: ChatMessage[] = await Promise.all(
+        serverMsgs.map(async (m: any) => {
+          const ct = m.ciphertexts || {};
+          const senderLow = (m.senderId || '').toLowerCase();
+          const isMe = myDbId ? senderLow === myDbId : false;
+          const d = new Date(m.createdAt);
+          const timeStr = `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
 
-        return {
-          id: m.id,
-          conversationId: targetConvId,
-          text: ct.text || '',
-          time: timeStr,
-          isMe: Boolean(isMe),
-          status: m.status === 'READ' ? 'READ' : m.status === 'DELIVERED' ? 'DELIVERED' : 'SENT',
-          createdAtMs: new Date(m.createdAt).getTime(),
-          createdAt: m.createdAt,
-          imagePath: ct.imagePath ? apiService.getResolvedMediaUrl(ct.imagePath) : undefined,
-          location: ct.location,
-          isStarred: false,
-        } as ChatMessage;
-      });
+          const rawContent = ct.content || ct.text || '';
+          const nonce = ct.nonce;
+          let decryptedText = typeof ct.text === 'string' ? ct.text : '';
+
+          if (Array.isArray(m.ciphertexts)) {
+            const myDeviceId = signalService.getDeviceId();
+            const myEntry =
+              m.ciphertexts.find((e: any) => e.deviceId === myDeviceId) || m.ciphertexts[0];
+            if (myEntry?.ciphertext) {
+              try {
+                decryptedText = await signalService.decryptMessage(
+                  m.senderId,
+                  myEntry.deviceId || 1,
+                  myEntry.ciphertext,
+                  myEntry.messageType || 1,
+                );
+              } catch (err) {
+                decryptedText = '🔒 Encrypted message';
+              }
+            }
+          } else if (nonce) {
+            try {
+              const targetConv = conversationsRef.current.find(
+                (c) => c.id === targetConvId || c.id === conversationId,
+              );
+              const otherUserId = isMe ? targetConv?.recipientDbId : m.senderId;
+              if (otherUserId) {
+                const otherPubKey = await e2eCryptoService.getRecipientPublicKey(otherUserId);
+                if (otherPubKey) {
+                  decryptedText = await e2eCryptoService.decryptMessage(
+                    rawContent,
+                    nonce,
+                    otherPubKey,
+                  );
+                }
+              }
+            } catch (err) {
+              console.warn('⚠️ [E2EE] Historical decryption error:', err);
+            }
+          }
+
+          let finalDecryptedText = decryptedText;
+          let attachmentCrypto: { fileKey: string; fileNonce: string } | undefined;
+          try {
+            if (decryptedText && decryptedText.startsWith('{"isEncryptedAttachment":true')) {
+              const parsed = JSON.parse(decryptedText);
+              finalDecryptedText = parsed.caption || '';
+              if (parsed.fileKey && parsed.fileNonce) {
+                attachmentCrypto = {
+                  fileKey: parsed.fileKey,
+                  fileNonce: parsed.fileNonce,
+                };
+              }
+            }
+          } catch (_) {}
+
+          return {
+            id: m.id,
+            conversationId: targetConvId,
+            text: finalDecryptedText,
+            ciphertexts: m.ciphertexts,
+            attachmentCrypto,
+            time: timeStr,
+            isMe: Boolean(isMe),
+            status: m.status === 'READ' ? 'READ' : m.status === 'DELIVERED' ? 'DELIVERED' : 'SENT',
+            createdAtMs: new Date(m.createdAt).getTime(),
+            createdAt: m.createdAt,
+            imagePath: ct.imagePath ? apiService.getResolvedMediaUrl(ct.imagePath) : undefined,
+            location: ct.location,
+            isStarred: false,
+          } as ChatMessage;
+        }),
+      );
 
       // Merge: server wins on ID collision
       const localMsgs =
@@ -1210,7 +1379,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return;
       }
 
-      _resolveConvId(conversationId, receiverId).then((realConvId) => {
+      _resolveConvId(conversationId, receiverId).then(async (realConvId) => {
         if (!realConvId) {
           // Could not resolve conversation UUID — mark message failed
           dispatch(
@@ -1229,11 +1398,22 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
           );
         }
 
+        // 🔐 Signal Protocol Multi-Device Encryption:
+        let ciphertexts: any = undefined;
+        if (text) {
+          try {
+            const tok = token || (await safeStorage.getItem('@chat_token')) || '';
+            ciphertexts = await signalService.encryptForDevices(receiverId, text, tok);
+          } catch (encErr) {
+            console.warn('⚠️ [Signal] addMessage encryption error:', encErr);
+          }
+        }
+
         socketService.sendMessage({
           clientMessageId,
           conversationId: realConvId,
           receiverId,
-          text,
+          ciphertexts,
           imagePath,
           location,
           document,
@@ -1257,6 +1437,171 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       }, 12000);
     }
+  };
+
+  const sendMediaMessage = async (params: {
+    conversationId: string;
+    mediaUri: string;
+    base64Data?: string;
+    fileName?: string;
+    mimeType?: string;
+    fileSize?: number;
+    caption?: string;
+    receiverId: string;
+    contactTitle?: string;
+    contactUsername?: string;
+  }): Promise<string> => {
+    const {
+      conversationId,
+      mediaUri,
+      caption = '',
+      receiverId,
+      contactTitle,
+      contactUsername,
+      fileSize,
+    } = params;
+
+    const now = new Date();
+    const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+    const clientMessageId = `cmid_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+
+    let formattedSize = '52 kB';
+    if (fileSize) {
+      formattedSize =
+        fileSize > 1024 * 1024
+          ? `${(fileSize / (1024 * 1024)).toFixed(1)} MB`
+          : `${Math.round(fileSize / 1024)} kB`;
+    }
+
+    const resolvedTitle = getResolvedDisplayName(
+      { username: contactUsername || receiverId, name: contactTitle },
+      contactTitle || receiverId || conversationId,
+    );
+
+    // 1. Optimistic message displayed INSTANTLY with local URI preview so user never sees a blank box
+    const newMsg: ChatMessage = {
+      id: clientMessageId,
+      conversationId,
+      text: caption,
+      isMe: true,
+      time: timeStr,
+      status: 'SENDING',
+      createdAtMs: Date.now(),
+      createdAt: now.toISOString(),
+      imagePath: mediaUri, // Local preview on sender's device!
+      mediaSize: formattedSize,
+      isUploading: true,
+      uploadProgress: 20,
+      isStarred: false,
+    };
+
+    dispatch(appendMessage({ conversationId, message: newMsg }));
+    soundService.playMessageSentSound();
+
+    _updateLastMessageInternal(conversationId, caption || '📷 Photo', false, true, 'SENDING');
+
+    // 2. Perform background upload
+    (async () => {
+      try {
+        let base64 = params.base64Data;
+        if (!base64 && mediaUri) {
+          try {
+            base64 = await FileSystem.readAsStringAsync(mediaUri, {
+              encoding: FileSystem.EncodingType.Base64,
+            });
+          } catch (_) {}
+        }
+
+        const token = await safeStorage.getItem('@chat_token');
+        if (!token || !base64) {
+          throw new Error('No auth token or base64 data available');
+        }
+
+        // 🔐 Symmetric Attachment Encryption (XSalsa20-Poly1305 AEAD):
+        // 1. Generate random per-file 32-byte symmetric key and 24-byte nonce
+        const fileKey = nacl.randomBytes(32);
+        const fileNonce = nacl.randomBytes(24);
+        const rawFileBytes = new Uint8Array(base64ToArrayBuffer(base64));
+        const encryptedFileBytes = nacl.secretbox(rawFileBytes, fileNonce, fileKey);
+        const encryptedBase64 = arrayBufferToBase64(encryptedFileBytes);
+
+        dispatch(
+          updateMessageProgress({
+            messageId: clientMessageId,
+            uploadProgress: 50,
+            isUploading: true,
+          }),
+        );
+
+        // 2. Upload the ENCRYPTED ciphertext to storage — server NEVER sees plaintext media bytes!
+        const uploadRes = await apiService.uploadMediaFile(
+          token,
+          encryptedBase64,
+          params.fileName || `enc_photo_${Date.now()}.bin`,
+          'application/octet-stream',
+        );
+
+        if (!uploadRes.success || !uploadRes.url) {
+          throw new Error('Upload failed from server');
+        }
+
+        // Upload succeeded! Update message state with remote URL and finish upload state
+        dispatch(
+          updateMessageProgress({
+            messageId: clientMessageId,
+            uploadProgress: 100,
+            isUploading: false,
+            imagePath: uploadRes.url,
+          }),
+        );
+
+        // 3. Package symmetric file key + nonce inside the Signal-encrypted message envelope
+        const realConvId = await _resolveConvId(conversationId, receiverId);
+        if (realConvId) {
+          const mediaPayload = JSON.stringify({
+            isEncryptedAttachment: true,
+            fileKey: arrayBufferToBase64(fileKey),
+            fileNonce: arrayBufferToBase64(fileNonce),
+            caption: caption || '',
+          });
+
+          let ciphertexts: any = undefined;
+          try {
+            ciphertexts = await signalService.encryptForDevices(receiverId, mediaPayload, token);
+          } catch (encErr) {
+            console.warn('⚠️ [Signal] Media caption encryption error:', encErr);
+          }
+
+          socketService.sendMessage({
+            clientMessageId,
+            conversationId: realConvId,
+            receiverId,
+            ciphertexts,
+            imagePath: uploadRes.url, // REMOTE URL FOR RECEIVER!
+            mediaSize: formattedSize,
+          });
+        }
+      } catch (err) {
+        console.warn('Media upload failed:', err);
+        dispatch(
+          updateMessageProgress({
+            messageId: clientMessageId,
+            uploadProgress: 0,
+            isUploading: false,
+          }),
+        );
+        dispatch(
+          updateMessageStatus({
+            conversationId,
+            messageId: clientMessageId,
+            clientMessageId,
+            status: 'FAILED',
+          }),
+        );
+      }
+    })();
+
+    return clientMessageId;
   };
 
   const updateMessageUploadProgress = (
@@ -1317,14 +1662,71 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }),
     );
 
-    _resolveConvId(conversationId, receiverId).then((realConvId) => {
+    (async () => {
+      let finalImagePath = msg.imagePath;
+      if (
+        finalImagePath &&
+        (finalImagePath.startsWith('file://') || finalImagePath.startsWith('/'))
+      ) {
+        try {
+          dispatch(updateMessageProgress({ messageId, uploadProgress: 30, isUploading: true }));
+          const token = await safeStorage.getItem('@chat_token');
+          const base64 = await FileSystem.readAsStringAsync(finalImagePath, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          if (token && base64) {
+            const uploadRes = await apiService.uploadMediaFile(
+              token,
+              base64,
+              `photo_${Date.now()}.jpg`,
+              'image/jpeg',
+            );
+            if (uploadRes.success && uploadRes.url) {
+              finalImagePath = uploadRes.url;
+              dispatch(
+                updateMessageProgress({
+                  messageId,
+                  uploadProgress: 100,
+                  isUploading: false,
+                  imagePath: finalImagePath,
+                }),
+              );
+            }
+          }
+        } catch (e) {
+          console.warn('Retry media upload failed:', e);
+          dispatch(updateMessageProgress({ messageId, uploadProgress: 0, isUploading: false }));
+          dispatch(
+            updateMessageStatus({
+              conversationId,
+              messageId,
+              clientMessageId: messageId,
+              status: 'FAILED',
+            }),
+          );
+          return;
+        }
+      }
+
+      let ciphertexts: any = undefined;
+      if (msg.text) {
+        try {
+          const tok = (await safeStorage.getItem('@chat_token')) || '';
+          ciphertexts = await signalService.encryptForDevices(receiverId, msg.text, tok);
+        } catch (encErr) {
+          console.warn('⚠️ [Signal] resendMessage encryption error:', encErr);
+        }
+      }
+
+      const realConvId = await _resolveConvId(conversationId, receiverId);
       if (realConvId) {
         socketService.sendMessage({
           clientMessageId: msg.id,
           conversationId: realConvId,
           receiverId,
-          text: msg.text,
-          imagePath: msg.imagePath,
+          ciphertexts,
+          imagePath: finalImagePath,
+          mediaSize: msg.mediaSize,
           location: msg.location,
         });
 
@@ -1352,7 +1754,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }),
         );
       }
-    });
+    })();
   };
 
   const _updateLastMessageInternal = (
@@ -1674,6 +2076,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         syncServerConversations,
         loadHistoricalMessagesForConversation,
         addMessage,
+        sendMediaMessage,
         updateMessageUploadProgress,
         updateMessageMediaDownloaded,
         addConversation,
@@ -1693,6 +2096,8 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         blockUser,
         unblockUser,
         addCallLogMessage,
+        secureStorageError,
+        retrySecureStorageInit,
       }}
     >
       {children}

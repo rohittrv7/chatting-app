@@ -73,6 +73,8 @@ model User {
   callParticipations Participant[]
   blockedBy     BlockedUser[]        @relation("BlockerUser")
   blockedTarget BlockedUser[]        @relation("BlockedTargetUser")
+  reportsFiled  Report[]             @relation("ReportReporter")
+  reportsReceived Report[]           @relation("ReportReportedUser")
   settings      Setting?
 
   @@index([phoneNumber])
@@ -222,8 +224,6 @@ model Attachment {
   fileName        String
   fileSize        Int
   mimeType        String
-  encryptionKey   String
-  iv              String
   contentEncoding String?   @default("identity")
   originalSize    Int?
   compressedSize  Int?
@@ -317,4 +317,23 @@ model Setting {
   updatedAt         DateTime @updatedAt
 
   user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Report {
+  id              String   @id @default(uuid())
+  reporterId      String
+  reportedUserId  String
+  messageId       String?
+  messageContent  String
+  reason          String
+  contextMessages Json?
+  status          String   @default("pending")
+  createdAt       DateTime @default(now())
+
+  reporter        User     @relation("ReportReporter", fields: [reporterId], references: [id], onDelete: Cascade)
+  reportedUser    User     @relation("ReportReportedUser", fields: [reportedUserId], references: [id], onDelete: Cascade)
+
+  @@index([reporterId])
+  @@index([reportedUserId])
+  @@index([status])
 }

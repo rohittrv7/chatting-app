@@ -1132,6 +1132,154 @@ export const apiService = {
       return { blockedByMe: false, blockedByThem: false };
     }
   },
+
+  /**
+   * Register device Signal IdentityKey, SignedPreKey, and OneTimePreKeys
+   */
+  async registerSignalKeys(token: string, dto: any): Promise<{ success: boolean }> {
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/keys/register`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(dto),
+      });
+      if (response.ok) {
+        return { success: true };
+      }
+    } catch (e) {
+      console.warn('registerSignalKeys error:', e);
+    }
+    return { success: false };
+  },
+
+  async uploadPublicKey(token: string, publicKey: string): Promise<{ success: boolean }> {
+    return { success: true };
+  },
+
+  /**
+   * Fetch X3DH PreKey bundle for target user device
+   */
+  async getPreKeyBundle(
+    targetUserId: string,
+    targetDeviceId: number = 1,
+    token?: string,
+  ): Promise<any | null> {
+    try {
+      const authToken = token || (await safeStorage.getItem('@chat_token'));
+      const response = await fetch(
+        `${getApiBaseUrl()}/keys/bundle/${encodeURIComponent(targetUserId)}/${targetDeviceId}`,
+        {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${authToken}`,
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+      if (response.ok) {
+        const json = await response.json();
+        return json.data || json;
+      }
+    } catch (e) {
+      console.warn('getPreKeyBundle error:', e);
+    }
+    return null;
+  },
+
+  /**
+   * Fetch active devices for target user
+   */
+  async getDevicesForUser(
+    targetUserId: string,
+    token?: string,
+  ): Promise<Array<{ deviceId: number }>> {
+    try {
+      const authToken = token || (await safeStorage.getItem('@chat_token'));
+      const response = await fetch(
+        `${getApiBaseUrl()}/keys/devices/${encodeURIComponent(targetUserId)}`,
+        {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${authToken}`,
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+      if (response.ok) {
+        const json = await response.json();
+        return json.data || json || [];
+      }
+    } catch (e) {
+      console.warn('getDevicesForUser error:', e);
+    }
+    return [];
+  },
+
+  /**
+   * Get target user's X25519 public key from backend
+   */
+  async getUserPublicKey(
+    targetUserId: string,
+    token?: string,
+  ): Promise<{ userId: string; publicKey: string | null } | null> {
+    try {
+      const authToken = token || (await safeStorage.getItem('@chat_token'));
+      const response = await fetch(
+        `${getApiBaseUrl()}/users/${encodeURIComponent(targetUserId)}/public-key`,
+        {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${authToken}`,
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+      if (response.ok) {
+        const json = await response.json();
+        const data = json.data || json;
+        return { userId: data.userId, publicKey: data.publicKey };
+      }
+    } catch (e) {
+      console.warn('getUserPublicKey error:', e);
+    }
+    return null;
+  },
+
+  /**
+   * Submit message report for content moderation
+   */
+  async submitReport(
+    token: string,
+    payload: {
+      messageId?: string;
+      reportedUserId: string;
+      messageContent: string;
+      reason: string;
+      contextMessages?: any[];
+    },
+  ): Promise<{ success: boolean; reportId?: string }> {
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/reports`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(payload),
+      });
+      if (response.ok) {
+        const json = await response.json();
+        const data = json.data || json;
+        return { success: true, reportId: data.reportId };
+      }
+    } catch (e) {
+      console.warn('submitReport error:', e);
+    }
+    return { success: false };
+  },
 };
 
 (apiService as any).getResolvedMediaUrl = _resolveMediaUrl;

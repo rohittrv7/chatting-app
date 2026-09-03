@@ -59,6 +59,9 @@ export interface IncomingMessage {
   senderAvatarUrl?: string;
   senderPhone?: string;
   text: string;
+  ciphertexts?: Array<{ deviceId: number; ciphertext: string; messageType: number }> | any;
+  content?: string;
+  nonce?: string;
   imagePath?: string;
   location?: {
     lat: number;
@@ -208,6 +211,9 @@ class RealtimeSocketService {
     conversationId: string;
     receiverId: string;
     text?: string;
+    ciphertexts?: Array<{ deviceId: number; ciphertext: string; messageType: number }> | any;
+    content?: string;
+    nonce?: string;
     imagePath?: string;
     location?: {
       lat: number;

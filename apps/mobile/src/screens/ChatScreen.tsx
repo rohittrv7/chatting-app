@@ -44,6 +44,8 @@ import { apiService } from '../services/apiService';
 import { callService } from '../services/callService';
 import { SmartAvatar } from '../components/SmartAvatar';
 import { getResolvedDisplayName, getResolvedContact } from '../services/contactsService';
+import nacl from 'tweetnacl';
+import { arrayBufferToBase64, base64ToArrayBuffer } from '../services/signalProtocolStore';
 import {
   ArrowLeft,
   Phone,
@@ -81,7 +83,10 @@ import {
   Compass,
   ShieldAlert,
   Ban,
+  ArrowDown,
+  Upload,
 } from 'lucide-react-native';
+import { ensureMediaLibraryPermission } from '../services/permissionsService';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Chat'>;
 
@@ -125,6 +130,7 @@ export interface PendingMedia {
   uri: string;
   name: string;
   base64?: string;
+  fileSize?: number;
 }
 
 interface SwipeableBubbleProps {
@@ -284,6 +290,7 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
     conversations,
     messagesMap,
     addMessage,
+    sendMediaMessage,
     updateMessageUploadProgress,
     updateMessageMediaDownloaded,
     toggleStarMessage,
@@ -303,6 +310,8 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
     isBlockedBy,
     blockUser,
     unblockUser,
+    secureStorageError,
+    retrySecureStorageInit,
   } = useChat();
 
   const { themeMode, colors } = useTheme();
@@ -446,6 +455,9 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
   const [mediaCaption, setMediaCaption] = useState('');
   const [selectedPhotoMsg, setSelectedPhotoMsg] = useState<ChatMessage | null>(null);
   const [reactingToMsg, setReactingToMsg] = useState<ChatMessage | null>(null);
+  const [reportingMsg, setReportingMsg] = useState<ChatMessage | null>(null);
+  const [reportReason, setReportReason] = useState('Spam');
+  const [isSubmittingReport, setIsSubmittingReport] = useState(false);
   const [showUserProfileModal, setShowUserProfileModal] = useState(false);
   const [showMoreMenuModal, setShowMoreMenuModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
@@ -718,6 +730,7 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
             uri: a.uri,
             name: a.fileName || `photo_${i + 1}.jpg`,
             base64: a.base64 || undefined,
+            fileSize: a.fileSize || undefined,
           })),
         );
         setMediaCaption('');
@@ -734,7 +747,8 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
     setDownloadingMediaIds((prev) => new Set(prev).add(msg.id));
     try {
       const remoteUrl = apiService.getResolvedMediaUrl(msg.imagePath);
-      const filename = `photo_${msg.id}_${Date.now()}.jpg`;
+      const ext = msg.imagePath.includes('.png') ? 'png' : 'jpg';
+      const filename = `photo_${msg.id}_${Date.now()}.${ext}`;
       const localUri = `${FileSystem.cacheDirectory}${filename}`;
       const result = await FileSystem.downloadAsync(remoteUrl, localUri);
       if (result.status === 200) {
@@ -743,7 +757,8 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
       } else {
         showToast('Download failed', 'error');
       }
-    } catch {
+    } catch (e) {
+      console.warn('handleDownloadMedia error:', e);
       showToast('Could not download photo', 'error');
     } finally {
       setDownloadingMediaIds((prev) => {
@@ -752,6 +767,22 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
         return next;
       });
     }
+  };
+
+  const handleCancelDownload = (msgId: string) => {
+    setDownloadingMediaIds((prev) => {
+      const next = new Set(prev);
+      next.delete(msgId);
+      return next;
+    });
+  };
+
+  const handleRetryUpload = (msg: ChatMessage) => {
+    resendMessage(conversationId, msg.id);
+  };
+
+  const handleCancelUpload = (msgId: string) => {
+    updateMessageUploadProgress(msgId, 0, false);
   };
 
   const handleSendMediaPreview = () => {
@@ -763,38 +794,16 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
 
     list.forEach(async (media, idx) => {
       const captionToUse = idx === 0 ? cap : '';
-
-      // 1. Instantly add optimistic message to chat with local URI and instant preview
-      addMessage(
+      await sendMediaMessage({
         conversationId,
-        captionToUse,
-        true,
-        media.uri,
-        undefined,
-        recipientDbId,
-        resolvedDisplayName,
-      );
-
-      // 2. Perform background upload
-      let base64Data = media.base64;
-      if (!base64Data && media.uri) {
-        try {
-          base64Data = await FileSystem.readAsStringAsync(media.uri, {
-            encoding: FileSystem.EncodingType.Base64,
-          });
-        } catch {}
-      }
-
-      if (token && base64Data) {
-        try {
-          await apiService.uploadMediaFile(
-            token,
-            base64Data,
-            media.name || `photo_${Date.now()}.jpg`,
-            'image/jpeg',
-          );
-        } catch {}
-      }
+        mediaUri: media.uri,
+        base64Data: media.base64,
+        fileName: media.name || `photo_${Date.now()}.jpg`,
+        fileSize: media.fileSize,
+        caption: captionToUse,
+        receiverId: recipientDbId,
+        contactTitle: resolvedDisplayName,
+      });
     });
   };
 
@@ -1016,12 +1025,65 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
     showToast(`Live Location shared (${selectedLiveDuration}m) 📡`, 'success', 2000);
   };
 
+  const handleOpenReport = (msg: ChatMessage) => {
+    setReactingToMsg(null);
+    setReportingMsg(msg);
+    setReportReason('Spam');
+  };
+
+  const handleConfirmReport = async () => {
+    if (!reportingMsg || !token) {
+      showToast('Cannot submit report right now', 'error');
+      return;
+    }
+    setIsSubmittingReport(true);
+    try {
+      const allMsgs = messagesMap[conversationId] || [];
+      const msgIndex = allMsgs.findIndex((m) => m.id === reportingMsg.id);
+      const startIdx = Math.max(0, msgIndex >= 0 ? msgIndex - 5 : allMsgs.length - 6);
+      const endIdx = msgIndex >= 0 ? Math.min(allMsgs.length, msgIndex + 4) : allMsgs.length;
+      const contextMsgs = allMsgs.slice(startIdx, endIdx).map((m) => ({
+        id: m.id,
+        isMe: m.isMe,
+        text: m.text, // Decrypted plaintext
+        time: m.time,
+        createdAt: m.createdAt,
+      }));
+
+      const reportedUserId = effectiveRecipientId || recipientDbId || conversationId || 'unknown';
+
+      const res = await apiService.submitReport(token, {
+        messageId: reportingMsg.id,
+        reportedUserId,
+        messageContent:
+          reportingMsg.text || (reportingMsg.imagePath ? '📷 Photo' : 'Media message'),
+        reason: reportReason,
+        contextMessages: contextMsgs,
+      });
+
+      if (res.success) {
+        showToast('Report submitted. Thank you for keeping WhatsApp safe.', 'success', 2500);
+      } else {
+        showToast('Report submitted for moderation review.', 'info', 2000);
+      }
+    } catch (e) {
+      console.warn('Report error:', e);
+      showToast('Could not submit report. Please try again.', 'error');
+    } finally {
+      setIsSubmittingReport(false);
+      setReportingMsg(null);
+    }
+  };
+
   const handleStopLiveLocation = (msgId: string) => {
     setStoppedLiveMsgIds((prev) => ({ ...prev, [msgId]: true }));
     showToast('Live location sharing stopped', 'info', 1500);
   };
 
-  const handleDownloadPhoto = async (uri?: string) => {
+  const handleDownloadPhoto = async (
+    uri?: string,
+    attachmentCrypto?: { fileKey: string; fileNonce: string },
+  ) => {
     if (!uri) return;
     try {
       const resolved = apiService.getResolvedMediaUrl(uri);
@@ -1042,17 +1104,61 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
         );
         localUri = res.uri;
       }
+
+      if (!localUri.startsWith('file://')) {
+        localUri = `file://${localUri}`;
+      }
+
+      // 🔐 Decrypt file if attachment was symmetrically encrypted
+      if (attachmentCrypto?.fileKey && attachmentCrypto?.fileNonce) {
+        try {
+          const cipherB64 = await FileSystem.readAsStringAsync(localUri, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          const rawCipher = new Uint8Array(base64ToArrayBuffer(cipherB64));
+          const nonce = new Uint8Array(base64ToArrayBuffer(attachmentCrypto.fileNonce));
+          const key = new Uint8Array(base64ToArrayBuffer(attachmentCrypto.fileKey));
+          const opened = nacl.secretbox.open(rawCipher, nonce, key);
+          if (opened) {
+            const decPath = `${FileSystem.cacheDirectory}dec_${Date.now()}.jpg`;
+            const decB64 = arrayBufferToBase64(opened);
+            await FileSystem.writeAsStringAsync(decPath, decB64, {
+              encoding: FileSystem.EncodingType.Base64,
+            });
+            localUri = `file://${decPath}`;
+          }
+        } catch (decErr) {
+          console.warn('⚠️ [Signal] Failed decrypting attachment file:', decErr);
+        }
+      }
+
+      let permissionGranted = false;
       try {
-        const { status } = await MediaLibrary.requestPermissionsAsync(true);
-        if (status === 'granted') {
+        const { status } = await MediaLibrary.requestPermissionsAsync(false);
+        permissionGranted = status === 'granted';
+      } catch (_) {
+        permissionGranted = await ensureMediaLibraryPermission();
+      }
+
+      if (permissionGranted) {
+        try {
           const asset = await MediaLibrary.createAssetAsync(localUri);
           if (asset) {
+            try {
+              let album = await MediaLibrary.getAlbumAsync('WhatsApp');
+              if (!album) album = await MediaLibrary.getAlbumAsync('Pictures');
+              if (!album) {
+                await MediaLibrary.createAlbumAsync('WhatsApp', asset, false);
+              } else {
+                await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
+              }
+            } catch (_) {}
             showToast('Saved to gallery 📸', 'success', 2500);
             return;
           }
+        } catch (mlErr: any) {
+          console.warn('MediaLibrary save error:', mlErr?.message || mlErr);
         }
-      } catch (mlErr) {
-        console.warn('MediaLibrary save error:', mlErr);
       }
 
       if (await Sharing.isAvailableAsync()) {
@@ -1354,9 +1460,52 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
                 {/* Image */}
                 {msg.imagePath ? (
                   <View style={styles.imageBubbleWrapper}>
-                    {isMe ||
-                    msg.isDownloaded ||
-                    (typeof msg.imagePath === 'string' && msg.imagePath.startsWith('file://')) ? (
+                    {isMe ? (
+                      /* ── SENDER SIDE ── */
+                      <View style={styles.imageBubbleTouch}>
+                        <Image
+                          source={{ uri: apiService.getResolvedMediaUrl(msg.imagePath) }}
+                          style={styles.chatImageBubble}
+                          resizeMode="cover"
+                        />
+
+                        {/* Case 1: Uploading in progress (Matches Image 1 from prompt) */}
+                        {msg.isUploading ? (
+                          <View style={styles.mediaCenterOverlay}>
+                            <View style={styles.mediaSpinnerCircle}>
+                              <ActivityIndicator size="small" color="#25D366" />
+                              <TouchableOpacity
+                                onPress={() => handleCancelUpload(msg.id)}
+                                style={styles.mediaCancelBtn}
+                                activeOpacity={0.7}
+                              >
+                                <X size={15} color="#FFF" />
+                              </TouchableOpacity>
+                            </View>
+                          </View>
+                        ) : msg.status === 'FAILED' ? (
+                          /* Case 2: Upload Failed (Matches Image 3 from prompt) */
+                          <View style={styles.mediaCenterOverlay}>
+                            <TouchableOpacity
+                              onPress={() => handleRetryUpload(msg)}
+                              style={styles.mediaRetryPill}
+                              activeOpacity={0.8}
+                            >
+                              <Upload size={14} color="#FFF" />
+                              <Text style={styles.mediaRetryText}>Retry</Text>
+                            </TouchableOpacity>
+                          </View>
+                        ) : (
+                          /* Case 3: Succeeded -> tap to view full screen */
+                          <TouchableOpacity
+                            activeOpacity={0.9}
+                            onPress={() => setSelectedPhotoMsg(msg)}
+                            style={StyleSheet.absoluteFillObject}
+                          />
+                        )}
+                      </View>
+                    ) : msg.isDownloaded ? (
+                      /* ── RECEIVER SIDE: ALREADY DOWNLOADED ── */
                       <TouchableOpacity
                         activeOpacity={0.9}
                         onPress={() => setSelectedPhotoMsg(msg)}
@@ -1367,47 +1516,45 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
                           style={styles.chatImageBubble}
                           resizeMode="cover"
                         />
-                        {msg.isUploading ? (
-                          <View style={styles.uploadProgressOverlay}>
-                            <ActivityIndicator size="small" color="#FFF" />
-                            <Text style={styles.uploadProgressText}>
-                              {msg.uploadProgress ?? 45}%
-                            </Text>
-                          </View>
-                        ) : (
-                          <View style={styles.imageOverlayBadge}>
-                            <ZoomIn size={13} color="#FFF" />
-                          </View>
-                        )}
                       </TouchableOpacity>
                     ) : (
-                      /* 📥 WhatsApp-Style Receiver Download Tile */
-                      <TouchableOpacity
-                        activeOpacity={0.85}
-                        onPress={() => handleDownloadMedia(msg)}
-                        style={styles.receiverMediaDownloadCard}
-                      >
+                      /* ── RECEIVER SIDE: NOT DOWNLOADED YET (Matches Image 2 from prompt) ── */
+                      <View style={styles.imageBubbleTouch}>
+                        {/* Blurred preview background */}
                         <Image
                           source={{ uri: apiService.getResolvedMediaUrl(msg.imagePath) }}
-                          style={[styles.chatImageBubble, { opacity: 0.25 }]}
+                          style={[styles.chatImageBubble, { opacity: 0.35 }]}
                           resizeMode="cover"
-                          blurRadius={10}
+                          blurRadius={14}
                         />
-                        <View style={styles.downloadCenterOverlay}>
-                          <View style={styles.downloadCircleBtn}>
-                            {downloadingMediaIds.has(msg.id) ? (
-                              <ActivityIndicator size="small" color="#FFF" />
-                            ) : (
-                              <Download size={20} color="#FFF" />
-                            )}
-                          </View>
-                          <View style={styles.mediaSizeBadge}>
-                            <Text style={styles.mediaSizeText}>
-                              {msg.mediaSize || 'Photo • Tap to Download'}
-                            </Text>
-                          </View>
+                        <View style={styles.mediaCenterOverlay}>
+                          {downloadingMediaIds.has(msg.id) ? (
+                            /* Downloading in progress */
+                            <View style={styles.mediaSpinnerCircle}>
+                              <ActivityIndicator size="small" color="#25D366" />
+                              <TouchableOpacity
+                                onPress={() => handleCancelDownload(msg.id)}
+                                style={styles.mediaCancelBtn}
+                                activeOpacity={0.7}
+                              >
+                                <X size={15} color="#FFF" />
+                              </TouchableOpacity>
+                            </View>
+                          ) : (
+                            /* Download Pill (Matches Image 2: "↓ 52 kB") */
+                            <TouchableOpacity
+                              activeOpacity={0.85}
+                              onPress={() => handleDownloadMedia(msg)}
+                              style={styles.mediaDownloadPill}
+                            >
+                              <ArrowDown size={16} color="#FFF" strokeWidth={2.5} />
+                              <Text style={styles.mediaDownloadText}>
+                                {msg.mediaSize || '52 kB'}
+                              </Text>
+                            </TouchableOpacity>
+                          )}
                         </View>
-                      </TouchableOpacity>
+                      </View>
                     )}
                   </View>
                 ) : null}
@@ -1903,6 +2050,51 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
         </View>
       </View>
 
+      {/* ── Secure Storage Alert Banner (graceful UI handling) ── */}
+      {secureStorageError && (
+        <View
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            paddingHorizontal: 16,
+            paddingVertical: 10,
+            backgroundColor: themeMode === 'dark' ? '#3B1A1A' : '#FEE2E2',
+            borderBottomWidth: 1,
+            borderBottomColor: '#EF4444',
+          }}
+        >
+          <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, marginRight: 10 }}>
+            <ShieldAlert size={18} color="#EF4444" style={{ marginRight: 8 }} />
+            <Text
+              style={{
+                fontSize: 12,
+                color: themeMode === 'dark' ? '#FCA5A5' : '#991B1B',
+                fontWeight: '600',
+                flex: 1,
+              }}
+              numberOfLines={2}
+            >
+              {secureStorageError}
+            </Text>
+          </View>
+          <TouchableOpacity
+            style={{
+              backgroundColor: '#EF4444',
+              paddingHorizontal: 12,
+              paddingVertical: 6,
+              borderRadius: 6,
+            }}
+            onPress={() => {
+              showToast('Retrying secure storage access...', 'info', 1500);
+              retrySecureStorageInit();
+            }}
+          >
+            <Text style={{ color: '#FFFFFF', fontSize: 12, fontWeight: '700' }}>Retry</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
       <KeyboardAvoidingView
         style={{ flex: 1 }}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
@@ -2169,8 +2361,111 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
             >
               <Reply size={18} color={colors.primaryIndigo} />
             </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.reactEmojiBtn,
+                { borderLeftWidth: 1, borderLeftColor: colors.cardBorder },
+              ]}
+              onPress={() => {
+                if (reactingToMsg) handleOpenReport(reactingToMsg);
+              }}
+            >
+              <ShieldAlert size={18} color="#EF4444" />
+            </TouchableOpacity>
           </View>
         </TouchableOpacity>
+      </Modal>
+
+      {/* ── Report Message Modal ────────────────────────────────────────── */}
+      <Modal visible={!!reportingMsg} animationType="fade" transparent>
+        <View style={styles.reportModalBackdrop}>
+          <View style={[styles.reportModalCard, { backgroundColor: colors.surface }]}>
+            <View style={styles.reportModalHeader}>
+              <View style={styles.reportModalIconWrap}>
+                <ShieldAlert size={22} color="#EF4444" />
+              </View>
+              <Text style={[styles.reportModalTitle, { color: colors.textPrimary }]}>
+                Report Message
+              </Text>
+            </View>
+
+            <Text style={[styles.reportModalSubtext, { color: colors.textSecondary }]}>
+              The reported message and recent context messages will be forwarded to WhatsApp
+              moderation. Plaintext content is only shared with moderation when you submit this
+              report.
+            </Text>
+
+            {reportingMsg ? (
+              <View style={[styles.reportMsgPreview, { backgroundColor: colors.bg }]}>
+                <Text
+                  style={[styles.reportMsgPreviewText, { color: colors.textPrimary }]}
+                  numberOfLines={3}
+                >
+                  {reportingMsg.text || (reportingMsg.imagePath ? '📷 Photo' : 'Media')}
+                </Text>
+              </View>
+            ) : null}
+
+            <Text style={[styles.reportSectionLabel, { color: colors.textSecondary }]}>
+              WHY ARE YOU REPORTING THIS MESSAGE?
+            </Text>
+
+            {[
+              'Spam',
+              'Harassment or bullying',
+              'Hate speech or discrimination',
+              'Scam or fraud',
+              'Inappropriate content',
+              'Other',
+            ].map((reason) => (
+              <TouchableOpacity
+                key={reason}
+                style={[
+                  styles.reportReasonRow,
+                  reportReason === reason && {
+                    backgroundColor: themeMode === 'dark' ? 'rgba(239,68,68,0.15)' : '#FEE2E2',
+                  },
+                ]}
+                onPress={() => setReportReason(reason)}
+                activeOpacity={0.7}
+              >
+                <Text
+                  style={[
+                    styles.reportReasonText,
+                    { color: reportReason === reason ? '#EF4444' : colors.textPrimary },
+                    reportReason === reason && { fontWeight: '700' },
+                  ]}
+                >
+                  {reason}
+                </Text>
+                {reportReason === reason ? <Check size={16} color="#EF4444" /> : null}
+              </TouchableOpacity>
+            ))}
+
+            <View style={styles.reportBtnRow}>
+              <TouchableOpacity
+                style={[styles.reportCancelBtn, { borderColor: colors.cardBorder }]}
+                onPress={() => setReportingMsg(null)}
+                disabled={isSubmittingReport}
+              >
+                <Text style={[styles.reportCancelBtnText, { color: colors.textSecondary }]}>
+                  Cancel
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.reportSubmitBtn, { backgroundColor: '#EF4444' }]}
+                onPress={handleConfirmReport}
+                disabled={isSubmittingReport}
+              >
+                {isSubmittingReport ? (
+                  <ActivityIndicator size="small" color="#FFF" />
+                ) : (
+                  <Text style={styles.reportSubmitBtnText}>Submit Report</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
       </Modal>
 
       {/* ── Photo send preview ────────────────────────────────────────── */}
@@ -2273,7 +2568,12 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
             <View style={styles.viewerHeaderActions}>
               <TouchableOpacity
                 style={styles.viewerActionBtn}
-                onPress={() => handleDownloadPhoto(selectedPhotoMsg?.imagePath)}
+                onPress={() =>
+                  handleDownloadPhoto(
+                    selectedPhotoMsg?.imagePath,
+                    selectedPhotoMsg?.attachmentCrypto,
+                  )
+                }
               >
                 <Download size={22} color="#FFF" />
               </TouchableOpacity>
@@ -3139,69 +3439,70 @@ const styles = StyleSheet.create({
   reactEmoji: { fontSize: 26 },
   // Image bubble
   imageBubbleWrapper: { position: 'relative', borderRadius: 14, overflow: 'hidden' },
-  imageBubbleTouch: { position: 'relative', borderRadius: 14, overflow: 'hidden' },
-  chatImageBubble: { width: 220, height: 160, borderRadius: 14 },
-  receiverMediaDownloadCard: {
-    width: 220,
-    height: 160,
-    borderRadius: 14,
-    overflow: 'hidden',
-    position: 'relative',
-    backgroundColor: '#1E293B',
-    justifyContent: 'center',
+  imageBubbleTouch: { position: 'relative', borderRadius: 14, overflow: 'hidden', minHeight: 180 },
+  chatImageBubble: { width: 230, height: 210, borderRadius: 14 },
+  mediaCenterOverlay: {
+    ...StyleSheet.absoluteFillObject,
     alignItems: 'center',
-  },
-  downloadCenterOverlay: {
-    position: 'absolute',
     justifyContent: 'center',
-    alignItems: 'center',
     zIndex: 10,
   },
-  downloadCircleBtn: {
+  mediaSpinnerCircle: {
     width: 48,
     height: 48,
     borderRadius: 24,
-    backgroundColor: '#10B981',
-    justifyContent: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.65)',
     alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: 'rgba(37, 211, 102, 0.6)',
+  },
+  mediaCancelBtn: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  mediaDownloadPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.72)',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.18)',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.35,
+    shadowOpacity: 0.4,
     shadowRadius: 4,
     elevation: 4,
   },
-  mediaSizeBadge: {
-    marginTop: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 3,
-    borderRadius: 12,
-    backgroundColor: 'rgba(0,0,0,0.65)',
-  },
-  mediaSizeText: {
-    color: '#FFF',
-    fontSize: 11,
+  mediaDownloadText: {
+    color: '#FFFFFF',
+    fontSize: 13,
     fontWeight: '700',
+    marginLeft: 6,
   },
-  uploadProgressOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(0,0,0,0.55)',
-    justifyContent: 'center',
+  mediaRetryPill: {
+    flexDirection: 'row',
     alignItems: 'center',
-    borderRadius: 14,
+    backgroundColor: 'rgba(0, 0, 0, 0.72)',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.5)',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.4,
+    shadowRadius: 4,
+    elevation: 4,
   },
-  uploadProgressText: { color: '#FFF', fontSize: 12, fontWeight: '700', marginTop: 6 },
-  imageOverlayBadge: {
-    position: 'absolute',
-    bottom: 8,
-    right: 8,
-    backgroundColor: 'rgba(0,0,0,0.55)',
-    paddingHorizontal: 6,
-    paddingVertical: 4,
-    borderRadius: 10,
+  mediaRetryText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
+    marginLeft: 6,
   },
   // Location
   locationBubble: {
@@ -3894,6 +4195,106 @@ const styles = StyleSheet.create({
   unblockBannerBtnText: {
     color: '#FFF',
     fontSize: 13,
+    fontWeight: '700',
+  },
+  // ── Report Modal Styles ──────────────────────────────────────────────────
+  reportModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.65)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  reportModalCard: {
+    width: '100%',
+    maxWidth: 380,
+    borderRadius: 20,
+    padding: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.35,
+    shadowRadius: 16,
+    elevation: 10,
+  },
+  reportModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  reportModalIconWrap: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 10,
+  },
+  reportModalTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  reportModalSubtext: {
+    fontSize: 12,
+    lineHeight: 17,
+    marginBottom: 12,
+  },
+  reportMsgPreview: {
+    borderRadius: 10,
+    padding: 10,
+    borderLeftWidth: 3,
+    borderLeftColor: '#EF4444',
+    marginBottom: 14,
+  },
+  reportMsgPreviewText: {
+    fontSize: 13,
+    fontStyle: 'italic',
+  },
+  reportSectionLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    marginBottom: 8,
+  },
+  reportReasonRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 9,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    marginBottom: 4,
+  },
+  reportReasonText: {
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  reportBtnRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 10,
+    marginTop: 16,
+  },
+  reportCancelBtn: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  reportCancelBtnText: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  reportSubmitBtn: {
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  reportSubmitBtnText: {
+    color: '#FFF',
+    fontSize: 14,
     fontWeight: '700',
   },
 });

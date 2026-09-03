@@ -272,6 +272,14 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     }
 
     const mediaSize = (payload as any).mediaSize || (payload as any).fileSize;
+    const ciphertexts = (payload as any).ciphertexts || {
+      text: text ?? '',
+      imagePath,
+      location,
+      document,
+      contact,
+      mediaSize,
+    };
 
     // ── STEP 1: Synchronous DB write (blocking — durability first) ────────
     let savedMessage: any;
@@ -281,7 +289,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
         conversationId,
         receiverId,
         type: msgType as any,
-        ciphertexts: { text: text ?? '', imagePath, location, document, contact, mediaSize } as any,
+        ciphertexts: ciphertexts as any,
       });
     } catch (err: any) {
       // Idempotency: if clientMessageId already exists for this sender, fetch existing row
@@ -332,7 +340,8 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       senderUsername: senderProfile?.username ?? undefined,
       senderAvatarUrl: senderProfile?.avatarUrl ?? undefined,
       senderPhone: senderProfile?.phoneNumber ?? undefined,
-      text: text ?? '',
+      ciphertexts,
+      text: typeof text === 'string' ? text : '',
       imagePath,
       location,
       document,

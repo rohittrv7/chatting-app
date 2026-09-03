@@ -4,12 +4,14 @@ import {
   UnprocessableEntityException,
   Logger,
   Inject,
+  Optional,
 } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import * as crypto from 'crypto';
 import { KeyRepository } from './key.repository';
 import { RegisterKeysDto, PreKeyBundleDto } from '@chat/shared-contracts';
+import { AuthGateway } from '../auth/auth.gateway';
 
 /**
  * Threshold below which the server triggers a `replenish-otpk` BullMQ job
@@ -40,6 +42,7 @@ export class KeyService {
   constructor(
     private readonly keyRepository: KeyRepository,
     @InjectQueue(KEY_EVENTS_QUEUE) private readonly keyEventsQueue: Queue,
+    @Optional() private readonly authGateway?: AuthGateway,
   ) {}
 
   /**
@@ -70,6 +73,15 @@ export class KeyService {
       `Keys registered for userId=${userId} deviceId=${deviceId}: ` +
         `1 IK, 1 SPK (id=${dto.signedPreKeyId}), ${dto.oneTimePreKeys.length} OTPks`,
     );
+
+    // ── Step 7: Targeted fanout to the user's own active devices via Socket.IO ──
+    if (this.authGateway?.server) {
+      this.authGateway.server.to(`user:${userId}`).emit('device:added', {
+        userId,
+        deviceId: dto.deviceId,
+      });
+    }
+
     return { success: true };
   }
 
@@ -83,14 +95,8 @@ export class KeyService {
    * - After each OTPk consumption, if remaining count < 10, also dispatches
    *   the `replenish-otpk` job (Requirement 3.10).
    */
-  async getPreKeyBundle(
-    targetUserId: string,
-    targetDeviceId: number,
-  ): Promise<PreKeyBundleDto> {
-    const result = await this.keyRepository.getPreKeyBundle(
-      targetUserId,
-      targetDeviceId,
-    );
+  async getPreKeyBundle(targetUserId: string, targetDeviceId: number): Promise<PreKeyBundleDto> {
+    const result = await this.keyRepository.getPreKeyBundle(targetUserId, targetDeviceId);
 
     if (!result) {
       throw new NotFoundException(
@@ -132,10 +138,7 @@ export class KeyService {
    * Configured with 3-retry exponential backoff (1s → 2s → 4s) and a
    * dead-letter queue (Requirement 3.5, design BullMQ error strategy).
    */
-  private async dispatchReplenishJob(
-    deviceInternalId: string,
-    deviceId: number,
-  ): Promise<void> {
+  private async dispatchReplenishJob(deviceInternalId: string, deviceId: number): Promise<void> {
     try {
       await this.keyEventsQueue.add(
         JOB_REPLENISH_OTPK,
@@ -178,10 +181,7 @@ export class KeyService {
       // Import the raw 32-byte Ed25519 public key in SubjectPublicKeyInfo format
       // Node.js crypto requires the key to be in SubjectPublicKeyInfo (SPKI) DER
       // for Ed25519. We wrap the raw 32-byte key with the standard Ed25519 SPKI prefix.
-      const spkiPrefix = Buffer.from(
-        '302a300506032b6570032100',
-        'hex',
-      );
+      const spkiPrefix = Buffer.from('302a300506032b6570032100', 'hex');
       const publicKeyDer = Buffer.concat([spkiPrefix, identityKeyBytes]);
 
       const publicKey = crypto.createPublicKey({
@@ -208,9 +208,7 @@ export class KeyService {
         throw err;
       }
       // Malformed key material (e.g., wrong length, invalid encoding)
-      this.logger.warn(
-        `SignedPreKey signature validation error: ${(err as Error).message}`,
-      );
+      this.logger.warn(`SignedPreKey signature validation error: ${(err as Error).message}`);
       throw new UnprocessableEntityException({
         code: 'INVALID_KEY_SIGNATURE',
         message: 'SignedPreKey signature verification failed: invalid key material',

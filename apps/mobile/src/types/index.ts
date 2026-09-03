@@ -23,6 +23,9 @@ export interface ChatMessage {
   id: string;
   conversationId: string;
   text: string;
+  ciphertexts?: any;
+  content?: string;
+  nonce?: string;
   isMe: boolean;
   time: string;
   status: 'SENDING' | 'SENT' | 'DELIVERED' | 'READ' | 'SERVER_RECEIVED' | 'FAILED';
@@ -31,6 +34,10 @@ export interface ChatMessage {
   isFile?: boolean;
   fileSize?: string;
   imagePath?: string;
+  attachmentCrypto?: {
+    fileKey: string;
+    fileNonce: string;
+  };
   location?: {
     lat: number;
     lng: number;

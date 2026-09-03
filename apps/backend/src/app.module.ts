@@ -14,6 +14,7 @@ import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 import { HttpLoggerMiddleware } from './common/middleware/http-logger.middleware';
 import { SystemDiagnosticsService } from './common/services/system-diagnostics.service';
 import { ObservabilityModule } from './modules/observability/observability.module';
+import { ReportsModule } from './modules/reports/reports.module';
 import { PrismaModule } from './database/prisma.module';
 import { AppController } from './app.controller';
 import { HealthController } from './modules/health/health.controller';
@@ -32,6 +33,7 @@ import { LastActiveInterceptor } from './common/interceptors/last-active.interce
     ObservabilityModule,
     PrismaModule,
     AuthModule,
+    ReportsModule,
     KeyModule,
     ConversationModule,
     MessageModule,
