@@ -244,8 +244,8 @@ class ErrorBoundary extends React.Component<
 
 export default function App() {
   return (
-    <SafeAreaProvider>
-      <ErrorBoundary>
+    <ErrorBoundary>
+      <SafeAreaProvider>
         <Provider store={store}>
           <ThemeProvider>
             <ChatProvider>
@@ -255,7 +255,7 @@ export default function App() {
             </ChatProvider>
           </ThemeProvider>
         </Provider>
-      </ErrorBoundary>
-    </SafeAreaProvider>
+      </SafeAreaProvider>
+    </ErrorBoundary>
   );
 }

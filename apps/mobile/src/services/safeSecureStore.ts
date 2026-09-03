@@ -53,25 +53,33 @@ if (typeof globalThis.crypto === 'undefined' || !globalThis.crypto.getRandomValu
   };
 }
 
-// ─── 2. Safe Dynamic SecureStore Loader ─────────────────────────────────────
+// ─── 2. Strictly Lazy SecureStore Loader (Zero startup module evaluation) ───
 
-let nativeSecureStore: any = null;
-try {
-  const mod = require('expo-secure-store');
-  if (mod && typeof mod.getItemAsync === 'function') {
-    nativeSecureStore = mod;
+let cachedNativeStore: any = undefined;
+
+function getNativeSecureStore(): any {
+  if (cachedNativeStore !== undefined) {
+    return cachedNativeStore;
   }
-} catch (e) {
-  console.warn(
-    '⚠️ [SafeSecureStore] expo-secure-store native module not linked in current APK, falling back to AsyncStorage',
-  );
+  try {
+    const mod = require('expo-secure-store');
+    if (mod && typeof mod.getItemAsync === 'function') {
+      cachedNativeStore = mod;
+    } else {
+      cachedNativeStore = null;
+    }
+  } catch {
+    cachedNativeStore = null;
+  }
+  return cachedNativeStore;
 }
 
 export const safeSecureStore = {
   async getItemAsync(key: string): Promise<string | null> {
-    if (nativeSecureStore) {
+    const store = getNativeSecureStore();
+    if (store) {
       try {
-        return await nativeSecureStore.getItemAsync(key);
+        return await store.getItemAsync(key);
       } catch (err) {
         console.warn(
           '⚠️ [SafeSecureStore] Native getItemAsync failed, falling back to AsyncStorage:',
@@ -83,9 +91,10 @@ export const safeSecureStore = {
   },
 
   async setItemAsync(key: string, value: string): Promise<void> {
-    if (nativeSecureStore) {
+    const store = getNativeSecureStore();
+    if (store) {
       try {
-        await nativeSecureStore.setItemAsync(key, value);
+        await store.setItemAsync(key, value);
         return;
       } catch (err) {
         console.warn(
@@ -98,9 +107,10 @@ export const safeSecureStore = {
   },
 
   async deleteItemAsync(key: string): Promise<void> {
-    if (nativeSecureStore) {
+    const store = getNativeSecureStore();
+    if (store) {
       try {
-        await nativeSecureStore.deleteItemAsync(key);
+        await store.deleteItemAsync(key);
         return;
       } catch (err) {}
     }
@@ -108,9 +118,10 @@ export const safeSecureStore = {
   },
 
   async isAvailableAsync(): Promise<boolean> {
-    if (nativeSecureStore && typeof nativeSecureStore.isAvailableAsync === 'function') {
+    const store = getNativeSecureStore();
+    if (store && typeof store.isAvailableAsync === 'function') {
       try {
-        return await nativeSecureStore.isAvailableAsync();
+        return await store.isAvailableAsync();
       } catch {
         return false;
       }

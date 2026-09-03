@@ -2,7 +2,7 @@
   "expo": {
     "name": "WhatsApp Connect",
     "slug": "whatsapp-connect",
-    "version": "1.0.2",
+    "version": "1.0.3",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -25,25 +25,51 @@
         "backgroundColor": "#6366F1"
       },
       "package": "com.anonymous.whatsappconnect",
-      "versionCode": 3,
+      "versionCode": 4,
       "softwareKeyboardLayoutMode": "resize",
       "permissions": [
+        "INTERNET",
+        "ACCESS_NETWORK_STATE",
+        "WAKE_LOCK",
+        "MODIFY_AUDIO_SETTINGS",
+        "BLUETOOTH",
+        "BLUETOOTH_CONNECT",
+        "VIBRATE",
         "CAMERA",
         "RECORD_AUDIO",
         "READ_EXTERNAL_STORAGE",
         "WRITE_EXTERNAL_STORAGE",
         "READ_MEDIA_IMAGES",
         "READ_MEDIA_VIDEO",
-        "READ_MEDIA_AUDIO"
+        "READ_MEDIA_AUDIO",
+        "SYSTEM_ALERT_WINDOW"
       ]
     },
     "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow WhatsApp Connect to access your camera for video calls."
+        }
+      ],
       [
         "expo-media-library",
         {
           "photosPermission": "Allow WhatsApp Connect to access your photos.",
           "savePhotosPermission": "Allow WhatsApp Connect to save photos to your gallery.",
           "isAccessMediaLocationEnabled": true
+        }
+      ],
+      [
+        "expo-contacts",
+        {
+          "contactsPermission": "Allow WhatsApp Connect to access your contacts to chat."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Allow WhatsApp Connect to access your location to share with contacts."
         }
       ]
     ],
