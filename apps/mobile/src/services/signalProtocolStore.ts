@@ -13,7 +13,7 @@
  *    - Provides fast access during real-time chat sessions.
  */
 
-import * as SecureStore from 'expo-secure-store';
+import { safeSecureStore as SecureStore } from './safeSecureStore';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import nacl from 'tweetnacl';
 import {

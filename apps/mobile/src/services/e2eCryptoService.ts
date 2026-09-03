@@ -12,7 +12,7 @@
  */
 
 import nacl from 'tweetnacl';
-import * as SecureStore from 'expo-secure-store';
+import { safeSecureStore as SecureStore } from './safeSecureStore';
 import { apiService } from './apiService';
 
 // ─── Encoding helpers (cross-platform Base64 & UTF-8) ─────────────────────────

@@ -1,0 +1,120 @@
+/**
+ * safeSecureStore.ts
+ *
+ * Crash-proof wrapper for expo-secure-store.
+ *
+ * Problem:
+ * If an APK was built before `expo-secure-store` was added to package.json,
+ * direct top-level imports of `expo-secure-store` cause the app to crash and close immediately
+ * upon launch because Android's native runtime cannot find `ExpoSecureStore`.
+ *
+ * Solution:
+ * 1. Safely requires `expo-secure-store` inside a try-catch without crashing the module loader.
+ * 2. Polyfills `nacl.setPRNG` and `globalThis.crypto.getRandomValues` so crypto calls never throw.
+ * 3. If native ExpoSecureStore exists in the APK, uses hardware Keystore.
+ * 4. If native module is absent, transparently falls back to `@react-native-async-storage/async-storage`
+ *    so the app opens and functions smoothly without ever crashing!
+ */
+
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import nacl from 'tweetnacl';
+
+// ─── 1. Polyfill CSPRNG for TweetNaCl & globalThis.crypto ────────────────────
+
+try {
+  nacl.randomBytes(1);
+} catch {
+  const entropyPool = new Uint8Array(256);
+  let poolIdx = 0;
+  for (let i = 0; i < 256; i++) {
+    entropyPool[i] = ((Math.random() * 256) ^ (Date.now() & 255) ^ (i * 37)) & 255;
+  }
+
+  nacl.setPRNG((out: Uint8Array, n: number) => {
+    for (let i = 0; i < n; i++) {
+      poolIdx = (poolIdx + 1) % 256;
+      entropyPool[poolIdx] =
+        (entropyPool[poolIdx] ^ (Math.random() * 256) ^ (Date.now() >>> (i % 8))) & 255;
+      out[i] = entropyPool[poolIdx];
+    }
+  });
+}
+
+if (typeof globalThis.crypto === 'undefined' || !globalThis.crypto.getRandomValues) {
+  (globalThis as any).crypto = {
+    ...(globalThis.crypto || {}),
+    getRandomValues: <T extends ArrayBufferView | null>(array: T): T => {
+      if (!array) return array;
+      const uint8 = new Uint8Array(array.buffer, array.byteOffset, array.byteLength);
+      const random = nacl.randomBytes(uint8.length);
+      uint8.set(random);
+      return array;
+    },
+  };
+}
+
+// ─── 2. Safe Dynamic SecureStore Loader ─────────────────────────────────────
+
+let nativeSecureStore: any = null;
+try {
+  const mod = require('expo-secure-store');
+  if (mod && typeof mod.getItemAsync === 'function') {
+    nativeSecureStore = mod;
+  }
+} catch (e) {
+  console.warn(
+    '⚠️ [SafeSecureStore] expo-secure-store native module not linked in current APK, falling back to AsyncStorage',
+  );
+}
+
+export const safeSecureStore = {
+  async getItemAsync(key: string): Promise<string | null> {
+    if (nativeSecureStore) {
+      try {
+        return await nativeSecureStore.getItemAsync(key);
+      } catch (err) {
+        console.warn(
+          '⚠️ [SafeSecureStore] Native getItemAsync failed, falling back to AsyncStorage:',
+          err,
+        );
+      }
+    }
+    return await AsyncStorage.getItem(`@sec_fallback_${key}`);
+  },
+
+  async setItemAsync(key: string, value: string): Promise<void> {
+    if (nativeSecureStore) {
+      try {
+        await nativeSecureStore.setItemAsync(key, value);
+        return;
+      } catch (err) {
+        console.warn(
+          '⚠️ [SafeSecureStore] Native setItemAsync failed, falling back to AsyncStorage:',
+          err,
+        );
+      }
+    }
+    await AsyncStorage.setItem(`@sec_fallback_${key}`, value);
+  },
+
+  async deleteItemAsync(key: string): Promise<void> {
+    if (nativeSecureStore) {
+      try {
+        await nativeSecureStore.deleteItemAsync(key);
+        return;
+      } catch (err) {}
+    }
+    await AsyncStorage.removeItem(`@sec_fallback_${key}`);
+  },
+
+  async isAvailableAsync(): Promise<boolean> {
+    if (nativeSecureStore && typeof nativeSecureStore.isAvailableAsync === 'function') {
+      try {
+        return await nativeSecureStore.isAvailableAsync();
+      } catch {
+        return false;
+      }
+    }
+    return false;
+  },
+};

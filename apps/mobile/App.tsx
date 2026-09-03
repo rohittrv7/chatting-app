@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, ActivityIndicator, StatusBar, LogBox } from 'react-native';
+import { View, Text, TouchableOpacity, ActivityIndicator, StatusBar, LogBox } from 'react-native';
 
 LogBox.ignoreLogs([
   '[expo-av]: Expo AV has been deprecated',
@@ -176,18 +176,86 @@ function AppNavigator() {
   );
 }
 
+class ErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean; error: Error | null }
+> {
+  state = { hasError: false, error: null as Error | null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: any) {
+    console.error('🛑 [ErrorBoundary] Unhandled UI error caught:', error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <View
+          style={{
+            flex: 1,
+            backgroundColor: '#0F172A',
+            justifyContent: 'center',
+            alignItems: 'center',
+            padding: 24,
+          }}
+        >
+          <Text style={{ fontSize: 48, marginBottom: 16 }}>💬</Text>
+          <Text
+            style={{
+              color: '#F8FAFC',
+              fontSize: 18,
+              fontWeight: '700',
+              textAlign: 'center',
+              marginBottom: 8,
+            }}
+          >
+            Something went wrong
+          </Text>
+          <Text
+            style={{
+              color: '#94A3B8',
+              fontSize: 13,
+              textAlign: 'center',
+              marginBottom: 24,
+            }}
+          >
+            {this.state.error?.message || 'An unexpected error occurred.'}
+          </Text>
+          <TouchableOpacity
+            style={{
+              backgroundColor: '#4F46E5',
+              paddingHorizontal: 24,
+              paddingVertical: 12,
+              borderRadius: 8,
+            }}
+            onPress={() => this.setState({ hasError: false, error: null })}
+          >
+            <Text style={{ color: '#FFFFFF', fontWeight: '700' }}>Restart App</Text>
+          </TouchableOpacity>
+        </View>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export default function App() {
   return (
     <SafeAreaProvider>
-      <Provider store={store}>
-        <ThemeProvider>
-          <ChatProvider>
-            <ToastProvider>
-              <AppNavigator />
-            </ToastProvider>
-          </ChatProvider>
-        </ThemeProvider>
-      </Provider>
+      <ErrorBoundary>
+        <Provider store={store}>
+          <ThemeProvider>
+            <ChatProvider>
+              <ToastProvider>
+                <AppNavigator />
+              </ToastProvider>
+            </ChatProvider>
+          </ThemeProvider>
+        </Provider>
+      </ErrorBoundary>
     </SafeAreaProvider>
   );
 }
