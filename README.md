@@ -4,16 +4,6 @@
 
 ---
 
-## 🚀 Live Deployments & Repository
-
-- **GitHub Repository**: [https://github.com/rohittrv7/chatting-app](https://github.com/rohittrv7/chatting-app)
-- **Live Production API**: [https://chatting-app-rme6.onrender.com/api/v1](https://chatting-app-rme6.onrender.com/api/v1)
-- **Live WebSocket Server**: [https://chatting-app-rme6.onrender.com](https://chatting-app-rme6.onrender.com)
-- **Swagger Interactive API Documentation**: [https://chatting-app-rme6.onrender.com/docs](https://chatting-app-rme6.onrender.com/docs)
-- **Active Branches**: `main`, `develop`
-
----
-
 ## 🌟 Key Architecture & Features
 
 ### 1. ⚡ Real-Time Socket Gateway & Messaging
