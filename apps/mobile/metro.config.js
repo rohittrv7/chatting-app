@@ -7,10 +7,11 @@ const monorepoRoot = path.resolve(projectRoot, '../..');
 
 const config = getDefaultConfig(projectRoot);
 
-// 1. Watch all files within the monorepo while preserving Expo default watchFolders
-config.watchFolders = Array.from(
-  new Set([...(config.watchFolders || []), projectRoot, monorepoRoot]),
-);
+// Ensure server root is the app project root so entry-file resolves directly
+config.server = {
+  ...config.server,
+  unstable_serverRoot: projectRoot,
+};
 
 // 2. Let Metro know where to resolve packages and in what order
 config.resolver.nodeModulesPaths = [

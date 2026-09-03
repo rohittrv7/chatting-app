@@ -40,17 +40,29 @@ try {
   });
 }
 
-if (typeof globalThis.crypto === 'undefined' || !globalThis.crypto.getRandomValues) {
-  (globalThis as any).crypto = {
-    ...(globalThis.crypto || {}),
-    getRandomValues: <T extends ArrayBufferView | null>(array: T): T => {
-      if (!array) return array;
-      const uint8 = new Uint8Array(array.buffer, array.byteOffset, array.byteLength);
-      const random = nacl.randomBytes(uint8.length);
-      uint8.set(random);
-      return array;
-    },
-  };
+try {
+  if (typeof globalThis.crypto === 'undefined') {
+    Object.defineProperty(globalThis, 'crypto', {
+      value: {},
+      writable: true,
+      configurable: true,
+    });
+  }
+  if (!globalThis.crypto.getRandomValues) {
+    Object.defineProperty(globalThis.crypto, 'getRandomValues', {
+      value: <T extends ArrayBufferView | null>(array: T): T => {
+        if (!array) return array;
+        const uint8 = new Uint8Array(array.buffer, array.byteOffset, array.byteLength);
+        const random = nacl.randomBytes(uint8.length);
+        uint8.set(random);
+        return array;
+      },
+      writable: true,
+      configurable: true,
+    });
+  }
+} catch (e) {
+  // Ignored if runtime has locked crypto object
 }
 
 // ─── 2. Strictly Lazy SecureStore Loader (Zero startup module evaluation) ───

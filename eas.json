@@ -6,17 +6,29 @@
   "build": {
     "development": {
       "developmentClient": true,
-      "distribution": "internal"
+      "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://chatting-app-rme6.onrender.com/api/v1",
+        "EXPO_PUBLIC_SOCKET_URL": "https://chatting-app-rme6.onrender.com"
+      }
     },
     "preview": {
       "distribution": "internal",
       "android": {
         "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://chatting-app-rme6.onrender.com/api/v1",
+        "EXPO_PUBLIC_SOCKET_URL": "https://chatting-app-rme6.onrender.com"
       }
     },
     "production": {
       "android": {
         "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://chatting-app-rme6.onrender.com/api/v1",
+        "EXPO_PUBLIC_SOCKET_URL": "https://chatting-app-rme6.onrender.com"
       }
     }
   },
