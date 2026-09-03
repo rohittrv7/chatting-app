@@ -497,25 +497,39 @@ class SoundService {
   }
 
   /**
-   * Stop any active looping call sound (dial tone or ringtone)
+   * Stop and completely unload any active looping call sound (dial tone or ringtone).
+   * Guaranteed to await complete unloading before resolving.
    */
-  public async stopCallSounds() {
+  public async stopCallSounds(): Promise<void> {
     this.currentSoundGeneration++;
+    const unloadPromises: Promise<any>[] = [];
+
     for (const snd of this.activeSounds) {
       try {
-        snd.stopAsync().catch(() => {});
-        snd.unloadAsync().catch(() => {});
+        unloadPromises.push(
+          snd
+            .stopAsync()
+            .catch(() => {})
+            .then(() => snd.unloadAsync().catch(() => {})),
+        );
       } catch (_) {}
     }
     this.activeSounds.clear();
 
     if (this.activeLoopingSound) {
-      try {
-        await this.activeLoopingSound.stopAsync();
-        await this.activeLoopingSound.unloadAsync();
-      } catch (_) {}
+      const loopSnd = this.activeLoopingSound;
       this.activeLoopingSound = null;
+      try {
+        unloadPromises.push(
+          loopSnd
+            .stopAsync()
+            .catch(() => {})
+            .then(() => loopSnd.unloadAsync().catch(() => {})),
+        );
+      } catch (_) {}
     }
+
+    await Promise.all(unloadPromises);
   }
 
   /**

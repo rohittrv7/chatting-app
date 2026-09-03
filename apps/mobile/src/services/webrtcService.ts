@@ -348,6 +348,29 @@ class WebRTCService {
     }
   }
 
+  private isAudioMuted = false;
+
+  public setMute(isMuted: boolean) {
+    this.isAudioMuted = isMuted;
+    if (this.localStream) {
+      this.localStream.getAudioTracks().forEach((track: MediaStreamTrack) => {
+        track.enabled = !isMuted;
+      });
+    }
+  }
+
+  public getIsMuted(): boolean {
+    return this.isAudioMuted;
+  }
+
+  public setVideoEnabled(isEnabled: boolean) {
+    if (this.localStream) {
+      this.localStream.getVideoTracks().forEach((track: MediaStreamTrack) => {
+        track.enabled = isEnabled;
+      });
+    }
+  }
+
   private async _flushPendingIceCandidates() {
     if (!this.peerConnection || !this.peerConnection.remoteDescription) return;
     const count = this.pendingIceCandidates.length;
@@ -368,22 +391,6 @@ class WebRTCService {
 
   // ─── In-Call Media Controls ────────────────────────────────────────────────
 
-  public setMute(isMuted: boolean) {
-    if (this.localStream) {
-      this.localStream.getAudioTracks().forEach((track: MediaStreamTrack) => {
-        track.enabled = !isMuted;
-      });
-    }
-  }
-
-  public setVideoEnabled(isEnabled: boolean) {
-    if (this.localStream) {
-      this.localStream.getVideoTracks().forEach((track: MediaStreamTrack) => {
-        track.enabled = isEnabled;
-      });
-    }
-  }
-
   public switchCamera() {
     if (this.localStream) {
       const videoTrack = this.localStream.getVideoTracks()[0];
@@ -397,12 +404,14 @@ class WebRTCService {
 
   public closeSession() {
     console.log('🛑 [WebRTC] Closing WebRTC session and releasing hardware');
+    this.isAudioMuted = false;
 
     // Stop all local media tracks
     if (this.localStream) {
       this.localStream.getTracks().forEach((track: MediaStreamTrack) => {
         try {
           track.stop();
+          (track as any).release?.();
         } catch (_) {}
       });
       this.localStream = null;
@@ -414,6 +423,7 @@ class WebRTCService {
       this.remoteStream.getTracks().forEach((track: MediaStreamTrack) => {
         try {
           track.stop();
+          (track as any).release?.();
         } catch (_) {}
       });
       this.remoteStream = null;
@@ -487,8 +497,14 @@ class WebRTCService {
       const newAudioTrack = newStream.getAudioTracks()[0];
       if (!newAudioTrack) return false;
 
-      // Preserve current mute state
-      newAudioTrack.enabled = audioTrack.enabled;
+      // Strictly inherit current mute state:
+      // If call is muted (isAudioMuted is true or audioTrack.enabled is false),
+      // the new track MUST remain muted (enabled = false).
+      const shouldBeEnabled = !this.isAudioMuted && audioTrack.enabled;
+      newAudioTrack.enabled = shouldBeEnabled;
+      console.log(
+        `🎙️ [WebRTC] New track mute state inherited: enabled=${shouldBeEnabled} (isAudioMuted=${this.isAudioMuted})`,
+      );
 
       if (this.peerConnection) {
         const senders = (this.peerConnection as any).getSenders
@@ -507,7 +523,25 @@ class WebRTCService {
       // Replace track in local media stream
       this.localStream?.removeTrack(audioTrack);
       this.localStream?.addTrack(newAudioTrack);
-      audioTrack.stop();
+
+      // Explicitly stop and release old track to release microphone hardware and avoid lingering session
+      try {
+        audioTrack.stop();
+        (audioTrack as any).release?.();
+      } catch (stopErr) {
+        console.warn('⚠️ [WebRTC] Error stopping old audio track:', stopErr);
+      }
+
+      // Release any other tracks created in newStream that aren't newAudioTrack
+      newStream.getTracks().forEach((track: MediaStreamTrack) => {
+        if (track !== newAudioTrack) {
+          try {
+            track.stop();
+            (track as any).release?.();
+          } catch (_) {}
+        }
+      });
+
       this._notifyLocalStream(this.localStream);
       return true;
     } catch (replaceErr: any) {

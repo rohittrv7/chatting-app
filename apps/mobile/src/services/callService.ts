@@ -86,7 +86,7 @@ class CallService {
     // ── Call Status Updates from Server ('RINGING' vs 'CALLING' vs 'CONNECTED' vs 'ENDED') ──
     socketService.on(
       'call:status',
-      (payload: {
+      async (payload: {
         callId: string;
         status: 'RINGING' | 'CALLING' | 'CONNECTED' | 'ENDED';
         isOnline?: boolean;
@@ -104,11 +104,15 @@ class CallService {
 
         if (payload.status === 'CONNECTED') {
           this.clearCallTimeout();
-          soundService.stopCallSounds();
-          soundService.playCallConnectedSound();
+          // Step 1: Explicitly stop and unload expo-av ringback/ringtone player first
+          await soundService.stopCallSounds();
+          // Step 2: Start native InCallManager audio session cleanly without expo-av overlap
+          audioRoutingService.start(this.currentSession.callType === 'video');
+          // Step 3: Play subtle connected chime (non-blocking)
+          soundService.playCallConnectedSound().catch(() => {});
+
           this.currentSession.state = 'CONNECTED';
           this.currentSession.startedAt = this.currentSession.startedAt || Date.now();
-          audioRoutingService.start(this.currentSession.callType === 'video');
           this.startDurationTimer();
           this.notify();
         } else if (payload.status === 'RINGING') {
@@ -209,8 +213,12 @@ class CallService {
       }
 
       this.clearCallTimeout();
-      soundService.stopCallSounds();
-      soundService.playCallConnectedSound();
+      // Step 1: Explicitly stop and unload expo-av ringback/ringtone player first
+      await soundService.stopCallSounds();
+      // Step 2: Start native InCallManager audio session cleanly without expo-av overlap
+      audioRoutingService.start(this.currentSession.callType === 'video');
+      // Step 3: Play subtle connected chime (non-blocking)
+      soundService.playCallConnectedSound().catch(() => {});
 
       this.currentSession.state = 'CONNECTED';
       this.currentSession.startedAt = this.currentSession.startedAt || Date.now();
@@ -417,14 +425,16 @@ class CallService {
     if (callId && this.currentSession.callId !== callId) return;
 
     this.clearCallTimeout();
-    soundService.stopCallSounds();
-    soundService.playCallConnectedSound();
+    // Step 1: Explicitly stop and unload expo-av ringback/ringtone player first
+    await soundService.stopCallSounds();
+    const isVideo = this.currentSession.callType === 'video';
+    // Step 2: Start native InCallManager audio session cleanly without expo-av overlap
+    audioRoutingService.start(isVideo);
+    // Step 3: Play subtle connected chime (non-blocking)
+    soundService.playCallConnectedSound().catch(() => {});
 
     this.currentSession.state = 'CONNECTED';
     this.currentSession.startedAt = Date.now();
-
-    const isVideo = this.currentSession.callType === 'video';
-    audioRoutingService.start(isVideo);
 
     // Initialize WebRTC, process offer, and create answer
     try {
