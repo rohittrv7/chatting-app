@@ -56,6 +56,7 @@ class WebRTCService {
   // Race condition queue: holds ICE candidates that arrive before setRemoteDescription() completes
   private pendingIceCandidates: RTCIceCandidate[] = [];
   private isRemoteDescriptionSet = false;
+  private isBitrateApplied = false;
 
   private localStreamListeners: Set<StreamListener> = new Set();
   private remoteStreamListeners: Set<StreamListener> = new Set();
@@ -128,15 +129,15 @@ class WebRTCService {
     const constraints = {
       audio: {
         echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
+        noiseSuppression: false,
+        autoGainControl: false,
       },
       video: isVideo
         ? {
             facingMode: 'user',
-            width: { ideal: 640 },
-            height: { ideal: 480 },
-            frameRate: { ideal: 30 },
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+            frameRate: { ideal: 30, max: 30 },
           }
         : false,
     };
@@ -151,7 +152,11 @@ class WebRTCService {
       // Fallback to audio-only if video device is unavailable
       if (isVideo) {
         const audioOnlyStream = (await mediaDevices.getUserMedia({
-          audio: true,
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: false,
+            autoGainControl: false,
+          },
         } as any)) as MediaStream;
         this.localStream = audioOnlyStream;
         this._notifyLocalStream(audioOnlyStream);
@@ -173,6 +178,7 @@ class WebRTCService {
     this.isCaller = isCaller;
     this.pendingIceCandidates = [];
     this.isRemoteDescriptionSet = false;
+    this.isBitrateApplied = false;
 
     // Cleanup existing peer connection if active
     if (this.peerConnection) {
@@ -233,6 +239,7 @@ class WebRTCService {
         );
       } else if (iceState === 'connected' || iceState === 'completed') {
         console.log('🟢 [WebRTC] Media transport established successfully via P2P / TURN relay!');
+        this._applyHighQualityVideoBitrate();
       } else if (iceState === 'disconnected') {
         console.warn(
           '🟡 [WebRTC] ICE disconnected — temporary network hiccup or interface change (e.g. WiFi ↔ 4G).',
@@ -244,6 +251,9 @@ class WebRTCService {
     pc.onconnectionstatechange = () => {
       const state = pc.connectionState;
       console.log(`📡 [WebRTC] Peer Connection State: 👉 ${state.toUpperCase()}`);
+      if (state === 'connected') {
+        this._applyHighQualityVideoBitrate();
+      }
       this._notifyConnectionState(state);
     };
 
@@ -420,9 +430,41 @@ class WebRTCService {
 
     this.pendingIceCandidates = [];
     this.isRemoteDescriptionSet = false;
+    this.isBitrateApplied = false;
     this.currentCallId = null;
     this.targetUserId = null;
     this.isCaller = false;
+  }
+
+  /**
+   * Applies 1.5 Mbps bitrate and 30fps to the video sender once connection is established (720p HD)
+   */
+  private async _applyHighQualityVideoBitrate() {
+    if (!this.peerConnection || this.isBitrateApplied) return;
+    try {
+      const senders = (this.peerConnection as any).getSenders?.();
+      if (!senders || !Array.isArray(senders)) return;
+
+      const videoSender = senders.find((s: any) => s.track && s.track.kind === 'video');
+      if (!videoSender || typeof videoSender.getParameters !== 'function') return;
+
+      const params = videoSender.getParameters();
+      if (!params.encodings || params.encodings.length === 0) {
+        params.encodings = [{}];
+      }
+      params.encodings[0].maxBitrate = 1500000; // 1.5 Mbps (Target 720p HD video bitrate)
+      params.encodings[0].maxFramerate = 30;
+
+      if (typeof videoSender.setParameters === 'function') {
+        await videoSender.setParameters(params);
+        this.isBitrateApplied = true;
+        console.log(
+          '🚀 [WebRTC] High-quality HD video bitrate applied: 1.5 Mbps @ 30fps (Caller & Callee)',
+        );
+      }
+    } catch (err: any) {
+      console.warn('⚠️ [WebRTC] Could not set video sender parameters:', err?.message || err);
+    }
   }
 
   // ─── Private Event Dispatchers ─────────────────────────────────────────────

@@ -60,7 +60,7 @@ async function bootstrap() {
   app.flushLogs();
 
   app.setGlobalPrefix('api/v1', {
-    exclude: ['metrics', 'metrics/(.*)', '', '/'],
+    exclude: ['metrics', 'metrics/(.*)', 'uploads', 'uploads/(.*)', '', '/'],
   });
 
   app.useGlobalPipes(
@@ -84,6 +84,30 @@ async function bootstrap() {
   if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
   if (!fs.existsSync(avatarsDir)) fs.mkdirSync(avatarsDir, { recursive: true });
   if (!fs.existsSync(imagesDir)) fs.mkdirSync(imagesDir, { recursive: true });
+
+  // Fallback for avatar requests when file is not found on disk (e.g. ephemeral Render disk / restart)
+  app.use(
+    '/uploads/avatars',
+    (req: express.Request, res: express.Response, next: express.NextFunction) => {
+      const filename = path.basename(req.path);
+      const requestedFile = path.join(avatarsDir, filename);
+      if (fs.existsSync(requestedFile) && fs.statSync(requestedFile).isFile()) {
+        return res.sendFile(requestedFile);
+      }
+      // Return a clean 200 SVG avatar placeholder instead of throwing 404 NOT_FOUND
+      res.setHeader('Content-Type', 'image/svg+xml');
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      return res
+        .status(200)
+        .send(
+          `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200">` +
+            `<rect width="200" height="200" fill="#1E293B"/>` +
+            `<circle cx="100" cy="75" r="40" fill="#64748B"/>` +
+            `<path d="M40 180 C40 135, 70 120, 100 120 C130 120, 160 135, 160 180 Z" fill="#64748B"/>` +
+            `</svg>`,
+        );
+    },
+  );
 
   app.use('/uploads', express.static(uploadsDir));
   app.use(express.json({ limit: '25mb' }));
