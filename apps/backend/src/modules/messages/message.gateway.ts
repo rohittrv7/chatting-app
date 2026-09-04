@@ -17,6 +17,7 @@ import { MessageRedisService } from './message-redis.service';
 import { PrismaService } from '../../database/prisma.service';
 import { ConversationService } from '../conversations/conversation.service';
 import { OtelService } from '../observability/otel.service';
+import { PushNotificationService } from './push-notification.service';
 
 // ─── Event name constants (single source of truth) ───────────────────────────
 // Client → Server
@@ -67,8 +68,8 @@ export const EVT_MISSED_MESSAGES = 'messages:missed'; // offline gap fill on rec
   namespace: '/',
   transports: ['polling', 'websocket'],
   maxHttpBufferSize: 5e7, // 50MB buffer to prevent transport close on high-res video/audio streaming
-  pingTimeout: 60000,
-  pingInterval: 25000,
+  pingTimeout: 15000,
+  pingInterval: 10000,
 })
 export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()
@@ -90,6 +91,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     private readonly redis: MessageRedisService,
     private readonly prisma: PrismaService,
     private readonly conversationService: ConversationService,
+    private readonly pushNotificationService: PushNotificationService,
     @Optional() private readonly otelService?: OtelService,
   ) {}
 
@@ -843,6 +845,16 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     if (payload.receiverId !== targetUserId) {
       this.server.to(`user:${payload.receiverId}`).emit(EVT_CALL_INCOMING, callData);
     }
+
+    // ⚡ FIX 3: Fallback push notification if receiver socket is disconnected/offline
+    if (!isReceiverOnline) {
+      this.pushNotificationService.sendIncomingCallPush(targetUserId, callData).catch(() => {});
+      if (payload.receiverId !== targetUserId) {
+        this.pushNotificationService
+          .sendIncomingCallPush(payload.receiverId, callData)
+          .catch(() => {});
+      }
+    }
   }
 
   @SubscribeMessage('call:ringing')
@@ -956,6 +968,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
   @SubscribeMessage(EVT_CALL_END)
   @SubscribeMessage('call:cancel')
+  @SubscribeMessage('call:error')
   async handleCallEnd(
     @ConnectedSocket() client: Socket,
     @MessageBody()
@@ -965,6 +978,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       receiverId?: string;
       callerId?: string;
       reason?: string;
+      error?: string;
     },
   ) {
     const senderId = (client as any)._userId || client.data?.userId;
@@ -988,19 +1002,23 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     const targetUserId = rawTarget ? (await this._resolveUserId(rawTarget)) || rawTarget : null;
 
     this.logger.log(
-      `📞 [Call Ended/Cancelled] callId=${payload.callId} by=${senderId} target=${targetUserId} reason=${payload.reason || 'ended'}`,
+      `📞 [Call Ended/Cancelled/Error] callId=${payload.callId} by=${senderId} target=${targetUserId} reason=${payload.reason || 'ended'} error=${payload.error || 'none'}`,
     );
 
     const endData = {
       callId: payload.callId,
       reason: payload.reason || 'ended',
       cancelledBy: senderId,
+      error: payload.error,
     };
 
-    // Broadcast cancel/end signal to target user room
+    // Broadcast cancel/end/error signal to target user room
     if (targetUserId) {
       this.server.to(`user:${targetUserId}`).emit(EVT_CALL_ENDED, endData);
+      this.server.to(`user:${targetUserId}`).emit('call:end', endData);
       this.server.to(`user:${targetUserId}`).emit('call:cancelled', endData);
+      this.server.to(`user:${targetUserId}`).emit('call:cancel', endData);
+      this.server.to(`user:${targetUserId}`).emit('call:error', endData);
       this.server.to(`user:${targetUserId}`).emit('call:status', {
         callId: payload.callId,
         status: 'ENDED',
@@ -1010,7 +1028,10 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
     // Also notify sender socket/room to guarantee synchronized cleanup
     client.emit(EVT_CALL_ENDED, endData);
+    client.emit('call:end', endData);
     client.emit('call:cancelled', endData);
+    client.emit('call:cancel', endData);
+    client.emit('call:error', endData);
     client.emit('call:status', {
       callId: payload.callId,
       status: 'ENDED',

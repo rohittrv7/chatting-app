@@ -43,6 +43,7 @@ import { socketService } from '../services/socket';
 import { apiService } from '../services/apiService';
 import { callService } from '../services/callService';
 import { SmartAvatar } from '../components/SmartAvatar';
+import { ChatInputBar, ChatInputBarRef } from '../components/ChatInputBar';
 import { getResolvedDisplayName, getResolvedContact } from '../services/contactsService';
 import nacl from 'tweetnacl';
 import { arrayBufferToBase64, base64ToArrayBuffer } from '../services/signalProtocolStore';
@@ -446,7 +447,6 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
   };
 
   // ── State ─────────────────────────────────────────────────────────────────
-  const [inputText, setInputText] = useState('');
   const [replyTo, setReplyTo] = useState<ChatMessage | null>(null);
   const [isRemoteTyping, setIsRemoteTyping] = useState(false);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
@@ -482,11 +482,8 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
   const [isLoadingContacts, setIsLoadingContacts] = useState(false);
 
   const flatListRef = useRef<FlatList>(null);
-  const textInputRef = useRef<TextInput>(null);
+  const chatInputBarRef = useRef<ChatInputBarRef>(null);
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const typingDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastTypingSentRef = useRef(false);
-  const lastTypingPingTimeRef = useRef(0);
 
   const recipientDbIdRef = useRef(effectiveRecipientId);
   recipientDbIdRef.current = effectiveRecipientId;
@@ -530,7 +527,6 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
     return () => {
       closeChatRoom(conversationId);
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-      if (typingDebounceTimerRef.current) clearTimeout(typingDebounceTimerRef.current);
       const cbs = (socketService as any).callbacks ?? {};
       (socketService as any).callbacks = { ...cbs, onTypingUpdate: undefined };
     };
@@ -605,110 +601,57 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
 
   // ── Handlers ──────────────────────────────────────────────────────────────
 
-  const handleSendMessage = useCallback(async () => {
-    const text = inputText.trim();
-    if (!text) return;
+  const handleSendMessage = useCallback(
+    async (textToSend?: string) => {
+      const text = (textToSend || '').trim();
+      if (!text) return;
 
-    let targetId =
-      recipientDbId || (route.params as any)?.recipientDbId || currentConv?.recipientDbId;
-    if (!targetId && token) {
-      const handle = (
-        currentConv?.username ||
-        (route.params as any)?.username ||
-        currentConv?.phone ||
-        (route.params as any)?.phone ||
-        title
-      )?.replace(/^@+/, '');
-
-      if (handle) {
-        try {
-          const results = await apiService.searchUsers(token, handle);
-          const match =
-            results.find(
-              (u) =>
-                (u.username &&
-                  u.username.toLowerCase().replace(/^@+/, '') === handle.toLowerCase()) ||
-                (u.phoneNumber && u.phoneNumber.replace(/\D/g, '') === handle.replace(/\D/g, '')) ||
-                (u.name && u.name.toLowerCase() === title.toLowerCase()),
-            ) || results[0];
-          if (match?.id) {
-            targetId = match.id;
-            setResolvedRecipientId(match.id);
-          }
-        } catch (e) {}
-      }
-    }
-
-    addMessage(
-      conversationId,
-      text,
-      true,
-      undefined,
-      undefined,
-      targetId,
-      resolvedDisplayName,
-      currentConv?.username || (route.params as any)?.username,
-    );
-    setInputText('');
-    setReplyTo(null);
-    setShowEmojiPicker(false);
-    setShowAttachMenu(false);
-    // Stop typing indicator immediately on send
-    if (typingDebounceTimerRef.current) clearTimeout(typingDebounceTimerRef.current);
-    if (targetId) {
-      lastTypingSentRef.current = false;
-      socketService.sendTyping(conversationId, targetId, false);
-    }
-  }, [
-    inputText,
-    recipientDbId,
-    conversationId,
-    token,
-    currentConv,
-    title,
-    resolvedDisplayName,
-    route.params,
-  ]);
-
-  const handleInputChange = useCallback(
-    (text: string) => {
-      setInputText(text);
-      const effectiveTargetId =
+      let targetId =
         recipientDbId || (route.params as any)?.recipientDbId || currentConv?.recipientDbId;
-      if (!effectiveTargetId) return;
+      if (!targetId && token) {
+        const handle = (
+          currentConv?.username ||
+          (route.params as any)?.username ||
+          currentConv?.phone ||
+          (route.params as any)?.phone ||
+          title
+        )?.replace(/^@+/, '');
 
-      if (text.length > 0) {
-        const now = Date.now();
-        // Send typing heartbeat if not sent yet OR if last sent was > 1800ms ago
-        if (!lastTypingSentRef.current || now - lastTypingPingTimeRef.current > 1800) {
-          lastTypingSentRef.current = true;
-          lastTypingPingTimeRef.current = now;
-          socketService.sendTyping(conversationId, effectiveTargetId, true);
+        if (handle) {
+          try {
+            const results = await apiService.searchUsers(token, handle);
+            const match =
+              results.find(
+                (u) =>
+                  (u.username &&
+                    u.username.toLowerCase().replace(/^@+/, '') === handle.toLowerCase()) ||
+                  (u.phoneNumber &&
+                    u.phoneNumber.replace(/\D/g, '') === handle.replace(/\D/g, '')) ||
+                  (u.name && u.name.toLowerCase() === title.toLowerCase()),
+              ) || results[0];
+            if (match?.id) {
+              targetId = match.id;
+              setResolvedRecipientId(match.id);
+            }
+          } catch (e) {}
         }
-        if (typingDebounceTimerRef.current) clearTimeout(typingDebounceTimerRef.current);
-        typingDebounceTimerRef.current = setTimeout(() => {
-          lastTypingSentRef.current = false;
-          lastTypingPingTimeRef.current = 0;
-          socketService.sendTyping(conversationId, effectiveTargetId, false);
-        }, 2500);
-      } else if (text.length === 0 && lastTypingSentRef.current) {
-        if (typingDebounceTimerRef.current) clearTimeout(typingDebounceTimerRef.current);
-        lastTypingSentRef.current = false;
-        lastTypingPingTimeRef.current = 0;
-        socketService.sendTyping(conversationId, effectiveTargetId, false);
       }
-    },
-    [recipientDbId, conversationId, currentConv, route.params],
-  );
 
-  const handleKeyPress = useCallback(
-    (e: any) => {
-      if (e.nativeEvent.key === 'Enter' && !e.nativeEvent.shiftKey) {
-        e.preventDefault?.();
-        handleSendMessage();
-      }
+      addMessage(
+        conversationId,
+        text,
+        true,
+        undefined,
+        undefined,
+        targetId,
+        resolvedDisplayName,
+        currentConv?.username || (route.params as any)?.username,
+      );
+      setReplyTo(null);
+      setShowEmojiPicker(false);
+      setShowAttachMenu(false);
     },
-    [handleSendMessage],
+    [recipientDbId, conversationId, token, currentConv, title, resolvedDisplayName, route.params],
   );
 
   const handlePickImage = async () => {
@@ -1338,7 +1281,7 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
             isMe={isMe}
             onSwipeReply={() => {
               setReplyTo(msg);
-              textInputRef.current?.focus();
+              chatInputBarRef.current?.focus();
             }}
             colors={colors}
           >
@@ -2171,7 +2114,7 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
                 <TouchableOpacity
                   key={i}
                   style={styles.emojiItem}
-                  onPress={() => setInputText((p) => p + emoji)}
+                  onPress={() => chatInputBarRef.current?.appendEmoji(emoji)}
                 >
                   <Text style={styles.emojiText}>{emoji}</Text>
                 </TouchableOpacity>
@@ -2245,66 +2188,17 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
             </TouchableOpacity>
           </View>
         ) : (
-          <View
-            style={[
-              styles.inputBarContainer,
-              { backgroundColor: colors.surface, borderTopColor: colors.cardBorder },
-            ]}
-          >
-            <TouchableOpacity
-              style={[styles.plusBtn, { backgroundColor: colors.cardBorder }]}
-              onPress={() => setShowAttachMenu((v) => !v)}
-            >
-              {showAttachMenu ? (
-                <X size={20} color={colors.primaryIndigo} />
-              ) : (
-                <Plus size={20} color={colors.primaryIndigo} />
-              )}
-            </TouchableOpacity>
-
-            <View
-              style={[
-                styles.inputFieldWrapper,
-                { backgroundColor: colors.inputBg, borderColor: colors.cardBorder },
-              ]}
-            >
-              <TextInput
-                ref={textInputRef}
-                style={[styles.textInput, { color: colors.textPrimary }]}
-                placeholder="Type a message..."
-                placeholderTextColor={colors.textSecondary}
-                value={inputText}
-                onChangeText={handleInputChange}
-                onKeyPress={handleKeyPress}
-                returnKeyType="send"
-                onSubmitEditing={handleSendMessage}
-                blurOnSubmit={false}
-                multiline
-              />
-              <TouchableOpacity
-                style={{ padding: 4, marginRight: 6 }}
-                onPress={() => setShowEmojiPicker(!showEmojiPicker)}
-              >
-                <Smile
-                  size={20}
-                  color={showEmojiPicker ? colors.primaryIndigo : colors.textSecondary}
-                />
-              </TouchableOpacity>
-            </View>
-
-            {inputText.trim().length > 0 ? (
-              <TouchableOpacity
-                style={[styles.sendBtn, { backgroundColor: colors.primaryIndigo }]}
-                onPress={handleSendMessage}
-              >
-                <Send size={18} color="#FFF" />
-              </TouchableOpacity>
-            ) : (
-              <TouchableOpacity style={[styles.sendBtn, { backgroundColor: colors.cardBorder }]}>
-                <Mic size={18} color={colors.textSecondary} />
-              </TouchableOpacity>
-            )}
-          </View>
+          <ChatInputBar
+            ref={chatInputBarRef}
+            conversationId={conversationId}
+            effectiveTargetId={effectiveRecipientId}
+            onSendMessage={handleSendMessage}
+            showAttachMenu={showAttachMenu}
+            setShowAttachMenu={setShowAttachMenu}
+            showEmojiPicker={showEmojiPicker}
+            setShowEmojiPicker={setShowEmojiPicker}
+            colors={colors}
+          />
         )}
       </KeyboardAvoidingView>
 

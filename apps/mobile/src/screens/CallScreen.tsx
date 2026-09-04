@@ -291,15 +291,22 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
   const isRinging = callSession?.state === 'OUTGOING_RINGING';
   const isCalling = callSession?.state === 'OUTGOING_CALLING';
 
-  const statusText = isConnected
-    ? formatDuration(secondsElapsed)
-    : isRinging
-      ? 'Ringing...'
-      : isCalling
-        ? 'Calling...'
-        : isCaller
+  const isEnded = callSession?.state === 'ENDED';
+  const statusText = isEnded
+    ? callSession?.endReason === 'permission_denied'
+      ? 'Permission Denied'
+      : callSession?.endReason === 'media_error'
+        ? 'Media Error'
+        : 'Call Ended'
+    : isConnected
+      ? formatDuration(secondsElapsed)
+      : isRinging
+        ? 'Ringing...'
+        : isCalling
           ? 'Calling...'
-          : 'Incoming Call...';
+          : isCaller
+            ? 'Calling...'
+            : 'Incoming Call...';
 
   const hasRemoteVideo = isVideo && remoteStream && remoteStream.getVideoTracks().length > 0;
   const hasLocalVideo = isVideo && localStream && localStream.getVideoTracks().length > 0;

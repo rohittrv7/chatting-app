@@ -11,6 +11,7 @@
  */
 
 import { io, Socket } from 'socket.io-client';
+import { AppState, AppStateStatus } from 'react-native';
 import { serverConfig } from './serverConfig';
 import { safeStorage } from './storageHelper';
 import { AUTH_STORAGE_KEYS } from '../store/authSlice';
@@ -143,6 +144,16 @@ class RealtimeSocketService {
     // Reconnect when server URL toggles (Local ↔ Live in dev)
     serverConfig.subscribe(() => {
       if (this.currentToken) this._reconnect();
+    });
+
+    // ⚡ FIX 3: Reconnect immediately when app transitions from background to active
+    AppState.addEventListener('change', (nextState: AppStateStatus) => {
+      if (nextState === 'active' && this.currentToken) {
+        if (!this.socket || !this.socket.connected) {
+          console.log('📱 [Socket] App active in foreground — triggering instant reconnect');
+          this._reconnect();
+        }
+      }
     });
   }
 
@@ -317,14 +328,14 @@ class RealtimeSocketService {
     try {
       console.log('📡 [Socket] Connecting to:', url);
       this.socket = io(url, {
-        transports: ['websocket', 'polling'],
-        upgrade: false,
+        transports: ['websocket'],
+        upgrade: true,
         autoConnect: true,
         reconnection: true,
         reconnectionAttempts: Infinity,
         reconnectionDelay: 1000,
         reconnectionDelayMax: 5000,
-        timeout: 25000,
+        timeout: 15000,
         // JWT goes in auth — backend reads from handshake.auth.token
         auth: {
           token: this.currentToken,

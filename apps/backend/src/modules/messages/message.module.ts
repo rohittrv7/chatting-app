@@ -11,6 +11,8 @@ import { PrismaService } from '../../database/prisma.service';
 import { createRedisClient } from '../../common/utils/redis-factory';
 import { ConversationModule } from '../conversations/conversation.module';
 
+import { PushNotificationService } from './push-notification.service';
+
 const REDIS_CLIENT_PROVIDER = {
   provide: 'REDIS_CLIENT',
   useFactory: (configService: ConfigService): Redis => {
@@ -39,8 +41,15 @@ const REDIS_CLIENT_PROVIDER = {
     ChatGateway,
     MessageRepository,
     MessageRedisService,
+    PushNotificationService,
     PrismaService,
   ],
-  exports: [MessageService, ChatGateway, MessageRepository, MessageRedisService],
+  exports: [
+    MessageService,
+    ChatGateway,
+    MessageRepository,
+    MessageRedisService,
+    PushNotificationService,
+  ],
 })
 export class MessageModule {}

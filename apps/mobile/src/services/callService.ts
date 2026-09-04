@@ -47,6 +47,7 @@ export interface ActiveCallSession {
   isNoiseSuppressionOn: boolean;
   conversationId?: string;
   sdp?: any;
+  endReason?: string;
 }
 
 export type CallCompletedLog = {
@@ -71,6 +72,7 @@ class CallService {
   private callTimeoutTimer: any = null;
   private isInitialized = false;
   private loggedCallIds: Set<string> = new Set();
+  private handledEndedCallIds: Set<string> = new Set();
 
   constructor() {
     this.init();
@@ -257,6 +259,9 @@ class CallService {
     const handleRemoteEnd = (payload: any) => {
       console.log('📞 [CallService] Call ended/cancelled signal received:', payload);
       if (!this.currentSession) return;
+
+      const targetCallId = payload?.callId || this.currentSession.callId;
+
       if (
         payload?.callId &&
         this.currentSession.callId &&
@@ -269,6 +274,24 @@ class CallService {
           this.currentSession.callId,
         );
         return;
+      }
+
+      // 🛑 DEBOUNCE / DEDUPLICATION GUARD:
+      // If session is already in ENDED state or callId was already processed, ignore duplicate events!
+      if (
+        this.currentSession.state === 'ENDED' ||
+        (targetCallId && this.handledEndedCallIds.has(targetCallId))
+      ) {
+        console.log(
+          '🛡️ [CallService] Dropping duplicate call:end/cancel/error event for:',
+          targetCallId,
+        );
+        return;
+      }
+
+      if (targetCallId) {
+        this.handledEndedCallIds.add(targetCallId);
+        setTimeout(() => this.handledEndedCallIds.delete(targetCallId), 30000);
       }
 
       console.log(
@@ -289,6 +312,9 @@ class CallService {
       soundService.playCallEndedSound();
       this.stopDurationTimer();
       this.currentSession.state = 'ENDED';
+      if (payload?.reason) {
+        this.currentSession.endReason = payload.reason;
+      }
       this.notify();
 
       // Reset session immediately
@@ -304,6 +330,7 @@ class CallService {
     socketService.on('call:end', handleRemoteEnd);
     socketService.on('call:cancelled', handleRemoteEnd);
     socketService.on('call:cancel', handleRemoteEnd);
+    socketService.on('call:error', handleRemoteEnd);
     socketService.on('v1.call.end', handleRemoteEnd);
     socketService.on('call:status', (payload: any) => {
       if (payload?.status === 'ENDED') {
@@ -363,7 +390,17 @@ class CallService {
       conversationId: params.conversationId,
     };
 
-    // Initialize WebRTC and create SDP Offer in background
+    // ⚡ FIX 3: Emit call:initiate IMMEDIATELY so receiver device rings with 0ms delay!
+    socketService.emit(EVT_CALL_INITIATE, {
+      callId,
+      receiverId: params.targetUserId,
+      callType: params.callType,
+      callerName: params.myName,
+      callerAvatar: params.myAvatar,
+      conversationId: params.conversationId,
+    });
+
+    // Initialize WebRTC and create SDP Offer in background, sending offer via follow-up EVT_WEBRTC_OFFER
     (async () => {
       try {
         await webrtcService.startLocalStream(isVideo);
@@ -377,40 +414,53 @@ class CallService {
           this.currentSession.state === 'ENDED'
         ) {
           console.log(
-            '🛑 [CallService] Call was cancelled before offer completed — aborting initiate signal',
+            '🛑 [CallService] Call was cancelled before offer completed — aborting offer signal',
           );
           webrtcService.closeSession();
           return;
         }
 
-        // Emit initiate signal to server with SDP offer attached
-        socketService.emit(EVT_CALL_INITIATE, {
+        // Emit dedicated EVT_WEBRTC_OFFER with the generated SDP offer
+        socketService.emit(EVT_WEBRTC_OFFER, {
           callId,
-          receiverId: params.targetUserId,
-          callType: params.callType,
-          callerName: params.myName,
-          callerAvatar: params.myAvatar,
-          conversationId: params.conversationId,
+          targetUserId: params.targetUserId,
           sdp: offer,
         });
-      } catch (err) {
-        console.warn('⚠️ [WebRTC] Failed to create call offer:', err);
-        if (
-          !this.currentSession ||
-          this.currentSession.callId !== callId ||
-          this.currentSession.state === 'ENDED'
-        ) {
-          return;
+      } catch (err: any) {
+        console.warn('⚠️ [WebRTC] Failed to create call offer / media stream error:', err);
+        // ⚡ If media capture or SDP offer creation fails (e.g. mic/camera permission denied),
+        // immediately send call:end / call:cancel / call:error to receiver so they stop ringing!
+        if (this.currentSession && this.currentSession.callId === callId) {
+          const reason =
+            err?.name === 'NotAllowedError' ||
+            err?.name === 'PermissionDeniedError' ||
+            err?.message?.toLowerCase().includes('permission') ||
+            err?.message?.toLowerCase().includes('denied')
+              ? 'permission_denied'
+              : 'media_error';
+
+          socketService.emit(EVT_CALL_END, {
+            callId,
+            targetUserId: params.targetUserId,
+            receiverId: params.targetUserId,
+            reason,
+          });
+          socketService.emit('call:cancel', {
+            callId,
+            targetUserId: params.targetUserId,
+            receiverId: params.targetUserId,
+            reason,
+          });
+          socketService.emit('call:error', {
+            callId,
+            targetUserId: params.targetUserId,
+            receiverId: params.targetUserId,
+            reason,
+            error: err?.message || 'Media stream capture failed',
+          });
+
+          this.endCall(callId, reason);
         }
-        // Fallback initiation without offer if media access delayed
-        socketService.emit(EVT_CALL_INITIATE, {
-          callId,
-          receiverId: params.targetUserId,
-          callType: params.callType,
-          callerName: params.myName,
-          callerAvatar: params.myAvatar,
-          conversationId: params.conversationId,
-        });
       }
     })();
 
@@ -455,12 +505,11 @@ class CallService {
         callerId: this.currentSession.callerId,
         sdp: answerSdp,
       });
-    } catch (err) {
+    } catch (err: any) {
       console.warn('⚠️ [WebRTC] Error during acceptCall handshake:', err);
-      socketService.emit(EVT_CALL_ACCEPT, {
-        callId: this.currentSession.callId,
-        callerId: this.currentSession.callerId,
-      });
+      // Callee cannot access mic/camera: reject call immediately so caller knows
+      this.rejectCall(this.currentSession.callId, 'media_error');
+      return;
     }
 
     this.startDurationTimer();
@@ -483,6 +532,10 @@ class CallService {
     soundService.playCallEndedSound();
     this.stopDurationTimer();
 
+    if (this.currentSession.callId) {
+      this.handledEndedCallIds.add(this.currentSession.callId);
+    }
+
     socketService.emit(EVT_CALL_REJECT, {
       callId: this.currentSession.callId,
       callerId: this.currentSession.callerId,
@@ -491,6 +544,7 @@ class CallService {
     });
 
     this.currentSession.state = 'ENDED';
+    this.currentSession.endReason = reason;
     this.notify();
 
     setTimeout(() => {
@@ -515,6 +569,10 @@ class CallService {
       `📞 [CallService] Ending call (isPreAnswer=${isPreAnswer}, reason=${finalReason}, callId=${this.currentSession.callId})`,
     );
 
+    if (this.currentSession.callId) {
+      this.handledEndedCallIds.add(this.currentSession.callId);
+    }
+
     this.clearCallTimeout();
     webrtcService.closeSession();
     audioRoutingService.stop();
@@ -535,8 +593,15 @@ class CallService {
       receiverId: this.currentSession.targetUserId,
       reason: finalReason,
     });
+    socketService.emit('call:error', {
+      callId: this.currentSession.callId,
+      targetUserId: this.currentSession.targetUserId,
+      receiverId: this.currentSession.targetUserId,
+      reason: finalReason,
+    });
 
     this.currentSession.state = 'ENDED';
+    this.currentSession.endReason = finalReason;
     this.notify();
 
     setTimeout(() => {

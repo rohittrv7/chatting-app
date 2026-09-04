@@ -705,6 +705,169 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
     return items;
   }, [registeredContacts, unregisteredContacts, serverSearchResults, peopleSearchQuery]);
 
+  const getConversationItemLayout = useCallback(
+    (_: any, index: number) => ({
+      length: 88,
+      offset: 88 * index,
+      index,
+    }),
+    [],
+  );
+
+  const renderConversationItem = useCallback(
+    ({ item }: { item: any }) => {
+      const isUnread = item.unread !== '0';
+      const isMuted = item.isMuted === true;
+      const isTyping = Boolean(
+        isUserTyping(item.id, item.recipientDbId) ||
+        (item.username && isUserTyping(undefined, item.username.replace(/^@+/, ''))),
+      );
+
+      return (
+        <TouchableOpacity
+          style={[
+            styles.chatCard,
+            { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+          ]}
+          activeOpacity={0.8}
+          onPress={() => {
+            isNavigatedToChatRef.current = true;
+            navigation.navigate('Chat', {
+              conversationId: item.id,
+              title: item.title,
+              username: item.username,
+              avatarUrl: item.avatarUrl,
+              phone: item.phone,
+              recipientDbId: item.recipientDbId,
+            });
+          }}
+          onLongPress={() => setSelectedChatForAction(item)}
+          delayLongPress={280}
+        >
+          <TouchableOpacity
+            style={styles.cardAvatarWrapper}
+            activeOpacity={0.7}
+            onPress={(e) => {
+              e.stopPropagation();
+              setSelectedAvatarProfile(item);
+            }}
+          >
+            <SmartAvatar
+              avatarUrl={item.avatarUrl}
+              name={item.title}
+              username={item.username}
+              size={48}
+              groupBg={item.groupBg || colors.cardBorder}
+            />
+            {isUserOnline(item.recipientDbId) ||
+            isUserOnline(item.username) ||
+            isUserOnline(item.id) ||
+            isUserOnline(item.title) ? (
+              <View
+                style={[
+                  styles.onlineBadgeCard,
+                  { backgroundColor: '#10B981', borderColor: colors.surface },
+                ]}
+              />
+            ) : (
+              <View
+                style={[
+                  styles.offlineBadgeCard,
+                  { backgroundColor: '#374151', borderColor: colors.surface },
+                ]}
+              />
+            )}
+          </TouchableOpacity>
+
+          <View style={styles.cardContent}>
+            <View style={styles.cardHeaderRow}>
+              <View style={{ flex: 1, marginRight: 8 }}>
+                <Text style={[styles.cardTitle, { color: colors.textPrimary }]} numberOfLines={1}>
+                  {getResolvedDisplayName(
+                    { username: item.username, name: item.title },
+                    item.title,
+                  )}
+                </Text>
+                {item.username && (
+                  <Text style={[styles.cardUsername, { color: colors.primaryIndigo }]}>
+                    {item.username}
+                  </Text>
+                )}
+              </View>
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <Text style={[styles.cardTime, { color: colors.textSecondary, marginRight: 4 }]}>
+                  {formatChatTime(item.time)}
+                </Text>
+                <TouchableOpacity
+                  style={styles.cardMenuBtn}
+                  hitSlop={{ top: 12, bottom: 12, left: 10, right: 10 }}
+                  onPress={() => setSelectedChatForAction(item)}
+                >
+                  <MoreVertical size={16} color={colors.textSecondary} />
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            <View style={styles.cardSubtitleRow}>
+              {isTyping ? (
+                <View
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    flex: 1,
+                    marginRight: 8,
+                  }}
+                >
+                  <Text
+                    style={{
+                      color: '#10B981',
+                      fontSize: 13,
+                      fontWeight: '700',
+                      marginRight: 4,
+                    }}
+                  >
+                    typing...
+                  </Text>
+                  <TypingDots color="#10B981" dotSize={4} />
+                </View>
+              ) : (
+                <View
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    flex: 1,
+                    marginRight: 8,
+                  }}
+                >
+                  {renderMessageStatusIcon(item)}
+                  <Text
+                    style={[
+                      styles.cardSubtitle,
+                      { color: colors.textSecondary, flex: 1, marginRight: 0 },
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {item.lastMessage}
+                  </Text>
+                </View>
+              )}
+              {isMuted ? (
+                <BellOff size={16} color={colors.textSecondary} />
+              ) : isUnread ? (
+                <View style={[styles.unreadBadge, { minWidth: 20 }]}>
+                  <Text style={styles.unreadText}>
+                    {parseInt(item.unread, 10) > 99 ? '99+' : item.unread}
+                  </Text>
+                </View>
+              ) : null}
+            </View>
+          </View>
+        </TouchableOpacity>
+      );
+    },
+    [colors, isUserTyping, isUserOnline, navigation, renderMessageStatusIcon],
+  );
+
   // 💬 CHATS TAB (Dynamic Pure Deep Black / Light Theme)
   const renderChatsTab = () => (
     <View style={{ flex: 1 }}>
@@ -1225,6 +1388,11 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
           data={filteredConversations}
           keyExtractor={(item) => item.id}
           contentContainerStyle={styles.listContainer}
+          windowSize={5}
+          maxToRenderPerBatch={8}
+          initialNumToRender={10}
+          getItemLayout={getConversationItemLayout}
+          renderItem={renderConversationItem}
           refreshControl={
             <RefreshControl
               refreshing={isRefreshingChats}
@@ -1233,161 +1401,6 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
               colors={[colors.primaryIndigo]}
             />
           }
-          renderItem={({ item }) => {
-            const isUnread = item.unread !== '0';
-            const isMuted = item.isMuted === true;
-            const isTyping = Boolean(
-              isUserTyping(item.id, item.recipientDbId) ||
-              (item.username && isUserTyping(undefined, item.username.replace(/^@+/, ''))),
-            );
-
-            return (
-              <TouchableOpacity
-                style={[
-                  styles.chatCard,
-                  { backgroundColor: colors.surface, borderColor: colors.cardBorder },
-                ]}
-                activeOpacity={0.8}
-                onPress={() => {
-                  isNavigatedToChatRef.current = true;
-                  navigation.navigate('Chat', {
-                    conversationId: item.id,
-                    title: item.title,
-                    username: item.username,
-                    avatarUrl: item.avatarUrl,
-                    phone: item.phone,
-                    recipientDbId: item.recipientDbId,
-                  });
-                }}
-                onLongPress={() => setSelectedChatForAction(item)}
-                delayLongPress={280}
-              >
-                <TouchableOpacity
-                  style={styles.cardAvatarWrapper}
-                  activeOpacity={0.7}
-                  onPress={(e) => {
-                    e.stopPropagation();
-                    setSelectedAvatarProfile(item);
-                  }}
-                >
-                  <SmartAvatar
-                    avatarUrl={item.avatarUrl}
-                    name={item.title}
-                    username={item.username}
-                    size={48}
-                    groupBg={item.groupBg || colors.cardBorder}
-                  />
-                  {isUserOnline(item.recipientDbId) ||
-                  isUserOnline(item.username) ||
-                  isUserOnline(item.id) ||
-                  isUserOnline(item.title) ? (
-                    <View
-                      style={[
-                        styles.onlineBadgeCard,
-                        { backgroundColor: '#10B981', borderColor: colors.surface },
-                      ]}
-                    />
-                  ) : (
-                    <View
-                      style={[
-                        styles.offlineBadgeCard,
-                        { backgroundColor: '#374151', borderColor: colors.surface },
-                      ]}
-                    />
-                  )}
-                </TouchableOpacity>
-
-                <View style={styles.cardContent}>
-                  <View style={styles.cardHeaderRow}>
-                    <View style={{ flex: 1, marginRight: 8 }}>
-                      <Text
-                        style={[styles.cardTitle, { color: colors.textPrimary }]}
-                        numberOfLines={1}
-                      >
-                        {getResolvedDisplayName(
-                          { username: item.username, name: item.title },
-                          item.title,
-                        )}
-                      </Text>
-                      {item.username && (
-                        <Text style={[styles.cardUsername, { color: colors.primaryIndigo }]}>
-                          {item.username}
-                        </Text>
-                      )}
-                    </View>
-                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                      <Text
-                        style={[styles.cardTime, { color: colors.textSecondary, marginRight: 4 }]}
-                      >
-                        {formatChatTime(item.time)}
-                      </Text>
-                      <TouchableOpacity
-                        style={styles.cardMenuBtn}
-                        hitSlop={{ top: 12, bottom: 12, left: 10, right: 10 }}
-                        onPress={() => setSelectedChatForAction(item)}
-                      >
-                        <MoreVertical size={16} color={colors.textSecondary} />
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-
-                  <View style={styles.cardSubtitleRow}>
-                    {isTyping ? (
-                      <View
-                        style={{
-                          flexDirection: 'row',
-                          alignItems: 'center',
-                          flex: 1,
-                          marginRight: 8,
-                        }}
-                      >
-                        <Text
-                          style={{
-                            color: '#10B981',
-                            fontSize: 13,
-                            fontWeight: '700',
-                            marginRight: 4,
-                          }}
-                        >
-                          typing...
-                        </Text>
-                        <TypingDots color="#10B981" dotSize={4} />
-                      </View>
-                    ) : (
-                      <View
-                        style={{
-                          flexDirection: 'row',
-                          alignItems: 'center',
-                          flex: 1,
-                          marginRight: 8,
-                        }}
-                      >
-                        {renderMessageStatusIcon(item)}
-                        <Text
-                          style={[
-                            styles.cardSubtitle,
-                            { color: colors.textSecondary, flex: 1, marginRight: 0 },
-                          ]}
-                          numberOfLines={1}
-                        >
-                          {item.lastMessage}
-                        </Text>
-                      </View>
-                    )}
-                    {isMuted ? (
-                      <BellOff size={16} color={colors.textSecondary} />
-                    ) : isUnread ? (
-                      <View style={[styles.unreadBadge, { minWidth: 20 }]}>
-                        <Text style={styles.unreadText}>
-                          {parseInt(item.unread, 10) > 99 ? '99+' : item.unread}
-                        </Text>
-                      </View>
-                    ) : null}
-                  </View>
-                </View>
-              </TouchableOpacity>
-            );
-          }}
         />
       )}
     </View>

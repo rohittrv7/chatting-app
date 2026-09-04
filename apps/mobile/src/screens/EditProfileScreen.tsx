@@ -21,6 +21,7 @@ import { useSelector } from 'react-redux';
 import { RootState } from '../store';
 import { apiService } from '../services/apiService';
 import * as ImagePicker from 'expo-image-picker';
+import * as ImageManipulator from 'expo-image-manipulator';
 import {
   ArrowLeft,
   Camera,
@@ -62,20 +63,31 @@ export const EditProfileScreen: React.FC<Props> = ({ navigation }) => {
     if (!result.canceled && result.assets && result.assets.length > 0) {
       const asset = result.assets[0];
       setAvatarUri(asset.uri);
-      if (asset.base64 && token) {
+      if (token) {
         setIsUploadingAvatar(true);
-        apiService
-          .uploadAvatar(token, asset.base64)
-          .then((res) => {
+        try {
+          // ⚡ FIX 5: Resize to 256x256 and compress to JPEG (<50KB) before uploading
+          const manipulated = await ImageManipulator.manipulateAsync(
+            asset.uri,
+            [{ resize: { width: 256, height: 256 } }],
+            { compress: 0.6, format: ImageManipulator.SaveFormat.JPEG, base64: true },
+          );
+
+          const base64ToSend = manipulated.base64 || asset.base64;
+          if (base64ToSend) {
+            const res = await apiService.uploadAvatar(token, base64ToSend);
             if (res.avatarUrl) {
               const fullUrl = apiService.getResolvedMediaUrl(res.avatarUrl) || res.avatarUrl;
               uploadedServerAvatarRef.current = fullUrl;
               setAvatarUri(fullUrl);
               updateUserProfile({ avatarUrl: fullUrl });
             }
-          })
-          .catch((e) => console.warn('Avatar upload error:', e))
-          .finally(() => setIsUploadingAvatar(false));
+          }
+        } catch (e) {
+          console.warn('Avatar upload error:', e);
+        } finally {
+          setIsUploadingAvatar(false);
+        }
       }
     }
   };
