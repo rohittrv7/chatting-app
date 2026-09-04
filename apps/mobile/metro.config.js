@@ -13,6 +13,9 @@ config.server = {
   unstable_serverRoot: projectRoot,
 };
 
+// 1. Watch all files within the monorepo while preserving default watchFolders
+config.watchFolders = [...(config.watchFolders || []), monorepoRoot];
+
 // 2. Let Metro know where to resolve packages and in what order
 config.resolver.nodeModulesPaths = [
   path.resolve(projectRoot, 'node_modules'),
@@ -29,5 +32,33 @@ config.resolver.extraNodeModules = {
 };
 
 config.resolver.disableHierarchicalLookup = false;
+
+const defaultResolveRequest = config.resolver?.resolveRequest;
+config.resolver.resolveRequest = (context, moduleName, platform) => {
+  if (
+    moduleName === './apps/mobile/index' ||
+    moduleName === 'apps/mobile/index' ||
+    moduleName === './apps/mobile/index.js' ||
+    moduleName === 'apps/mobile/index.js'
+  ) {
+    return {
+      filePath: path.resolve(projectRoot, 'index.js'),
+      type: 'sourceFile',
+    };
+  }
+  if (
+    platform === 'web' &&
+    (moduleName === 'react-native-webrtc' || moduleName.startsWith('react-native-webrtc/'))
+  ) {
+    return {
+      filePath: path.resolve(projectRoot, 'src/shims/webrtcWebShim.js'),
+      type: 'sourceFile',
+    };
+  }
+  if (typeof defaultResolveRequest === 'function') {
+    return defaultResolveRequest(context, moduleName, platform);
+  }
+  return context.resolveRequest(context, moduleName, platform);
+};
 
 module.exports = config;

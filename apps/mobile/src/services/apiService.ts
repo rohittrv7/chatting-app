@@ -68,7 +68,9 @@ export interface VerifyOtpResponse {
   refreshToken: string;
   userId?: string;
   isNewUser: boolean;
-  user: UserProfile;
+  user?: UserProfile;
+  error?: string;
+  message?: string;
 }
 
 type SessionExpiredCallback = () => void;
@@ -352,6 +354,13 @@ export const apiService = {
           fromRedisCache: false,
           error: `HTTP ${response.status}`,
         });
+        return {
+          success: false,
+          accessToken: '',
+          refreshToken: '',
+          isNewUser: false,
+          error: errorJson?.message || 'Incorrect OTP code. Please try again.',
+        };
       }
     } catch (e: any) {
       const durationMs = Date.now() - startTime;
@@ -359,37 +368,20 @@ export const apiService = {
         url,
         method: 'POST',
         requestData: reqBody,
-        responseData: { fallback: 'local evaluation' },
+        responseData: { error: e?.message },
         status: 0,
         durationMs,
         fromRedisCache: false,
         error: e?.message || 'Network unreachable',
       });
+      return {
+        success: false,
+        accessToken: '',
+        refreshToken: '',
+        isNewUser: false,
+        error: 'Network unreachable. Please check your internet connection.',
+      };
     }
-
-    // Check if we have stored profile for this phone number
-    const storedUserJson = await safeStorage.getItem(AUTH_STORAGE_KEYS.USER_PROFILE);
-    let storedUser: UserProfile | null = null;
-    if (storedUserJson) {
-      try {
-        storedUser = JSON.parse(storedUserJson);
-      } catch (e) {}
-    }
-
-    const isNewUser = !storedUser || !storedUser.name || !storedUser.username;
-
-    return {
-      success: true,
-      accessToken: `token_${Date.now()}`,
-      refreshToken: `refresh_${Date.now()}`,
-      isNewUser,
-      user: storedUser || {
-        name: '',
-        username: '',
-        status: 'Available | Ready to connect',
-        phone: phoneNumber,
-      },
-    };
   },
 
   /**

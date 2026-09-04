@@ -1,0 +1,8 @@
+#!/usr/bin/env sh
+# .husky/pre-push
+# Ensures that code builds and typechecks completely before pushing to remote.
+
+echo "🔍 Running pre-push checks (typecheck + build)..."
+pnpm typecheck || exit 1
+pnpm build:check || exit 1
+echo "✅ All pre-push checks passed successfully!"

@@ -46,6 +46,7 @@
     "tweetnacl": "^1.0.3",
     "tweetnacl-util": "^0.15.1"
   },
+  "packageManager": "pnpm@9.15.9",
   "devDependencies": {
     "@babel/core": "^7.25.2",
     "@types/react": "~19.1.17",
@@ -54,10 +55,7 @@
   "expo": {
     "doctor": {
       "reactNativeDirectoryCheck": {
-        "exclude": [
-          "react-native-incall-manager",
-          "react-native-webrtc"
-        ]
+        "enabled": false
       }
     }
   }

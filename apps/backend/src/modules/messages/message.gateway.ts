@@ -553,16 +553,21 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     }
 
     // DB Fallback for users whose Redis presence expired / not yet cached
-    if (offlineMissingIds.length > 0) {
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const validMissingIds = offlineMissingIds.filter((id) => UUID_RE.test(id));
+
+    if (validMissingIds.length > 0) {
       try {
         const devices = await this.prisma.device.findMany({
-          where: { userId: { in: offlineMissingIds } },
+          where: { userId: { in: validMissingIds } },
           select: { userId: true, lastActiveAt: true },
           orderBy: { lastActiveAt: 'desc' },
         });
         for (const dev of devices) {
           if (presences[dev.userId] && !presences[dev.userId].lastSeen && dev.lastActiveAt) {
-            presences[dev.userId].lastSeen = dev.lastActiveAt.toISOString();
+            const iso = dev.lastActiveAt.toISOString();
+            presences[dev.userId].lastSeen = iso;
+            await this.redis.setLastSeen(dev.userId, iso);
           }
         }
       } catch {}

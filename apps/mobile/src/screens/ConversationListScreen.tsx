@@ -149,20 +149,28 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
   const slideAnim = useRef(new Animated.Value(0)).current;
   const shimmerAnim = useRef(new Animated.Value(0)).current;
 
+  const conversationsRef = useRef(conversations);
+  conversationsRef.current = conversations;
+
   useEffect(() => {
+    const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     const queryAllPresences = () => {
-      const handles = conversations.flatMap((c) =>
-        [c.recipientDbId, c.id, c.username].filter(Boolean),
-      ) as string[];
+      const handles = [
+        ...new Set(
+          conversationsRef.current
+            .map((c) => c.recipientDbId)
+            .filter((id): id is string => Boolean(id) && UUID_REGEX.test(id)),
+        ),
+      ];
       if (handles.length > 0) {
         queryPresence(handles);
       }
     };
 
     queryAllPresences();
-    const interval = setInterval(queryAllPresences, 10_000);
+    const interval = setInterval(queryAllPresences, 15_000);
     return () => clearInterval(interval);
-  }, [conversations, queryPresence]);
+  }, [queryPresence]);
 
   const handleConfirmLogout = () => {
     setShowLogoutModal(false);

@@ -46,7 +46,6 @@ jobs:
         run: |
           pnpm --filter @chat/shared-config build
           pnpm --filter @chat/shared-contracts build
-          pnpm --filter @chat/shared-crypto build
 
       - name: Build Backend Service
         run: pnpm --filter @chat/backend build

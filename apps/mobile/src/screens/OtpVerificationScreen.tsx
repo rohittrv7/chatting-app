@@ -24,9 +24,9 @@ import { ArrowLeft, CheckCircle, RefreshCw, KeyRound } from 'lucide-react-native
 type Props = NativeStackScreenProps<RootStackParamList, 'OtpVerification'>;
 
 export const OtpVerificationScreen: React.FC<Props> = ({ route, navigation }) => {
-  const { phoneNumber, generatedOtp = '849201' } = route.params || {
+  const { phoneNumber, generatedOtp = '' } = route.params || {
     phoneNumber: '+91 98765 43210',
-    generatedOtp: '849201',
+    generatedOtp: '',
   };
 
   const [otpDigits, setOtpDigits] = useState<string[]>(['', '', '', '', '', '']);
@@ -63,25 +63,16 @@ export const OtpVerificationScreen: React.FC<Props> = ({ route, navigation }) =>
       }),
     ]).start();
 
-    // Notify simulated SMS receipt in Toast
-    showToast(`SMS Auto-Detected: Code is ${generatedOtp}`, 'info', 4500);
-
-    // Auto-fill simulation after 800ms
-    const autoFillTimer = setTimeout(() => {
-      const digits = generatedOtp.split('').slice(0, 6);
-      setOtpDigits(digits);
-      showToast('OTP Auto-Filled Successfully!', 'success', 2500);
-
-      // Auto-proceed after auto-fill
-      const autoProceedTimer = setTimeout(() => {
-        proceedToNextScreen(generatedOtp);
-      }, 900);
-
-      return () => clearTimeout(autoProceedTimer);
-    }, 900);
-
-    return () => clearTimeout(autoFillTimer);
-  }, []);
+    // If real OTP was returned by server, display and auto-fill it
+    if (generatedOtp) {
+      showToast(`Verification Code: ${generatedOtp}`, 'info', 4500);
+      const autoFillTimer = setTimeout(() => {
+        const digits = generatedOtp.split('').slice(0, 6);
+        setOtpDigits(digits);
+      }, 500);
+      return () => clearTimeout(autoFillTimer);
+    }
+  }, [generatedOtp]);
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout>;
@@ -133,6 +124,11 @@ export const OtpVerificationScreen: React.FC<Props> = ({ route, navigation }) =>
       }),
     ]).start(async () => {
       const verifyRes = await apiService.verifyOtp(phoneNumber, currentCode);
+
+      if (!verifyRes.success || !verifyRes.accessToken) {
+        showToast(verifyRes.error || 'Incorrect OTP code. Please try again.', 'error', 3000);
+        return;
+      }
 
       dispatch(
         otpVerifiedSuccess({
