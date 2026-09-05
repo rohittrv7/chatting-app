@@ -12,36 +12,7 @@ export interface AudioDeviceStatus {
 
 type RouteChangeListener = (status: AudioDeviceStatus) => void;
 
-/**
- * Safe, crash-proof dynamic resolver for react-native-incall-manager.
- * Ensures the native module is never loaded during app bootstrap,
- * and if the native module is missing or throws, gracefully returns null.
- */
-let _inCallManager: any = null;
-let _inCallManagerChecked = false;
-
-function getInCallManager(): any {
-  if (!_inCallManagerChecked) {
-    _inCallManagerChecked = true;
-    try {
-      if (NativeModules && NativeModules.InCallManager) {
-        _inCallManager = require('react-native-incall-manager');
-        if (_inCallManager && _inCallManager.default) {
-          _inCallManager = _inCallManager.default;
-        }
-      } else {
-        _inCallManager = null;
-      }
-    } catch (err) {
-      console.warn(
-        '⚠️ [AudioRoutingService] Native InCallManager unavailable, using expo-av fallback:',
-        err,
-      );
-      _inCallManager = null;
-    }
-  }
-  return _inCallManager;
-}
+// audioRoutingService uses expo-av for native audio management without external native crashes
 
 class AudioRoutingService {
   private isStarted = false;
@@ -132,31 +103,8 @@ class AudioRoutingService {
       console.warn('⚠️ [AudioRoutingService] expo-av setAudioModeAsync warning:', expoErr);
     }
 
-    // 2. Optional native InCallManager start if available
-    const incall = getInCallManager();
-    if (incall && typeof incall.start === 'function') {
-      try {
-        incall.start({
-          media: isVideo ? 'video' : 'audio',
-          auto: true,
-        });
-
-        if (isVideo) {
-          this.setSpeakerphoneOn(true);
-        } else {
-          if (this.currentStatus.hasBluetooth) {
-            this.chooseAudioRoute('BLUETOOTH');
-          } else {
-            this.setSpeakerphoneOn(false);
-          }
-        }
-      } catch (err) {
-        console.warn('⚠️ [AudioRoutingService] Error starting InCallManager:', err);
-      }
-    } else {
-      this.currentStatus.selectedDevice = isVideo ? 'SPEAKER_PHONE' : 'EARPIECE';
-      this._notify();
-    }
+    this.currentStatus.selectedDevice = isVideo ? 'SPEAKER_PHONE' : 'EARPIECE';
+    this._notify();
   }
 
   /**
@@ -168,17 +116,7 @@ class AudioRoutingService {
 
     this._removeEventListener();
 
-    // 1. InCallManager stop if available
-    const incall = getInCallManager();
-    if (incall && typeof incall.stop === 'function') {
-      try {
-        incall.stop();
-      } catch (err) {
-        console.warn('⚠️ [AudioRoutingService] Error stopping InCallManager:', err);
-      }
-    }
-
-    // 2. Reset expo-av audio mode
+    // Reset expo-av audio mode
     try {
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: false,
@@ -196,7 +134,7 @@ class AudioRoutingService {
     this.currentStatus.selectedDevice = enable ? 'SPEAKER_PHONE' : 'EARPIECE';
     this._notify();
 
-    // 1. Expo-AV hardware audio routing
+    // Expo-AV hardware audio routing
     try {
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: true,
@@ -205,36 +143,12 @@ class AudioRoutingService {
         playThroughEarpieceAndroid: !enable,
       });
     } catch (_) {}
-
-    // 2. InCallManager if present
-    const incall = getInCallManager();
-    if (incall && typeof incall.setForceSpeakerphoneOn === 'function') {
-      try {
-        incall.setForceSpeakerphoneOn(enable);
-      } catch (err) {
-        console.warn('⚠️ [AudioRoutingService] Error setting speakerphone:', err);
-      }
-    }
   }
 
   /**
    * Manually choose an audio route (EARPIECE, SPEAKER_PHONE, BLUETOOTH, WIRED_HEADSET)
    */
   public async chooseAudioRoute(route: AudioRoute): Promise<AudioDeviceStatus> {
-    const incall = getInCallManager();
-    if (incall && typeof incall.chooseAudioRoute === 'function') {
-      try {
-        const result = await incall.chooseAudioRoute(route);
-        if (result) {
-          this._handleDeviceChange(result);
-          return this.currentStatus;
-        }
-      } catch (err) {
-        console.warn(`⚠️ [AudioRoutingService] Error choosing route ${route}:`, err);
-      }
-    }
-
-    // Fallback: handle speaker vs earpiece
     if (route === 'SPEAKER_PHONE') {
       await this.setSpeakerphoneOn(true);
     } else if (route === 'EARPIECE') {
