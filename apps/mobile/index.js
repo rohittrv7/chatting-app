@@ -1,3 +1,6 @@
+// Polyfills MUST be the very first import to intercept TextDecoder before any native/Emscripten modules load
+import './src/polyfills';
+
 import { registerRootComponent } from 'expo';
 import { LogBox } from 'react-native';
 import { enableScreens } from 'react-native-screens';

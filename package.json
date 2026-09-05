@@ -16,7 +16,8 @@
     "typecheck": "pnpm -r exec tsc --noEmit",
     "prepare": "husky",
     "docker:up": "docker-compose -f infra/docker/docker-compose.yml up -d",
-    "docker:down": "docker-compose -f infra/docker/docker-compose.yml down"
+    "docker:down": "docker-compose -f infra/docker/docker-compose.yml down",
+    "postinstall": "node scripts/patch-hermes-textdecoder.js"
   },
   "devDependencies": {
     "@typescript-eslint/eslint-plugin": "^8.2.0",
