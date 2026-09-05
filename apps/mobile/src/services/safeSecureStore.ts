@@ -92,56 +92,68 @@ function getNativeSecureStore(): any {
 
 export const safeSecureStore = {
   async getItemAsync(key: string): Promise<string | null> {
-    const store = getNativeSecureStore();
-    if (store) {
-      try {
-        return await store.getItemAsync(key);
-      } catch (err) {
-        console.error(
-          '🛑 [SafeSecureStore] Native getItemAsync failed, falling back to AsyncStorage:',
-          err,
-        );
+    try {
+      const store = getNativeSecureStore();
+      if (store) {
+        try {
+          return await store.getItemAsync(key);
+        } catch (err) {
+          console.warn(
+            '⚠️ [SafeSecureStore] Native getItemAsync failed, falling back to AsyncStorage:',
+            err,
+          );
+        }
       }
+      return await AsyncStorage.getItem(`@sec_fallback_${key}`);
+    } catch {
+      return null;
     }
-    return await AsyncStorage.getItem(`@sec_fallback_${key}`);
   },
 
   async setItemAsync(key: string, value: string): Promise<void> {
-    const store = getNativeSecureStore();
-    if (store) {
-      try {
-        await store.setItemAsync(key, value);
-        return;
-      } catch (err) {
-        console.error(
-          '🛑 [SafeSecureStore] Native setItemAsync failed, falling back to AsyncStorage:',
-          err,
-        );
+    try {
+      const store = getNativeSecureStore();
+      if (store) {
+        try {
+          await store.setItemAsync(key, value);
+          return;
+        } catch (err) {
+          console.warn(
+            '⚠️ [SafeSecureStore] Native setItemAsync failed, falling back to AsyncStorage:',
+            err,
+          );
+        }
       }
-    }
-    await AsyncStorage.setItem(`@sec_fallback_${key}`, value);
+      await AsyncStorage.setItem(`@sec_fallback_${key}`, value);
+    } catch {}
   },
 
   async deleteItemAsync(key: string): Promise<void> {
-    const store = getNativeSecureStore();
-    if (store) {
-      try {
-        await store.deleteItemAsync(key);
-        return;
-      } catch (err) {}
-    }
-    await AsyncStorage.removeItem(`@sec_fallback_${key}`);
+    try {
+      const store = getNativeSecureStore();
+      if (store) {
+        try {
+          await store.deleteItemAsync(key);
+          return;
+        } catch (err) {}
+      }
+      await AsyncStorage.removeItem(`@sec_fallback_${key}`);
+    } catch {}
   },
 
   async isAvailableAsync(): Promise<boolean> {
-    const store = getNativeSecureStore();
-    if (store && typeof store.isAvailableAsync === 'function') {
-      try {
-        return await store.isAvailableAsync();
-      } catch {
-        return false;
+    try {
+      const store = getNativeSecureStore();
+      if (store && typeof store.isAvailableAsync === 'function') {
+        try {
+          return await store.isAvailableAsync();
+        } catch {
+          return false;
+        }
       }
+      return false;
+    } catch {
+      return false;
     }
-    return false;
   },
 };

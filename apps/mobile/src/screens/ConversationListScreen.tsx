@@ -1391,7 +1391,6 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
           windowSize={5}
           maxToRenderPerBatch={8}
           initialNumToRender={10}
-          getItemLayout={getConversationItemLayout}
           renderItem={renderConversationItem}
           refreshControl={
             <RefreshControl

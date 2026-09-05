@@ -21,7 +21,6 @@ import { useSelector } from 'react-redux';
 import { RootState } from '../store';
 import { apiService } from '../services/apiService';
 import * as ImagePicker from 'expo-image-picker';
-import * as ImageManipulator from 'expo-image-manipulator';
 import {
   ArrowLeft,
   Camera,
@@ -67,13 +66,17 @@ export const EditProfileScreen: React.FC<Props> = ({ navigation }) => {
         setIsUploadingAvatar(true);
         try {
           // ⚡ FIX 5: Resize to 256x256 and compress to JPEG (<50KB) before uploading
-          const manipulated = await ImageManipulator.manipulateAsync(
-            asset.uri,
-            [{ resize: { width: 256, height: 256 } }],
-            { compress: 0.6, format: ImageManipulator.SaveFormat.JPEG, base64: true },
-          );
+          let manipulated: any = null;
+          try {
+            const ImageManipulator = require('expo-image-manipulator');
+            manipulated = await ImageManipulator.manipulateAsync(
+              asset.uri,
+              [{ resize: { width: 256, height: 256 } }],
+              { compress: 0.6, format: ImageManipulator.SaveFormat.JPEG, base64: true },
+            );
+          } catch {}
 
-          const base64ToSend = manipulated.base64 || asset.base64;
+          const base64ToSend = manipulated?.base64 || asset.base64;
           if (base64ToSend) {
             const res = await apiService.uploadAvatar(token, base64ToSend);
             if (res.avatarUrl) {

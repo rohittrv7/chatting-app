@@ -10,7 +10,16 @@ import {
   ImageStyle,
 } from 'react-native';
 import { apiService } from '../services/apiService';
-import { store } from '../store';
+
+// Lazy dynamic token resolver to prevent circular store dependency during module load
+function getAuthToken(): string | null {
+  try {
+    const { store } = require('../store');
+    return store.getState()?.auth?.token || null;
+  } catch {
+    return null;
+  }
+}
 
 interface FailedAvatarEntry {
   timestamp: number;
@@ -111,12 +120,10 @@ const SmartAvatarComponent: React.FC<SmartAvatarProps> = ({
         (resolvedUri.startsWith('http://') || resolvedUri.startsWith('https://'))
       ) {
         const headers: Record<string, string> = {};
-        try {
-          const token = store.getState()?.auth?.token;
-          if (token) {
-            headers['Authorization'] = `Bearer ${token}`;
-          }
-        } catch (_) {}
+        const token = getAuthToken();
+        if (token) {
+          headers['Authorization'] = `Bearer ${token}`;
+        }
 
         fetch(resolvedUri, { method: 'HEAD', headers })
           .then((res) => {
