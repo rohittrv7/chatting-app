@@ -1,24 +1,6 @@
-import {
-  RTCPeerConnection,
-  RTCIceCandidate,
-  RTCSessionDescription,
-  mediaDevices,
-  MediaStream,
-  MediaStreamTrack,
-} from 'react-native-webrtc';
 import { socketService } from './socket';
 
 // ─── STUN / TURN Server Configuration ──────────────────────────────────────────
-// 1. Google Public STUN Servers (Used for direct P2P connection where NAT allows)
-// 2. Open Relay Public TURN Servers (Used for strict NAT / mobile carrier traversal e.g. Jio/Airtel)
-//
-// 📍 HOW TO SWAP WITH YOUR OWN COTURN SERVER LATER:
-// Replace the Open Relay entry below with your Coturn domain, port, username, and password:
-// {
-//   urls: ['turn:your-coturn-domain.com:3478', 'turns:your-coturn-domain.com:5349'],
-//   username: 'your-coturn-username',
-//   credential: 'your-coturn-password',
-// }
 export const ICE_SERVERS_CONFIG = {
   iceServers: [
     // Google Public STUN
@@ -41,8 +23,35 @@ export const ICE_SERVERS_CONFIG = {
   iceCandidatePoolSize: 10,
 };
 
+export type MediaStream = any;
+export type MediaStreamTrack = any;
+export type RTCPeerConnection = any;
+export type RTCIceCandidate = any;
+export type RTCSessionDescription = any;
+
 type StreamListener = (stream: MediaStream | null) => void;
 type ConnectionStateListener = (state: string) => void;
+
+/**
+ * Safe dynamic resolver for react-native-webrtc.
+ * Guarantees that native WebRTC modules are NEVER evaluated at app startup,
+ * preventing any UnsatisfiedLinkError or bootstrap crashes.
+ */
+let _webrtcModule: any = null;
+let _webrtcChecked = false;
+
+export function getWebRTC(): any {
+  if (!_webrtcChecked) {
+    _webrtcChecked = true;
+    try {
+      _webrtcModule = require('react-native-webrtc');
+    } catch (err) {
+      console.warn('⚠️ [WebRTCService] Native react-native-webrtc unavailable:', err);
+      _webrtcModule = null;
+    }
+  }
+  return _webrtcModule;
+}
 
 class WebRTCService {
   private peerConnection: RTCPeerConnection | null = null;
@@ -122,8 +131,15 @@ class WebRTCService {
 
     // Release any previous local tracks
     if (this.localStream) {
-      this.localStream.getTracks().forEach((track: MediaStreamTrack) => track.stop());
+      try {
+        this.localStream.getTracks().forEach((track: MediaStreamTrack) => track.stop());
+      } catch (_) {}
       this.localStream = null;
+    }
+
+    const webrtc = getWebRTC();
+    if (!webrtc || !webrtc.mediaDevices) {
+      throw new Error('WebRTC native module is not available on this device');
     }
 
     const constraints = {
@@ -143,15 +159,14 @@ class WebRTCService {
     };
 
     try {
-      const stream = (await mediaDevices.getUserMedia(constraints as any)) as MediaStream;
+      const stream = (await webrtc.mediaDevices.getUserMedia(constraints as any)) as MediaStream;
       this.localStream = stream;
       this._notifyLocalStream(stream);
       return stream;
     } catch (err: any) {
       console.warn('⚠️ [WebRTC] getUserMedia error:', err?.message || err);
-      // Fallback to audio-only if video device is unavailable
-      if (isVideo) {
-        const audioOnlyStream = (await mediaDevices.getUserMedia({
+      if (isVideo && webrtc?.mediaDevices) {
+        const audioOnlyStream = (await webrtc.mediaDevices.getUserMedia({
           audio: {
             echoCancellation: true,
             noiseSuppression: false,
@@ -188,14 +203,23 @@ class WebRTCService {
       this.peerConnection = null;
     }
 
-    const pc = new RTCPeerConnection(ICE_SERVERS_CONFIG);
+    const webrtc = getWebRTC();
+    if (!webrtc || !webrtc.RTCPeerConnection) {
+      throw new Error('RTCPeerConnection is not available on this device');
+    }
+
+    const pc = new webrtc.RTCPeerConnection(ICE_SERVERS_CONFIG);
     this.peerConnection = pc;
 
     // Add local stream tracks to the connection
     if (this.localStream) {
-      this.localStream.getTracks().forEach((track: MediaStreamTrack) => {
-        pc.addTrack(track, this.localStream!);
-      });
+      try {
+        this.localStream.getTracks().forEach((track: MediaStreamTrack) => {
+          pc.addTrack(track, this.localStream!);
+        });
+      } catch (err) {
+        console.warn('⚠️ [WebRTC] Error adding local tracks to pc:', err);
+      }
     }
 
     // ICE Candidate generation event
@@ -219,52 +243,33 @@ class WebRTCService {
         this.remoteStream = event.streams[0];
         this._notifyRemoteStream(event.streams[0]);
       } else if (event.track) {
-        if (!this.remoteStream) {
-          this.remoteStream = new MediaStream();
+        if (!this.remoteStream && webrtc.MediaStream) {
+          this.remoteStream = new webrtc.MediaStream();
         }
-        this.remoteStream.addTrack(event.track);
-        this._notifyRemoteStream(this.remoteStream);
+        if (this.remoteStream) {
+          this.remoteStream.addTrack(event.track);
+          this._notifyRemoteStream(this.remoteStream);
+        }
       }
     };
 
-    // ─── Comprehensive Connection State Logging ──────────────────────────────
-
-    // ICE Connection State (checking -> connected / completed / failed / disconnected / closed)
+    // ICE Connection State
     pc.oniceconnectionstatechange = () => {
       const iceState = pc.iceConnectionState;
-      console.log(`📡 [WebRTC] ICE Connection State: 👉 ${iceState.toUpperCase()}`);
-      if (iceState === 'failed') {
-        console.warn(
-          '⚠️ [WebRTC] ICE Connection failed! NAT traversal failed — check STUN/TURN server connectivity.',
-        );
-      } else if (iceState === 'connected' || iceState === 'completed') {
-        console.log('🟢 [WebRTC] Media transport established successfully via P2P / TURN relay!');
+      console.log(`📡 [WebRTC] ICE Connection State: 👉 ${iceState?.toUpperCase()}`);
+      if (iceState === 'connected' || iceState === 'completed') {
         this._applyHighQualityVideoBitrate();
-      } else if (iceState === 'disconnected') {
-        console.warn(
-          '🟡 [WebRTC] ICE disconnected — temporary network hiccup or interface change (e.g. WiFi ↔ 4G).',
-        );
       }
     };
 
-    // Peer Connection State (new -> connecting -> connected -> disconnected -> failed -> closed)
+    // Peer Connection State
     pc.onconnectionstatechange = () => {
       const state = pc.connectionState;
-      console.log(`📡 [WebRTC] Peer Connection State: 👉 ${state.toUpperCase()}`);
+      console.log(`📡 [WebRTC] Peer Connection State: 👉 ${state?.toUpperCase()}`);
       if (state === 'connected') {
         this._applyHighQualityVideoBitrate();
       }
       this._notifyConnectionState(state);
-    };
-
-    // Signaling State
-    pc.onsignalingstatechange = () => {
-      console.log(`📡 [WebRTC] Signaling State: 👉 ${pc.signalingState}`);
-    };
-
-    // ICE Gathering State
-    pc.onicegatheringstatechange = () => {
-      console.log(`📡 [WebRTC] ICE Gathering State: 👉 ${pc.iceGatheringState}`);
     };
 
     return pc;
@@ -294,12 +299,16 @@ class WebRTCService {
       throw new Error('[WebRTC] PeerConnection not initialized');
     }
 
+    const webrtc = getWebRTC();
+    if (!webrtc || !webrtc.RTCSessionDescription) {
+      throw new Error('[WebRTC] RTCSessionDescription unavailable');
+    }
+
     console.log('📡 [WebRTC] Setting Remote Description (Offer on Callee)');
-    const sessionDesc = new RTCSessionDescription(offerSdp);
+    const sessionDesc = new webrtc.RTCSessionDescription(offerSdp);
     await this.peerConnection.setRemoteDescription(sessionDesc);
     this.isRemoteDescriptionSet = true;
 
-    // Race condition prevention: Drain any queued ICE candidates that arrived before the offer
     await this._flushPendingIceCandidates();
 
     console.log('📡 [WebRTC] Creating SDP Answer (Callee)');
@@ -314,21 +323,27 @@ class WebRTCService {
       throw new Error('[WebRTC] PeerConnection not initialized');
     }
 
+    const webrtc = getWebRTC();
+    if (!webrtc || !webrtc.RTCSessionDescription) {
+      throw new Error('[WebRTC] RTCSessionDescription unavailable');
+    }
+
     console.log('📡 [WebRTC] Setting Remote Description (Answer on Caller)');
-    const sessionDesc = new RTCSessionDescription(answerSdp);
+    const sessionDesc = new webrtc.RTCSessionDescription(answerSdp);
     await this.peerConnection.setRemoteDescription(sessionDesc);
     this.isRemoteDescriptionSet = true;
 
-    // Race condition prevention: Drain any queued ICE candidates that arrived before the answer
     await this._flushPendingIceCandidates();
   }
 
   /** Add ICE Candidate with Race Condition Protection */
   public async addIceCandidate(candidate: any): Promise<void> {
     try {
-      const rtcCandidate = new RTCIceCandidate(candidate);
+      const webrtc = getWebRTC();
+      if (!webrtc || !webrtc.RTCIceCandidate) return;
 
-      // If remote description is already set, add candidate immediately
+      const rtcCandidate = new webrtc.RTCIceCandidate(candidate);
+
       if (
         this.peerConnection &&
         this.isRemoteDescriptionSet &&
@@ -337,7 +352,6 @@ class WebRTCService {
         await this.peerConnection.addIceCandidate(rtcCandidate);
         console.log('✔ [WebRTC] Added ICE candidate directly');
       } else {
-        // Otherwise, queue candidate safely to be added after setRemoteDescription() finishes
         this.pendingIceCandidates.push(rtcCandidate);
         console.log(
           `⏳ [WebRTC] Queued ICE candidate (waiting for remote description, queue size: ${this.pendingIceCandidates.length})`,
@@ -353,9 +367,11 @@ class WebRTCService {
   public setMute(isMuted: boolean) {
     this.isAudioMuted = isMuted;
     if (this.localStream) {
-      this.localStream.getAudioTracks().forEach((track: MediaStreamTrack) => {
-        track.enabled = !isMuted;
-      });
+      try {
+        this.localStream.getAudioTracks().forEach((track: MediaStreamTrack) => {
+          track.enabled = !isMuted;
+        });
+      } catch (_) {}
     }
   }
 
@@ -365,9 +381,11 @@ class WebRTCService {
 
   public setVideoEnabled(isEnabled: boolean) {
     if (this.localStream) {
-      this.localStream.getVideoTracks().forEach((track: MediaStreamTrack) => {
-        track.enabled = isEnabled;
-      });
+      try {
+        this.localStream.getVideoTracks().forEach((track: MediaStreamTrack) => {
+          track.enabled = isEnabled;
+        });
+      } catch (_) {}
     }
   }
 
@@ -393,10 +411,12 @@ class WebRTCService {
 
   public switchCamera() {
     if (this.localStream) {
-      const videoTrack = this.localStream.getVideoTracks()[0];
-      if (videoTrack && (videoTrack as any)._switchCamera) {
-        (videoTrack as any)._switchCamera();
-      }
+      try {
+        const videoTrack = this.localStream.getVideoTracks()[0];
+        if (videoTrack && (videoTrack as any)._switchCamera) {
+          (videoTrack as any)._switchCamera();
+        }
+      } catch (_) {}
     }
   }
 
@@ -408,24 +428,28 @@ class WebRTCService {
 
     // Stop all local media tracks
     if (this.localStream) {
-      this.localStream.getTracks().forEach((track: MediaStreamTrack) => {
-        try {
-          track.stop();
-          (track as any).release?.();
-        } catch (_) {}
-      });
+      try {
+        this.localStream.getTracks().forEach((track: MediaStreamTrack) => {
+          try {
+            track.stop();
+            (track as any).release?.();
+          } catch (_) {}
+        });
+      } catch (_) {}
       this.localStream = null;
       this._notifyLocalStream(null);
     }
 
     // Stop all remote media tracks
     if (this.remoteStream) {
-      this.remoteStream.getTracks().forEach((track: MediaStreamTrack) => {
-        try {
-          track.stop();
-          (track as any).release?.();
-        } catch (_) {}
-      });
+      try {
+        this.remoteStream.getTracks().forEach((track: MediaStreamTrack) => {
+          try {
+            track.stop();
+            (track as any).release?.();
+          } catch (_) {}
+        });
+      } catch (_) {}
       this.remoteStream = null;
       this._notifyRemoteStream(null);
     }
@@ -454,8 +478,6 @@ class WebRTCService {
 
   /**
    * Toggles noise suppression live without restarting the call or renegotiating SDP.
-   * Attempts applyConstraints first; if react-native-webrtc throws ("Only implemented for video tracks"),
-   * seamlessly replaces the audio track on RTCRtpSender live.
    */
   public async setNoiseSuppression(enabled: boolean): Promise<boolean> {
     this.isNoiseSuppressionEnabled = enabled;
@@ -478,14 +500,15 @@ class WebRTCService {
         return true;
       }
     } catch (err: any) {
-      console.log(
-        `ℹ️ [WebRTC] applyConstraints is not supported for audio tracks in react-native-webrtc (${err?.message}). Falling back to RTCRtpSender.replaceTrack()...`,
-      );
+      console.log(`ℹ️ [WebRTC] applyConstraints fallback to replaceTrack...`);
     }
 
     // 2. Seamless live track replacement via RTCRtpSender.replaceTrack()
+    const webrtc = getWebRTC();
+    if (!webrtc || !webrtc.mediaDevices) return false;
+
     try {
-      const newStream = (await mediaDevices.getUserMedia({
+      const newStream = (await webrtc.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
           noiseSuppression: enabled,
@@ -497,14 +520,8 @@ class WebRTCService {
       const newAudioTrack = newStream.getAudioTracks()[0];
       if (!newAudioTrack) return false;
 
-      // Strictly inherit current mute state:
-      // If call is muted (isAudioMuted is true or audioTrack.enabled is false),
-      // the new track MUST remain muted (enabled = false).
       const shouldBeEnabled = !this.isAudioMuted && audioTrack.enabled;
       newAudioTrack.enabled = shouldBeEnabled;
-      console.log(
-        `🎙️ [WebRTC] New track mute state inherited: enabled=${shouldBeEnabled} (isAudioMuted=${this.isAudioMuted})`,
-      );
 
       if (this.peerConnection) {
         const senders = (this.peerConnection as any).getSenders
@@ -514,25 +531,17 @@ class WebRTCService {
 
         if (audioSender && typeof audioSender.replaceTrack === 'function') {
           await audioSender.replaceTrack(newAudioTrack);
-          console.log(
-            `🎙️ [WebRTC] Replaced audio track live via RTCRtpSender.replaceTrack (noiseSuppression=${enabled})`,
-          );
         }
       }
 
-      // Replace track in local media stream
       this.localStream?.removeTrack(audioTrack);
       this.localStream?.addTrack(newAudioTrack);
 
-      // Explicitly stop and release old track to release microphone hardware and avoid lingering session
       try {
         audioTrack.stop();
         (audioTrack as any).release?.();
-      } catch (stopErr) {
-        console.warn('⚠️ [WebRTC] Error stopping old audio track:', stopErr);
-      }
+      } catch (_) {}
 
-      // Release any other tracks created in newStream that aren't newAudioTrack
       newStream.getTracks().forEach((track: MediaStreamTrack) => {
         if (track !== newAudioTrack) {
           try {
@@ -566,22 +575,17 @@ class WebRTCService {
       if (!params.encodings || params.encodings.length === 0) {
         params.encodings = [{}];
       }
-      params.encodings[0].maxBitrate = 1500000; // 1.5 Mbps (Target 720p HD video bitrate)
+      params.encodings[0].maxBitrate = 1500000;
       params.encodings[0].maxFramerate = 30;
 
       if (typeof videoSender.setParameters === 'function') {
         await videoSender.setParameters(params);
         this.isBitrateApplied = true;
-        console.log(
-          '🚀 [WebRTC] High-quality HD video bitrate applied: 1.5 Mbps @ 30fps (Caller & Callee)',
-        );
       }
     } catch (err: any) {
       console.warn('⚠️ [WebRTC] Could not set video sender parameters:', err?.message || err);
     }
   }
-
-  // ─── Private Event Dispatchers ─────────────────────────────────────────────
 
   private _notifyLocalStream(stream: MediaStream | null) {
     for (const listener of this.localStreamListeners) {

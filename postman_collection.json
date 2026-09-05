@@ -1,0 +1,866 @@
+{
+  "info": {
+    "_postman_id": "a9c086d7-31df-4b71-8bc1-19d2ebc089af",
+    "name": "WhatsApp Connect - Complete API Collection",
+    "description": "Production-grade WhatsApp-style messaging, audio/video calling signaling, E2EE keys, and media upload API collection with auto-token management, pre-request scripts, and test scripts.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "https://whatsapp-connect-backend.onrender.com/api/v1",
+      "type": "string"
+    },
+    {
+      "key": "rawBaseUrl",
+      "value": "https://whatsapp-connect-backend.onrender.com",
+      "type": "string"
+    },
+    {
+      "key": "phoneNumber",
+      "value": "+919876543210",
+      "type": "string"
+    },
+    {
+      "key": "testOtp",
+      "value": "123456",
+      "type": "string"
+    },
+    {
+      "key": "token",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "refreshToken",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "userId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "deviceId",
+      "value": "postman-test-device-1",
+      "type": "string"
+    },
+    {
+      "key": "conversationId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "targetUserId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "messageId",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "item": [
+    {
+      "name": "1. Authentication & Device Flow",
+      "item": [
+        {
+          "name": "1.1 Request OTP",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phoneNumber\": \"{{phoneNumber}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/otp/request",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "otp", "request"]
+            },
+            "description": "Requests an SMS/Test OTP for the given phone number. In test/dev environment, test numbers receive OTP 123456."
+          },
+          "response": []
+        },
+        {
+          "name": "1.2 Verify OTP (Auto-saves Token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var jsonData = pm.response.json();",
+                  "if (jsonData.data && jsonData.data.token) {",
+                  "    pm.collectionVariables.set('token', jsonData.data.token);",
+                  "    console.log('✅ Access token saved to collection variable: ' + jsonData.data.token);",
+                  "}",
+                  "if (jsonData.data && jsonData.data.refreshToken) {",
+                  "    pm.collectionVariables.set('refreshToken', jsonData.data.refreshToken);",
+                  "}",
+                  "if (jsonData.data && jsonData.data.userId) {",
+                  "    pm.collectionVariables.set('userId', jsonData.data.userId);",
+                  "}",
+                  "pm.test('Status code is 200/201', function () {",
+                  "    pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phoneNumber\": \"{{phoneNumber}}\",\n  \"code\": \"{{testOtp}}\",\n  \"deviceId\": \"{{deviceId}}\",\n  \"deviceName\": \"Postman Test Runner\",\n  \"platform\": \"android\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/otp/verify",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "otp", "verify"]
+            },
+            "description": "Verifies the 6-digit OTP, creates or authenticates the user, and returns JWT access + refresh tokens. The test script automatically saves the token to the collection variables."
+          },
+          "response": []
+        },
+        {
+          "name": "1.3 Refresh Access Token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var jsonData = pm.response.json();",
+                  "if (jsonData.data && jsonData.data.token) {",
+                  "    pm.collectionVariables.set('token', jsonData.data.token);",
+                  "}",
+                  "if (jsonData.data && jsonData.data.refreshToken) {",
+                  "    pm.collectionVariables.set('refreshToken', jsonData.data.refreshToken);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/token/refresh",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "token", "refresh"]
+            },
+            "description": "Rotates refresh token and issues a new short-lived access token."
+          },
+          "response": []
+        },
+        {
+          "name": "1.4 Update User Profile",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Test User\",\n  \"username\": \"testuser_99\",\n  \"status\": \"Hey there! I am using WhatsApp Connect.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/profile",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "profile"]
+            },
+            "description": "Updates profile details (name, unique username, about/bio status)."
+          },
+          "response": []
+        },
+        {
+          "name": "1.5 Upload Profile Avatar (Base64)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"base64Data\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\",\n  \"fileName\": \"avatar.png\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/avatar",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "avatar"]
+            },
+            "description": "Uploads and sets user avatar picture using base64 image data."
+          },
+          "response": []
+        },
+        {
+          "name": "1.6 List Active Devices",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/devices",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "devices"]
+            },
+            "description": "Returns list of all devices currently logged into this account."
+          },
+          "response": []
+        },
+        {
+          "name": "1.7 Revoke Device (Remote Logout)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/devices/{{deviceId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "devices", "{{deviceId}}"]
+            },
+            "description": "Remotely logs out target device by invalidating its device session."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "2. Users, Contacts & Social Graph",
+      "item": [
+        {
+          "name": "2.1 Sync Contacts & Discover Users",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phoneNumbers\": [\n    \"+919876543210\",\n    \"+918000011111\",\n    \"+919999900000\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/contacts/sync",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "contacts", "sync"]
+            },
+            "description": "Uploads address book phone numbers and returns which contacts are registered on WhatsApp Connect."
+          },
+          "response": []
+        },
+        {
+          "name": "2.2 Global User Search",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var jsonData = pm.response.json();",
+                  "if (jsonData.data && jsonData.data.length > 0) {",
+                  "    pm.collectionVariables.set('targetUserId', jsonData.data[0].id);",
+                  "    console.log('Saved targetUserId: ' + jsonData.data[0].id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/users/search?q=test",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "users", "search"],
+              "query": [
+                {
+                  "key": "q",
+                  "value": "test"
+                }
+              ]
+            },
+            "description": "Search for users across the platform by username or display name."
+          },
+          "response": []
+        },
+        {
+          "name": "2.3 Block User",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"targetUserId\": \"{{targetUserId}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/users/block",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "users", "block"]
+            },
+            "description": "Blocks the target user from messaging, calling, or seeing online presence."
+          },
+          "response": []
+        },
+        {
+          "name": "2.4 Unblock User",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"targetUserId\": \"{{targetUserId}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/users/unblock",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "users", "unblock"]
+            },
+            "description": "Unblocks a previously blocked user."
+          },
+          "response": []
+        },
+        {
+          "name": "2.5 Get Blocked Users List",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/users/blocked",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "users", "blocked"]
+            },
+            "description": "Returns list of all users blocked by the authenticated user."
+          },
+          "response": []
+        },
+        {
+          "name": "2.6 Check Block Status With User",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/users/block-status/{{targetUserId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "users", "block-status", "{{targetUserId}}"]
+            },
+            "description": "Checks bidirectional block status (isBlockedByMe, isBlockedByThem)."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "3. Conversations & Channels",
+      "item": [
+        {
+          "name": "3.1 Create 1:1 Direct Conversation",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var jsonData = pm.response.json();",
+                  "if (jsonData.data && jsonData.data.id) {",
+                  "    pm.collectionVariables.set('conversationId', jsonData.data.id);",
+                  "    console.log('Saved conversationId: ' + jsonData.data.id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"DIRECT\",\n  \"targetUserId\": \"{{targetUserId}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/conversations",
+              "host": ["{{baseUrl}}"],
+              "path": ["conversations"]
+            },
+            "description": "Gets or creates a deterministic 1:1 direct conversation between current user and target user."
+          },
+          "response": []
+        },
+        {
+          "name": "3.2 Create Group Conversation",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"GROUP\",\n  \"title\": \"Weekend Planning\",\n  \"participantUserIds\": [\n    \"{{targetUserId}}\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/conversations",
+              "host": ["{{baseUrl}}"],
+              "path": ["conversations"]
+            },
+            "description": "Creates a new multi-participant group conversation."
+          },
+          "response": []
+        },
+        {
+          "name": "3.3 List Active Conversations",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/conversations",
+              "host": ["{{baseUrl}}"],
+              "path": ["conversations"]
+            },
+            "description": "Fetches all active conversations with latest message, unread badge counters, and participant metadata."
+          },
+          "response": []
+        },
+        {
+          "name": "3.4 Get Conversation Details by ID",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/conversations/{{conversationId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["conversations", "{{conversationId}}"]
+            },
+            "description": "Gets details, participants, and metadata for a specific conversation."
+          },
+          "response": []
+        },
+        {
+          "name": "3.5 Delete / Leave Conversation",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/conversations/{{conversationId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["conversations", "{{conversationId}}"]
+            },
+            "description": "Soft deletes the conversation for the requesting user."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "4. Messages & Chat History",
+      "item": [
+        {
+          "name": "4.1 Send Message (REST Fallback)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"conversationId\": \"{{conversationId}}\",\n  \"type\": \"TEXT\",\n  \"content\": \"Hello via REST API!\",\n  \"idempotencyKey\": \"msg-req-123456789\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/messages",
+              "host": ["{{baseUrl}}"],
+              "path": ["messages"]
+            },
+            "description": "Sends message via HTTP fallback (WebSocket is primary in mobile app)."
+          },
+          "response": []
+        },
+        {
+          "name": "4.2 Get Paged Conversation Messages",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var jsonData = pm.response.json();",
+                  "if (jsonData.data && jsonData.data.length > 0) {",
+                  "    pm.collectionVariables.set('messageId', jsonData.data[0].id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/messages/conversation/{{conversationId}}?limit=50",
+              "host": ["{{baseUrl}}"],
+              "path": ["messages", "conversation", "{{conversationId}}"],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "50"
+                },
+                {
+                  "key": "cursor",
+                  "value": "",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Fetches paged historical messages in chronological order with soft delete filters applied."
+          },
+          "response": []
+        },
+        {
+          "name": "4.3 Soft Delete Message (Delete for Me)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/messages/{{messageId}}?type=ME",
+              "host": ["{{baseUrl}}"],
+              "path": ["messages", "{{messageId}}"],
+              "query": [
+                {
+                  "key": "type",
+                  "value": "ME"
+                }
+              ]
+            },
+            "description": "Deletes message only from current user's personal chat view."
+          },
+          "response": []
+        },
+        {
+          "name": "4.4 Soft Delete Message (Delete for Everyone)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/messages/{{messageId}}?type=EVERYONE",
+              "host": ["{{baseUrl}}"],
+              "path": ["messages", "{{messageId}}"],
+              "query": [
+                {
+                  "key": "type",
+                  "value": "EVERYONE"
+                }
+              ]
+            },
+            "description": "Deletes message for all chat participants (only author can perform this action)."
+          },
+          "response": []
+        },
+        {
+          "name": "4.5 Clear Conversation History (Soft Clear)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/messages/conversation/{{conversationId}}/clear",
+              "host": ["{{baseUrl}}"],
+              "path": ["messages", "conversation", "{{conversationId}}", "clear"]
+            },
+            "description": "Clears historical messages for the requesting user while preserving messages for others."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "5. Media & File Attachments",
+      "item": [
+        {
+          "name": "5.1 Direct Media Upload (Base64)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"base64Data\": \"data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP...\",\n  \"fileName\": \"photo.jpg\",\n  \"mimeType\": \"image/jpeg\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/media/upload",
+              "host": ["{{baseUrl}}"],
+              "path": ["media", "upload"]
+            },
+            "description": "Uploads photos, audio voice notes, and document attachments directly via Base64."
+          },
+          "response": []
+        },
+        {
+          "name": "5.2 Request Presigned Backblaze B2 Upload URL",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fileName\": \"video_recording.enc\",\n  \"mimeType\": \"application/octet-stream\",\n  \"fileSize\": 5242880,\n  \"contentEncoding\": \"identity\",\n  \"width\": 1080,\n  \"height\": 1920,\n  \"durationSeconds\": 15\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/media/upload-url",
+              "host": ["{{baseUrl}}"],
+              "path": ["media", "upload-url"]
+            },
+            "description": "Generates a presigned Backblaze B2 upload URL for direct client-to-cloud upload up to 10MB."
+          },
+          "response": []
+        },
+        {
+          "name": "5.3 Request Presigned Backblaze B2 Download URL",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/media/download-url/media/sample-object-key.enc",
+              "host": ["{{baseUrl}}"],
+              "path": ["media", "download-url", "media", "sample-object-key.enc"]
+            },
+            "description": "Generates a time-limited signed URL to securely download an encrypted media blob."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "6. Signal Protocol & E2EE Directory",
+      "item": [
+        {
+          "name": "6.1 Register Device Signal PreKeys",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"registrationId\": 1337,\n  \"identityKey\": \"BM7qVjH8P...\",\n  \"signedPreKey\": {\n    \"keyId\": 1,\n    \"publicKey\": \"BfF2x...\",\n    \"signature\": \"Z4a...\"\n  },\n  \"oneTimePreKeys\": [\n    {\n      \"keyId\": 1,\n      \"publicKey\": \"Bk1...\"\n    },\n    {\n      \"keyId\": 2,\n      \"publicKey\": \"Bk2...\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/keys/register",
+              "host": ["{{baseUrl}}"],
+              "path": ["keys", "register"]
+            },
+            "description": "Registers device Identity Key, Signed PreKey, and One-Time PreKey pool for X3DH key exchange."
+          },
+          "response": []
+        },
+        {
+          "name": "6.2 Fetch User PreKey Bundle",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/keys/bundle/{{targetUserId}}/1",
+              "host": ["{{baseUrl}}"],
+              "path": ["keys", "bundle", "{{targetUserId}}", "1"]
+            },
+            "description": "Fetches target device's cryptographic bundle needed to initialize an E2EE Double Ratchet session."
+          },
+          "response": []
+        },
+        {
+          "name": "6.3 Fetch Active Devices for Target User",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/keys/devices/{{targetUserId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["keys", "devices", "{{targetUserId}}"]
+            },
+            "description": "Returns list of active device IDs for multi-device Signal encryption dispatch."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "7. Reports & Moderation",
+      "item": [
+        {
+          "name": "7.1 Submit Abuse/Message Report",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messageId\": \"{{messageId}}\",\n  \"reason\": \"SPAM\",\n  \"details\": \"User sent unsolicited promotional links\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/reports",
+              "host": ["{{baseUrl}}"],
+              "path": ["reports"]
+            },
+            "description": "Submits a message report for content moderation."
+          },
+          "response": []
+        },
+        {
+          "name": "7.2 List Reports (Moderator View)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/reports?limit=20",
+              "host": ["{{baseUrl}}"],
+              "path": ["reports"],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "20"
+                }
+              ]
+            },
+            "description": "Lists submitted reports with limit pagination."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "8. Health, Diagnostics & Observability",
+      "item": [
+        {
+          "name": "8.1 Service Liveness Check",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["health"]
+            },
+            "description": "Kubernetes/Render liveness probe endpoint returning { status: 'up' }."
+          },
+          "response": []
+        },
+        {
+          "name": "8.2 Service Readiness Check (Database Ping)",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health/ready",
+              "host": ["{{baseUrl}}"],
+              "path": ["health", "ready"]
+            },
+            "description": "Readiness probe actively verifying PostgreSQL database connection health."
+          },
+          "response": []
+        },
+        {
+          "name": "8.3 Prometheus Metrics",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{rawBaseUrl}}/metrics",
+              "host": ["{{rawBaseUrl}}"],
+              "path": ["metrics"]
+            },
+            "description": "Exposes standard Prometheus metrics (HTTP request counts, latency histograms, active socket connections)."
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}

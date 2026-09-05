@@ -32,7 +32,28 @@ import {
   Smartphone,
   X,
 } from 'lucide-react-native';
-import { RTCView, MediaStream } from 'react-native-webrtc';
+// Safe dynamic RTCView component
+const SafeRTCView: React.FC<any> = (props) => {
+  try {
+    const webrtc = require('react-native-webrtc');
+    const NativeRTCView = webrtc?.RTCView;
+    if (NativeRTCView) {
+      return <NativeRTCView {...props} />;
+    }
+  } catch (_) {}
+  return (
+    <View
+      style={[
+        props.style,
+        { backgroundColor: '#0B1014', justifyContent: 'center', alignItems: 'center' },
+      ]}
+    >
+      <Text style={{ color: '#94A3B8', fontSize: 13 }}>Video Stream</Text>
+    </View>
+  );
+};
+type MediaStream = any;
+
 import { callService, ActiveCallSession } from '../services/callService';
 import { webrtcService } from '../services/webrtcService';
 import {
@@ -398,7 +419,7 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
           <View style={styles.remoteVideoBackdrop}>
             {hasRemoteVideo ? (
               <View style={styles.remoteVideoWrapper}>
-                <RTCView
+                <SafeRTCView
                   streamURL={remoteStream!.toURL()}
                   style={StyleSheet.absoluteFillObject}
                   objectFit="cover"
@@ -430,7 +451,7 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
           {/* Picture-in-Picture (PiP) Local Video Tile */}
           {hasLocalVideo && (
             <View style={styles.pipContainer}>
-              <RTCView
+              <SafeRTCView
                 streamURL={localStream!.toURL()}
                 style={styles.pipCamera}
                 objectFit="cover"

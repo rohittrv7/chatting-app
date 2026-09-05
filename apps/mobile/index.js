@@ -1,5 +1,12 @@
 import { registerRootComponent } from 'expo';
 import { LogBox } from 'react-native';
+import { enableScreens } from 'react-native-screens';
+
+// Ensure native fragment screens are safely initialized for Android
+try {
+  enableScreens(true);
+} catch (_) {}
+
 import App from './App';
 
 // Prevent unhandled JavaScript exceptions from hard-killing the Android Activity
