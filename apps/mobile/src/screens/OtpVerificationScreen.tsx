@@ -160,12 +160,19 @@ export const OtpVerificationScreen: React.FC<Props> = ({ route, navigation }) =>
     });
   };
 
-  const handleResend = () => {
+  const handleResend = async () => {
     setResendTimer(30);
-    const newOtp = Math.floor(100000 + Math.random() * 900000).toString();
-    showToast(`New Code Sent: ${newOtp}`, 'info', 4000);
     setOtpDigits(['', '', '', '', '', '']);
     inputRefs.current[0]?.focus();
+
+    const res = await apiService.requestOtp(phoneNumber);
+    if (res.mockOtp) {
+      showToast(`New Verification Code: ${res.mockOtp}`, 'info', 5000);
+      const digits = res.mockOtp.split('').slice(0, 6);
+      setOtpDigits(digits);
+    } else {
+      showToast(res.message || 'Verification OTP requested', 'info', 4000);
+    }
   };
 
   return (

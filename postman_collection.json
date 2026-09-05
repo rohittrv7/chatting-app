@@ -22,8 +22,8 @@
       "type": "string"
     },
     {
-      "key": "testOtp",
-      "value": "123456",
+      "key": "otp",
+      "value": "",
       "type": "string"
     },
     {
@@ -78,47 +78,17 @@
       "item": [
         {
           "name": "1.1 Request OTP",
-          "request": {
-            "auth": {
-              "type": "noauth"
-            },
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"phoneNumber\": \"{{phoneNumber}}\"\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/auth/otp/request",
-              "host": ["{{baseUrl}}"],
-              "path": ["auth", "otp", "request"]
-            },
-            "description": "Requests an SMS/Test OTP for the given phone number. In test/dev environment, test numbers receive OTP 123456."
-          },
-          "response": []
-        },
-        {
-          "name": "1.2 Verify OTP (Auto-saves Token)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "exec": [
                   "var jsonData = pm.response.json();",
-                  "if (jsonData.data && jsonData.data.token) {",
-                  "    pm.collectionVariables.set('token', jsonData.data.token);",
-                  "    console.log('✅ Access token saved to collection variable: ' + jsonData.data.token);",
-                  "}",
-                  "if (jsonData.data && jsonData.data.refreshToken) {",
-                  "    pm.collectionVariables.set('refreshToken', jsonData.data.refreshToken);",
-                  "}",
-                  "if (jsonData.data && jsonData.data.userId) {",
-                  "    pm.collectionVariables.set('userId', jsonData.data.userId);",
+                  "var payload = jsonData.data || jsonData;",
+                  "var otpCode = payload.mockOtp || payload.code || payload.otp;",
+                  "if (otpCode) {",
+                  "    pm.collectionVariables.set('otp', String(otpCode));",
+                  "    console.log('✅ Auto-captured dynamic random OTP from server: ' + otpCode);",
                   "}",
                   "pm.test('Status code is 200/201', function () {",
                   "    pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
@@ -141,14 +111,65 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"phoneNumber\": \"{{phoneNumber}}\",\n  \"code\": \"{{testOtp}}\",\n  \"deviceId\": \"{{deviceId}}\",\n  \"deviceName\": \"Postman Test Runner\",\n  \"platform\": \"android\"\n}"
+              "raw": "{\n  \"phoneNumber\": \"{{phoneNumber}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/otp/request",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "otp", "request"]
+            },
+            "description": "Requests an SMS/Server random OTP for the given phone number. The test script auto-captures the server random OTP directly into the {{otp}} variable for instant verification."
+          },
+          "response": []
+        },
+        {
+          "name": "1.2 Verify OTP (Auto-saves Token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var jsonData = pm.response.json();",
+                  "var data = jsonData.data || jsonData;",
+                  "if (data && data.accessToken) {",
+                  "    pm.collectionVariables.set('token', data.accessToken);",
+                  "    console.log('✅ Access token saved to collection variable: ' + data.accessToken);",
+                  "}",
+                  "if (data && data.refreshToken) {",
+                  "    pm.collectionVariables.set('refreshToken', data.refreshToken);",
+                  "}",
+                  "if (data && data.user && data.user.id) {",
+                  "    pm.collectionVariables.set('userId', data.user.id);",
+                  "}",
+                  "pm.test('Status code is 200/201', function () {",
+                  "    pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phoneNumber\": \"{{phoneNumber}}\",\n  \"otp\": \"{{otp}}\",\n  \"deviceId\": 1,\n  \"deviceName\": \"Postman Android Device\",\n  \"platform\": \"ANDROID\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/auth/otp/verify",
               "host": ["{{baseUrl}}"],
               "path": ["auth", "otp", "verify"]
             },
-            "description": "Verifies the 6-digit OTP, creates or authenticates the user, and returns JWT access + refresh tokens. The test script automatically saves the token to the collection variables."
+            "description": "Verifies the 6-digit random OTP, creates or authenticates the user, and returns JWT access + refresh tokens. The test script automatically saves the token to the collection variables."
           },
           "response": []
         },

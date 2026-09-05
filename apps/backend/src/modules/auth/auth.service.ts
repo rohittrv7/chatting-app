@@ -66,14 +66,11 @@ export class AuthService {
     // Store in Redis hash otp:{phoneNumber} with 10-min TTL
     await this.otpRedis.storeOtp(normalizedPhone, code);
 
-    // Expose mockOtp for easy testing unless explicitly disabled
-    const enableMockOtp =
-      this.configService.get<string>('ENABLE_MOCK_OTP', 'true') === 'true' ||
-      this.configService.get<string>('NODE_ENV', 'development') !== 'production';
+    console.log(`🔑 [AuthService] Generated random 6-digit OTP for ${normalizedPhone}: ${code}`);
 
     return {
       message: 'OTP sent successfully',
-      ...(enableMockOtp ? { mockOtp: code } : {}),
+      mockOtp: code,
     };
   }
 

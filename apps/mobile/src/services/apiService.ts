@@ -240,7 +240,7 @@ export const apiService = {
         return {
           success: true,
           message: payload.message || 'OTP Sent Successfully',
-          mockOtp: payload.mockOtp || Math.floor(100000 + Math.random() * 900000).toString(),
+          mockOtp: payload.mockOtp || payload.code || '',
         };
       } else {
         const errorJson = await response.json().catch(() => ({}));
