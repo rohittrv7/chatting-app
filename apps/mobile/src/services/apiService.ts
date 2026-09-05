@@ -254,6 +254,12 @@ export const apiService = {
           fromRedisCache: false,
           error: `HTTP ${response.status}`,
         });
+        return {
+          success: false,
+          message:
+            errorJson?.message || errorJson?.error || 'Failed to send OTP. Please try again.',
+          mockOtp: '',
+        };
       }
     } catch (e: any) {
       const durationMs = Date.now() - startTime;

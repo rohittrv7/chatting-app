@@ -166,6 +166,11 @@ export const OtpVerificationScreen: React.FC<Props> = ({ route, navigation }) =>
     inputRefs.current[0]?.focus();
 
     const res = await apiService.requestOtp(phoneNumber);
+    if (!res.success) {
+      showToast(res.message || 'Failed to resend OTP. Please try again.', 'error', 4000);
+      return;
+    }
+
     if (res.mockOtp) {
       showToast(`New Verification Code: ${res.mockOtp}`, 'info', 5000);
       const digits = res.mockOtp.split('').slice(0, 6);

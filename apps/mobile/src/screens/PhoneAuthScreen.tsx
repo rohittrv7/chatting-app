@@ -62,7 +62,16 @@ export const PhoneAuthScreen: React.FC<Props> = ({ navigation }) => {
     }
 
     const res = await apiService.requestOtp(clean10);
-    showToast(`Verification OTP Sent: ${res.mockOtp}`, 'info', 5000);
+    if (!res.success) {
+      showToast(res.message || 'Failed to send OTP. Please try again.', 'error', 4000);
+      return;
+    }
+
+    if (res.mockOtp) {
+      showToast(`Verification OTP Sent: ${res.mockOtp}`, 'info', 5000);
+    } else {
+      showToast('Verification OTP Sent Successfully', 'info', 3000);
+    }
 
     Animated.sequence([
       Animated.timing(btnScale, {
