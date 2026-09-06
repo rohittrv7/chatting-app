@@ -607,7 +607,10 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
       if (!text) return;
 
       let targetId =
-        recipientDbId || (route.params as any)?.recipientDbId || currentConv?.recipientDbId;
+        resolvedRecipientId ||
+        recipientDbId ||
+        (route.params as any)?.recipientDbId ||
+        currentConv?.recipientDbId;
       if (!targetId && token) {
         const handle = (
           currentConv?.username ||

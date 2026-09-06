@@ -98,52 +98,16 @@ const SmartAvatarComponent: React.FC<SmartAvatarProps> = ({
   const handleImageError = (e?: any) => {
     if (!resolvedUri) return;
 
-    // Immediately trigger fallback view so UI never flickers or waits
+    // Immediately trigger fallback view and stay on fallback so UI never flickers or blinks
     setImageError(true);
 
     const errorMsg = String(e?.nativeEvent?.error || '');
     const isDirect404 = errorMsg.includes('404');
 
-    if (isDirect404) {
-      failedAvatarMap.set(resolvedUri, { timestamp: Date.now(), isPermanent404: true });
-      return;
-    }
-
-    const existing = failedAvatarMap.get(resolvedUri);
-    if (!existing || !existing.isPermanent404) {
-      // Record generic failure with current timestamp
-      failedAvatarMap.set(resolvedUri, { timestamp: Date.now(), isPermanent404: false });
-
-      // Probe URL status asynchronously to permanently blacklist genuine 404s
-      if (
-        typeof fetch === 'function' &&
-        (resolvedUri.startsWith('http://') || resolvedUri.startsWith('https://'))
-      ) {
-        const headers: Record<string, string> = {};
-        const token = getAuthToken();
-        if (token) {
-          headers['Authorization'] = `Bearer ${token}`;
-        }
-
-        fetch(resolvedUri, { method: 'HEAD', headers })
-          .then((res) => {
-            if (res.status === 404) {
-              // Real 404: permanently blacklist!
-              failedAvatarMap.set(resolvedUri, { timestamp: Date.now(), isPermanent404: true });
-            } else if (res.status === 401 || res.status === 403) {
-              // Protected route: token may be missing/expired -> treated as transient with 5-min retry, NOT permanent 404
-              failedAvatarMap.set(resolvedUri, { timestamp: Date.now(), isPermanent404: false });
-            } else if (res.ok) {
-              // Succeeded on probe: remove from failure map and restore image
-              failedAvatarMap.delete(resolvedUri);
-              setImageError(false);
-            }
-          })
-          .catch(() => {
-            // Network dropped or unreachable: remains transient with 5-minute expiry
-          });
-      }
-    }
+    failedAvatarMap.set(resolvedUri, {
+      timestamp: Date.now(),
+      isPermanent404: isDirect404,
+    });
   };
 
   // Compute resolved display letter
@@ -156,9 +120,19 @@ const SmartAvatarComponent: React.FC<SmartAvatarProps> = ({
   const effectiveUri = !imageError && !isFailed ? resolvedUri : null;
 
   if (effectiveUri) {
+    const token = getAuthToken();
+    const source = {
+      uri: effectiveUri,
+      headers:
+        token && (effectiveUri.startsWith('http://') || effectiveUri.startsWith('https://'))
+          ? { Authorization: `Bearer ${token}` }
+          : undefined,
+      cache: 'force-cache' as const,
+    };
+
     return (
       <Image
-        source={{ uri: effectiveUri }}
+        source={source}
         style={[
           styles.image,
           {

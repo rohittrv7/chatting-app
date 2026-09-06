@@ -389,6 +389,67 @@ class WebRTCService {
     }
   }
 
+  /** Mid-call switch: dynamically acquire camera video track and attach to active call */
+  public async upgradeToVideo(): Promise<boolean> {
+    const webrtc = getWebRTC();
+    if (!webrtc || !webrtc.mediaDevices) return false;
+
+    this.isVideoCall = true;
+    try {
+      const existingVideoTracks = this.localStream?.getVideoTracks() || [];
+      if (existingVideoTracks.length > 0) {
+        existingVideoTracks.forEach((t: MediaStreamTrack) => {
+          t.enabled = true;
+        });
+        this._notifyLocalStream(this.localStream);
+        return true;
+      }
+
+      const videoStream = (await webrtc.mediaDevices.getUserMedia({
+        audio: false,
+        video: {
+          facingMode: 'user',
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          frameRate: { ideal: 30, max: 30 },
+        },
+      } as any)) as MediaStream;
+
+      const videoTrack = videoStream.getVideoTracks()[0];
+      if (videoTrack) {
+        if (this.localStream) {
+          this.localStream.addTrack(videoTrack);
+        } else {
+          this.localStream = videoStream;
+        }
+
+        if (this.peerConnection) {
+          try {
+            this.peerConnection.addTrack(videoTrack, this.localStream);
+          } catch (e) {
+            console.warn('⚠️ [WebRTC] addTrack video error on upgrade:', e);
+          }
+        }
+
+        this._notifyLocalStream(this.localStream);
+        return true;
+      }
+    } catch (err) {
+      console.warn('⚠️ [WebRTC] Failed to capture video on switch:', err);
+    }
+    return false;
+  }
+
+  public disableVideo(): void {
+    if (this.localStream) {
+      try {
+        this.localStream.getVideoTracks().forEach((track: MediaStreamTrack) => {
+          track.enabled = false;
+        });
+      } catch (_) {}
+    }
+  }
+
   private async _flushPendingIceCandidates() {
     if (!this.peerConnection || !this.peerConnection.remoteDescription) return;
     const count = this.pendingIceCandidates.length;

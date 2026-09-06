@@ -902,7 +902,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const tok = tokenRef.current;
     if (!tok) return;
     const now = Date.now();
-    if (!force && (isSyncingConvsRef.current || now - lastConvsSyncTimeRef.current < 15000)) {
+    if (!force && (isSyncingConvsRef.current || now - lastConvsSyncTimeRef.current < 60000)) {
       return;
     }
     isSyncingConvsRef.current = true;

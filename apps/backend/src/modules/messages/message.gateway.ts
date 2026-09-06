@@ -68,7 +68,7 @@ export const EVT_MISSED_MESSAGES = 'messages:missed'; // offline gap fill on rec
   namespace: '/',
   transports: ['polling', 'websocket'],
   maxHttpBufferSize: 5e7, // 50MB buffer to prevent transport close on high-res video/audio streaming
-  pingTimeout: 15000,
+  pingTimeout: 20000,
   pingInterval: 10000,
 })
 export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect {

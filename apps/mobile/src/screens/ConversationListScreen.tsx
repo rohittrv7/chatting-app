@@ -318,6 +318,8 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
   const searchQueryRef = useRef(searchQuery);
   searchQueryRef.current = searchQuery;
 
+  const lastScreenFocusSyncRef = useRef(0);
+
   useFocusEffect(
     useCallback(() => {
       // Auto-clear search ONLY when returning back from Chat or Contacts
@@ -328,7 +330,12 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
         isNavigatedToChatRef.current = false;
       }
 
-      syncServerConversations().catch(() => {});
+      const now = Date.now();
+      // Only sync if list is empty or more than 60 seconds have passed since last sync
+      if (conversations.length === 0 || now - lastScreenFocusSyncRef.current > 60000) {
+        lastScreenFocusSyncRef.current = now;
+        syncServerConversations().catch(() => {});
+      }
 
       const onBackPress = () => {
         if (isSearchingRef.current || searchQueryRef.current) {

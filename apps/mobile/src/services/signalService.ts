@@ -23,13 +23,40 @@ import {
   stringToArrayBuffer,
   arrayBufferToString,
 } from './signalProtocolStore';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { apiService } from './apiService';
 
 export interface SignalCiphertextEntry {
   deviceId: number;
   ciphertext: string;
-  messageType: number; // 3 = PREKEY_BUNDLE, 1 = WHISPER
+  messageType?: number;
 }
+
+// ── Positive & Negative Session Caches ─────────────────────────────────────────
+// Positive cache: set of addresses (e.g. `${userId}.${deviceId}`) with verified established sessions
+const activeSessionCache = new Set<string>();
+let sessionsPreloaded = false;
+
+async function preloadActiveSessions(): Promise<void> {
+  if (sessionsPreloaded) return;
+  try {
+    const keys = await AsyncStorage.getAllKeys();
+    const prefix = '@sig_sess_';
+    for (const k of keys) {
+      if (k.startsWith(prefix)) {
+        const addr = k.substring(prefix.length);
+        if (addr) activeSessionCache.add(addr);
+      }
+    }
+    sessionsPreloaded = true;
+  } catch (err) {
+    console.warn('⚠️ [Signal] Failed to preload session keys:', err);
+  }
+}
+
+// Negative cache: temporary cooldown for recipients who have not uploaded key bundles
+const failedBundleCache = new Map<string, number>();
+const FAILED_BUNDLE_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes
 
 class SignalService {
   private isInitialized = false;
@@ -126,6 +153,7 @@ class SignalService {
   ): Promise<SignalCiphertextEntry[]> {
     if (!plaintext) return [];
     await signalProtocolStore.init();
+    await preloadActiveSessions();
 
     // 1. Fetch recipient active devices (with caching)
     let devices: Array<{ deviceId: number }> | undefined = this.deviceCache.get(recipientUserId);
@@ -147,36 +175,62 @@ class SignalService {
 
     for (const dev of devices) {
       const targetAddress = new SignalProtocolAddress(recipientUserId, dev.deviceId);
+      const targetKey = targetAddress.toString();
       try {
-        // Check if an established session already exists
-        const hasSession = await signalProtocolStore.loadSession(targetAddress.toString());
+        // ── Positive Session Cache Check ──────────────────────────────────────
+        // Fast in-memory check: if session is already established, REUSE IT directly!
+        let hasSession = activeSessionCache.has(targetKey);
 
         if (!hasSession) {
-          // Fetch PreKey bundle from backend for this target device
-          const bundle = await apiService.getPreKeyBundle(recipientUserId, dev.deviceId, token);
-          if (bundle) {
-            // Signal Protocol processPreKey: verifies SPK signature against IdentityKey!
-            const sessionBuilder = new SessionBuilder(signalProtocolStore, targetAddress);
-            await sessionBuilder.processPreKey({
-              identityKey: base64ToArrayBuffer(bundle.identityPublicKey),
-              registrationId: bundle.registrationId,
-              signedPreKey: {
-                keyId: bundle.signedPreKeyId,
-                publicKey: base64ToArrayBuffer(bundle.signedPrePublicKey),
-                signature: base64ToArrayBuffer(bundle.signedPreKeySignature),
-              },
-              preKey: bundle.oneTimePrePublicKey
-                ? {
-                    keyId: bundle.oneTimePreKeyId ?? 0,
-                    publicKey: base64ToArrayBuffer(bundle.oneTimePrePublicKey),
-                  }
-                : undefined,
-            });
+          // Check storage directly in case session was established in a prior run
+          const storedSession = await signalProtocolStore.loadSession(targetKey);
+          if (storedSession) {
+            activeSessionCache.add(targetKey);
+            hasSession = true;
+          }
+        }
+
+        // Only fetch PreKey bundle if NO session exists yet (initial X3DH handshake)
+        if (!hasSession) {
+          const cacheKey = `${recipientUserId}:${dev.deviceId}`;
+          const lastFail = failedBundleCache.get(cacheKey);
+          if (!lastFail || Date.now() - lastFail > FAILED_BUNDLE_COOLDOWN_MS) {
+            console.log(`🔐 [Signal] Establishing initial X3DH session with ${targetKey}`);
+            const bundle = await apiService.getPreKeyBundle(recipientUserId, dev.deviceId, token);
+            if (bundle) {
+              // Signal Protocol processPreKey: verifies SPK signature against IdentityKey!
+              const sessionBuilder = new SessionBuilder(signalProtocolStore, targetAddress);
+              await sessionBuilder.processPreKey({
+                identityKey: base64ToArrayBuffer(bundle.identityPublicKey),
+                registrationId: bundle.registrationId,
+                signedPreKey: {
+                  keyId: bundle.signedPreKeyId,
+                  publicKey: base64ToArrayBuffer(bundle.signedPrePublicKey),
+                  signature: base64ToArrayBuffer(bundle.signedPreKeySignature),
+                },
+                preKey: bundle.oneTimePrePublicKey
+                  ? {
+                      keyId: bundle.oneTimePreKeyId ?? 0,
+                      publicKey: base64ToArrayBuffer(bundle.oneTimePrePublicKey),
+                    }
+                  : undefined,
+              });
+
+              // Mark as active in positive cache so subsequent messages reuse it!
+              activeSessionCache.add(targetKey);
+              failedBundleCache.delete(cacheKey);
+            } else {
+              // Negative cache: prevent repeated HTTP calls for users without keys
+              failedBundleCache.set(cacheKey, Date.now());
+            }
           }
         }
 
         const cipher = new SessionCipher(signalProtocolStore, targetAddress);
         const encrypted = await cipher.encrypt(plaintextBuffer);
+
+        // Record successful session in cache
+        activeSessionCache.add(targetKey);
 
         results.push({
           deviceId: dev.deviceId,
@@ -188,6 +242,8 @@ class SignalService {
           `⚠️ [Signal] Failed encrypting for ${recipientUserId}:${dev.deviceId}:`,
           devErr,
         );
+        // If session is corrupt or invalidated, evict from cache so fresh bundle can be fetched on next try
+        activeSessionCache.delete(targetKey);
       }
     }
 
@@ -204,6 +260,8 @@ class SignalService {
     messageType: number,
   ): Promise<string> {
     await signalProtocolStore.init();
+    await preloadActiveSessions();
+
     const senderAddress = new SignalProtocolAddress(senderUserId, senderDeviceId || 1);
     const cipher = new SessionCipher(signalProtocolStore, senderAddress);
 
@@ -218,6 +276,9 @@ class SignalService {
         // Double Ratchet message
         decryptedBuf = await cipher.decryptWhisperMessage(binaryCiphertext, 'binary');
       }
+
+      // Record incoming sender session in active cache
+      activeSessionCache.add(senderAddress.toString());
 
       return arrayBufferToString(decryptedBuf);
     } catch (err: any) {

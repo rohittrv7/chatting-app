@@ -15,6 +15,7 @@ import { AuthGateway } from './auth.gateway';
 import { RequestOtpDto, VerifyOtpDto, RefreshTokenDto, SocketEvent } from '@chat/shared-contracts';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 
 /** argon2id options per Requirement 1.2 and design spec (time ≥2, memory 65536 KB) */
 const ARGON2_OPTIONS = {
@@ -23,6 +24,34 @@ const ARGON2_OPTIONS = {
   memoryCost: 65536,
   parallelism: 1,
 } as const;
+
+/** Fast constant-time SHA-256 hash for high-entropy 256-bit refresh tokens */
+function hashRefreshToken(token: string): string {
+  return 'sha256:' + crypto.createHash('sha256').update(token).digest('hex');
+}
+
+/** Verify refresh token supporting both fast SHA-256 and legacy argon2 hashes */
+async function verifyRefreshTokenHash(storedHash: string, rawToken: string): Promise<boolean> {
+  if (storedHash.startsWith('sha256:')) {
+    const computed = hashRefreshToken(rawToken);
+    try {
+      return (
+        storedHash.length === computed.length &&
+        crypto.timingSafeEqual(Buffer.from(storedHash), Buffer.from(computed))
+      );
+    } catch {
+      return false;
+    }
+  }
+  if (storedHash.startsWith('$argon2')) {
+    try {
+      return await argon2.verify(storedHash, rawToken);
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
 
 /** Maximum number of devices per user account */
 const MAX_DEVICES = 5;
@@ -187,7 +216,7 @@ export class AuthService {
       ),
     });
 
-    const tokenHash = (await argon2.hash(rawRefreshToken, ARGON2_OPTIONS)) as string;
+    const tokenHash = hashRefreshToken(rawRefreshToken);
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
     await this.authRepository.saveRefreshToken(device.id, tokenHash, expiresAt);
@@ -224,12 +253,12 @@ export class AuthService {
         throw new UnauthorizedException('Device not found or session terminated');
       }
 
-      // Verify the supplied raw token matches one of the stored hashes for this device
+      // Verify the supplied raw token matches one of the stored hashes for this device (<1ms)
       const storedTokens = await this.authRepository.findRefreshTokensByDeviceId(device.id);
       let matchedToken: { id: string } | null = null;
 
       for (const stored of storedTokens) {
-        const valid = await argon2.verify(stored.tokenHash, dto.refreshToken);
+        const valid = await verifyRefreshTokenHash(stored.tokenHash, dto.refreshToken);
         if (valid) {
           matchedToken = stored;
           break;
@@ -263,7 +292,7 @@ export class AuthService {
         ),
       });
 
-      const tokenHash = (await argon2.hash(newRefreshToken, ARGON2_OPTIONS)) as string;
+      const tokenHash = hashRefreshToken(newRefreshToken);
       const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
       await this.authRepository.saveRefreshToken(device.id, tokenHash, expiresAt);

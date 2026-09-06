@@ -48,6 +48,8 @@ export interface ActiveCallSession {
   conversationId?: string;
   sdp?: any;
   endReason?: string;
+  videoSwitchPending?: boolean;
+  videoSwitchRequestedBy?: string;
 }
 
 export type CallCompletedLog = {
@@ -339,19 +341,31 @@ class CallService {
     });
 
     // ── Video Switch Request / Accept / Reject ───────────────────────────────
-    socketService.on(EVT_CALL_SWITCH_VIDEO, (payload: any) => {
+    socketService.on(EVT_CALL_SWITCH_VIDEO, async (payload: any) => {
       console.log('📹 Switch video event received from remote:', payload);
       if (!this.currentSession || this.currentSession.callId !== payload.callId) return;
 
-      const isVideo =
-        payload.action === 'request' || payload.action === 'accept' || payload.isVideo === true;
-      this.currentSession.isVideoEnabled = isVideo;
-      this.currentSession.callType = isVideo ? 'video' : 'audio';
-      if (isVideo) {
+      if (payload.action === 'request') {
+        // Remote requested video: mark pending and notify UI (do NOT flip isVideoEnabled yet!)
+        this.currentSession.videoSwitchPending = true;
+        this.currentSession.videoSwitchRequestedBy = payload.senderId;
+        this.notify();
+      } else if (payload.action === 'accept') {
+        // Remote accepted our request: activate video stream
+        this.currentSession.videoSwitchPending = false;
+        this.currentSession.isVideoEnabled = true;
+        this.currentSession.callType = 'video';
         this.currentSession.isSpeakerOn = true;
+        await webrtcService.upgradeToVideo();
+        this.notify();
+      } else if (payload.action === 'reject') {
+        // Remote rejected: remain on audio
+        this.currentSession.videoSwitchPending = false;
+        this.currentSession.isVideoEnabled = false;
+        this.currentSession.callType = 'audio';
+        webrtcService.disableVideo();
+        this.notify();
       }
-      webrtcService.setVideoEnabled(isVideo);
-      this.notify();
     });
   }
 
@@ -475,18 +489,19 @@ class CallService {
     if (callId && this.currentSession.callId !== callId) return;
 
     this.clearCallTimeout();
-    // Step 1: Explicitly stop and unload expo-av ringback/ringtone player first
-    await soundService.stopCallSounds();
+    // Non-blocking sound unload for instant UI transition
+    soundService.stopCallSounds().catch(() => {});
     const isVideo = this.currentSession.callType === 'video';
-    // Step 2: Start native InCallManager audio session cleanly without expo-av overlap
     audioRoutingService.start(isVideo);
-    // Step 3: Play subtle connected chime (non-blocking)
     soundService.playCallConnectedSound().catch(() => {});
 
+    // INSTANT 0ms visual feedback: transition state immediately!
     this.currentSession.state = 'CONNECTED';
     this.currentSession.startedAt = Date.now();
+    this.startDurationTimer();
+    this.notify();
 
-    // Initialize WebRTC, process offer, and create answer
+    // Background WebRTC handshake
     try {
       await webrtcService.startLocalStream(isVideo);
       await webrtcService.initPeerConnection(
@@ -509,11 +524,7 @@ class CallService {
       console.warn('⚠️ [WebRTC] Error during acceptCall handshake:', err);
       // Callee cannot access mic/camera: reject call immediately so caller knows
       this.rejectCall(this.currentSession.callId, 'media_error');
-      return;
     }
-
-    this.startDurationTimer();
-    this.notify();
   }
 
   public rejectCall(callId?: string, reason = 'declined') {
@@ -639,15 +650,54 @@ class CallService {
     return this.currentSession.isNoiseSuppressionOn;
   }
 
+  public async acceptVideoSwitch() {
+    if (!this.currentSession) return;
+    this.currentSession.videoSwitchPending = false;
+    this.currentSession.isVideoEnabled = true;
+    this.currentSession.callType = 'video';
+    this.currentSession.isSpeakerOn = true;
+    await webrtcService.upgradeToVideo();
+
+    socketService.emit(EVT_CALL_SWITCH_VIDEO, {
+      callId: this.currentSession.callId,
+      targetUserId: this.currentSession.targetUserId,
+      action: 'accept',
+      isVideo: true,
+    });
+    this.notify();
+  }
+
+  public rejectVideoSwitch() {
+    if (!this.currentSession) return;
+    this.currentSession.videoSwitchPending = false;
+
+    socketService.emit(EVT_CALL_SWITCH_VIDEO, {
+      callId: this.currentSession.callId,
+      targetUserId: this.currentSession.targetUserId,
+      action: 'reject',
+      isVideo: false,
+    });
+    this.notify();
+  }
+
   public toggleVideoSwitch(): boolean {
     if (!this.currentSession) return false;
+
+    // If remote requested a video switch, tapping accepts it!
+    if (this.currentSession.videoSwitchPending) {
+      this.acceptVideoSwitch();
+      return true;
+    }
+
     const newVideoState = !this.currentSession.isVideoEnabled;
     this.currentSession.isVideoEnabled = newVideoState;
     this.currentSession.callType = newVideoState ? 'video' : 'audio';
     if (newVideoState) {
       this.currentSession.isSpeakerOn = true;
+      webrtcService.upgradeToVideo().catch(() => {});
+    } else {
+      webrtcService.disableVideo();
     }
-    webrtcService.setVideoEnabled(newVideoState);
 
     socketService.emit(EVT_CALL_SWITCH_VIDEO, {
       callId: this.currentSession.callId,

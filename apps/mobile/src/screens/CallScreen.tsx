@@ -85,11 +85,11 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
   const [callSession, setCallSession] = useState<ActiveCallSession | null>(
     callService.getSession(),
   );
-  const [isMuted, setIsMuted] = useState(false);
-  const [isSpeakerOn, setIsSpeakerOn] = useState(true);
-  const [isVideo, setIsVideo] = useState(initialIsVideo || false);
-  const [isConnected, setIsConnected] = useState(false);
-  const [secondsElapsed, setSecondsElapsed] = useState(0);
+  const isMuted = callSession?.isMuted ?? false;
+  const isSpeakerOn = callSession?.isSpeakerOn ?? true;
+  const isVideo = callSession?.isVideoEnabled ?? initialIsVideo ?? false;
+  const isConnected = callSession?.state === 'CONNECTED';
+  const secondsElapsed = callSession?.durationSeconds ?? 0;
   const [cameraFacing, setCameraFacing] = useState<'front' | 'back'>('front');
 
   // Audio Routing & Bluetooth
@@ -99,9 +99,7 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
   const [isRouteModalVisible, setIsRouteModalVisible] = useState(false);
 
   // Runtime Noise Cancellation
-  const [isNoiseCancellationOn, setIsNoiseCancellationOn] = useState(
-    callSession?.isNoiseSuppressionOn || false,
-  );
+  const isNoiseCancellationOn = callSession?.isNoiseSuppressionOn ?? false;
 
   // Floating Reaction
   const [floatingReaction, setFloatingReaction] = useState<string | null>(null);
@@ -144,7 +142,6 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
   useEffect(() => {
     const unsubAudio = audioRoutingService.addListener((status) => {
       setAudioStatus(status);
-      setIsSpeakerOn(status.selectedDevice === 'SPEAKER_PHONE');
     });
 
     return unsubAudio;
@@ -201,18 +198,11 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
     };
   }, []);
 
-  // Sync call state with CallService
+  // Sync call state with CallService (single state update, eliminating 7 cascaded re-renders)
   useEffect(() => {
     const unsubscribe = callService.addListener((session) => {
       setCallSession(session);
-      if (session) {
-        setIsMuted(session.isMuted);
-        setIsSpeakerOn(session.isSpeakerOn);
-        setIsVideo(session.isVideoEnabled);
-        setIsConnected(session.state === 'CONNECTED');
-        setSecondsElapsed(session.durationSeconds);
-        setIsNoiseCancellationOn(session.isNoiseSuppressionOn);
-      } else {
+      if (!session) {
         safeGoBack();
       }
     });
@@ -233,8 +223,7 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
   }, [callSession?.state, safeGoBack]);
 
   const handleToggleMute = () => {
-    const newMute = callService.toggleMute();
-    setIsMuted(newMute);
+    callService.toggleMute();
   };
 
   const handleAudioRoutePress = () => {
@@ -259,8 +248,7 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
   };
 
   const handleToggleVideo = () => {
-    const newVideo = callService.toggleVideoSwitch();
-    setIsVideo(newVideo);
+    callService.toggleVideoSwitch();
   };
 
   const handleFlipCamera = () => {
@@ -274,8 +262,7 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
   };
 
   const handleToggleNoiseCancellation = async () => {
-    const newState = await callService.toggleNoiseSuppression();
-    setIsNoiseCancellationOn(newState);
+    await callService.toggleNoiseSuppression();
   };
 
   const handleReaction = (emoji: string) => {
@@ -410,6 +397,30 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
           <Lock size={16} color="#FFFFFF" />
         </View>
       </View>
+
+      {/* Video Switch Request Banner */}
+      {callSession?.videoSwitchPending && (
+        <View style={styles.switchBanner}>
+          <View style={styles.switchBannerTextCol}>
+            <Text style={styles.switchBannerTitle}>Video Call Request</Text>
+            <Text style={styles.switchBannerSub}>{displayName} wants to switch to video</Text>
+          </View>
+          <TouchableOpacity
+            style={styles.switchAcceptBtn}
+            onPress={() => callService.acceptVideoSwitch()}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.switchAcceptText}>Accept</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.switchDeclineBtn}
+            onPress={() => callService.rejectVideoSwitch()}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.switchDeclineText}>Decline</Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
       {/* Main Body */}
       {isVideo ? (
@@ -1119,5 +1130,56 @@ const styles = StyleSheet.create({
     color: '#94A3B8',
     fontSize: 12,
     marginTop: 2,
+  },
+  switchBanner: {
+    marginHorizontal: 16,
+    marginTop: 8,
+    marginBottom: 4,
+    padding: 12,
+    borderRadius: 14,
+    backgroundColor: '#1E293B',
+    borderWidth: 1,
+    borderColor: '#3B82F6',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    zIndex: 100,
+  },
+  switchBannerTextCol: {
+    flex: 1,
+    marginRight: 10,
+  },
+  switchBannerTitle: {
+    color: '#38BDF8',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  switchBannerSub: {
+    color: '#94A3B8',
+    fontSize: 12,
+    marginTop: 2,
+  },
+  switchAcceptBtn: {
+    backgroundColor: '#10B981',
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 8,
+    marginRight: 8,
+  },
+  switchAcceptText: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  switchDeclineBtn: {
+    backgroundColor: '#EF4444',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 8,
+  },
+  switchDeclineText: {
+    color: '#FFFFFF',
+    fontWeight: '600',
+    fontSize: 13,
   },
 });

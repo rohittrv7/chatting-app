@@ -146,13 +146,23 @@ class RealtimeSocketService {
       if (this.currentToken) this._reconnect();
     });
 
-    // ⚡ FIX 3: Reconnect immediately when app transitions from background to active
+    // ⚡ Instant disconnect on background for immediate offline presence; instant reconnect on active
     AppState.addEventListener('change', (nextState: AppStateStatus) => {
       if (nextState === 'active' && this.currentToken) {
         if (!this.socket || !this.socket.connected) {
           console.log('📱 [Socket] App active in foreground — triggering instant reconnect');
           this._reconnect();
         }
+      } else if (
+        (nextState === 'background' || nextState === 'inactive') &&
+        this.socket?.connected
+      ) {
+        console.log(
+          '📱 [Socket] App transitioned to background — closing socket for instant offline presence',
+        );
+        try {
+          this.socket.disconnect();
+        } catch (_) {}
       }
     });
   }
