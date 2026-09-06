@@ -152,6 +152,11 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
   const conversationsRef = useRef(conversations);
   conversationsRef.current = conversations;
 
+  // 🛡️ Request all permissions upfront on launch (Contacts, Camera, Mic, Media Library)
+  useEffect(() => {
+    requestAllAppPermissions().catch(() => {});
+  }, []);
+
   useEffect(() => {
     const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     const queryAllPresences = () => {

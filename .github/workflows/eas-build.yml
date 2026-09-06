@@ -22,6 +22,8 @@ jobs:
   build-apk:
     name: Build Android APK (${{ inputs.profile || 'preview' }})
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout Source Code
@@ -67,3 +69,15 @@ jobs:
           name: chat-app-preview-apk
           path: apps/mobile/chat-app-preview.apk
           if-no-files-found: error
+
+      - name: Create Direct GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: success()
+        with:
+          tag_name: preview-apk-build-${{ github.run_number }}
+          name: WhatsApp Connect APK (Build #${{ github.run_number }})
+          files: apps/mobile/chat-app-preview.apk
+          draft: false
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

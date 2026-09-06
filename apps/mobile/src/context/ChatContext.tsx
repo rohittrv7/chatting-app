@@ -682,9 +682,39 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       isStarred: false,
     };
 
+    // 1. Dispatch to canonical server conversationId
     dispatch(appendMessage({ conversationId: convId, message: incomingMsg }));
 
-    const isUserLooking = activeConvIdRef.current === convId;
+    // 2. Find any matching existing conversation by ID or recipientDbId
+    const existingConv = conversationsRef.current.find(
+      (c) => c.id === convId || (c.recipientDbId && c.recipientDbId === payload.senderId),
+    );
+
+    // 3. Also append to local conversation ID if different (e.g. deterministic or contact ID)
+    if (existingConv && existingConv.id !== convId) {
+      dispatch(
+        appendMessage({
+          conversationId: existingConv.id,
+          message: { ...incomingMsg, conversationId: existingConv.id },
+        }),
+      );
+    }
+    if (
+      payload.senderId &&
+      payload.senderId !== convId &&
+      (!existingConv || existingConv.id !== payload.senderId)
+    ) {
+      dispatch(
+        appendMessage({
+          conversationId: payload.senderId,
+          message: { ...incomingMsg, conversationId: payload.senderId },
+        }),
+      );
+    }
+
+    const isUserLooking =
+      activeConvIdRef.current === convId ||
+      (existingConv ? activeConvIdRef.current === existingConv.id : false);
 
     // 🎵 WhatsApp Style Notification Sounds:
     // If inside chat -> play gentle in-chat pop sound
@@ -708,9 +738,6 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
               : 'Message');
 
     // Update or create conversation list entry
-    const existingConv = conversationsRef.current.find(
-      (c) => c.id === convId || (c.recipientDbId && c.recipientDbId === payload.senderId),
-    );
     if (existingConv) {
       _updateLastMessageInternal(
         existingConv.id,

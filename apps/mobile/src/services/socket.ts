@@ -139,6 +139,8 @@ class RealtimeSocketService {
   private currentUserId = '';
   private currentToken = '';
   private eventListeners: Map<string, Set<(...args: any[]) => void>> = new Map();
+  private disconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private inCallChecker: (() => boolean) | null = null;
 
   constructor() {
     // Reconnect when server URL toggles (Local ↔ Live in dev)
@@ -146,25 +148,64 @@ class RealtimeSocketService {
       if (this.currentToken) this._reconnect();
     });
 
-    // ⚡ Instant disconnect on background for immediate offline presence; instant reconnect on active
+    // ⚡ AppState listener with Grace Period (4s) & Active Call Protection:
     AppState.addEventListener('change', (nextState: AppStateStatus) => {
-      if (nextState === 'active' && this.currentToken) {
-        if (!this.socket || !this.socket.connected) {
-          console.log('📱 [Socket] App active in foreground — triggering instant reconnect');
+      if (nextState === 'active') {
+        if (this.disconnectTimer) {
+          console.log(
+            '📱 [Socket] App returned to active within grace period — cancelling disconnect',
+          );
+          clearTimeout(this.disconnectTimer);
+          this.disconnectTimer = null;
+        }
+        if (this.currentToken && (!this.socket || !this.socket.connected)) {
+          console.log('📱 [Socket] App active in foreground — triggering reconnect');
           this._reconnect();
         }
-      } else if (
-        (nextState === 'background' || nextState === 'inactive') &&
-        this.socket?.connected
-      ) {
-        console.log(
-          '📱 [Socket] App transitioned to background — closing socket for instant offline presence',
-        );
-        try {
-          this.socket.disconnect();
-        } catch (_) {}
+      } else if (nextState === 'background' || nextState === 'inactive') {
+        // Active call protection: NEVER disconnect socket during an active call (proximity sensor, permissions, overlay)
+        if (this.inCallChecker && this.inCallChecker()) {
+          console.log(
+            `📱 [Socket] Active call in progress — keeping socket alive despite AppState '${nextState}'`,
+          );
+          if (this.disconnectTimer) {
+            clearTimeout(this.disconnectTimer);
+            this.disconnectTimer = null;
+          }
+          return;
+        }
+
+        if (this.socket?.connected && !this.disconnectTimer) {
+          console.log(
+            `📱 [Socket] App transitioned to '${nextState}' — starting 4s grace timer before disconnect`,
+          );
+          this.disconnectTimer = setTimeout(() => {
+            this.disconnectTimer = null;
+            // Double check call state before disconnecting
+            if (this.inCallChecker && this.inCallChecker()) {
+              console.log('📱 [Socket] Call started during grace period — keeping socket alive');
+              return;
+            }
+            if (this.socket?.connected) {
+              console.log(
+                '📱 [Socket] Grace period elapsed — disconnecting socket for offline presence',
+              );
+              try {
+                this.socket.disconnect();
+              } catch (_) {}
+            }
+          }, 4000);
+        }
       }
     });
+  }
+
+  /**
+   * Register a checker function to test if a call is active.
+   * Prevents socket disconnection when proximity sensor / permissions change AppState to inactive.
+   */
+  public setInCallChecker(fn: () => boolean): void {
+    this.inCallChecker = fn;
   }
 
   // ─── Public API ────────────────────────────────────────────────────────────

@@ -65,6 +65,10 @@ export function base64ToArrayBuffer(base64: string): ArrayBuffer {
 }
 
 export function stringToArrayBuffer(str: string): ArrayBuffer {
+  if (typeof TextEncoder !== 'undefined') {
+    const uint8 = new TextEncoder().encode(str);
+    return uint8.buffer.slice(uint8.byteOffset, uint8.byteOffset + uint8.byteLength);
+  }
   const unescaped = unescape(encodeURIComponent(str));
   const bytes = new Uint8Array(unescaped.length);
   for (let i = 0; i < unescaped.length; i++) {
@@ -75,6 +79,11 @@ export function stringToArrayBuffer(str: string): ArrayBuffer {
 
 export function arrayBufferToString(buffer: ArrayBufferLike | Uint8Array): string {
   const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer as ArrayBuffer);
+  if (typeof TextDecoder !== 'undefined') {
+    try {
+      return new TextDecoder('utf-8').decode(bytes);
+    } catch (_) {}
+  }
   let encoded = '';
   for (let i = 0; i < bytes.length; i++) {
     encoded += String.fromCharCode(bytes[i]);

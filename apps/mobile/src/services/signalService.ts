@@ -232,9 +232,15 @@ class SignalService {
         // Record successful session in cache
         activeSessionCache.add(targetKey);
 
+        const encBody = encrypted.body || '';
+        const bodyBytes = new Uint8Array(encBody.length);
+        for (let i = 0; i < encBody.length; i++) {
+          bodyBytes[i] = encBody.charCodeAt(i) & 0xff;
+        }
+
         results.push({
           deviceId: dev.deviceId,
-          ciphertext: arrayBufferToBase64(stringToArrayBuffer(encrypted.body)),
+          ciphertext: arrayBufferToBase64(bodyBytes),
           messageType: encrypted.type, // 3 = PREKEY, 1 = WHISPER
         });
       } catch (devErr) {
@@ -265,16 +271,16 @@ class SignalService {
     const senderAddress = new SignalProtocolAddress(senderUserId, senderDeviceId || 1);
     const cipher = new SessionCipher(signalProtocolStore, senderAddress);
 
-    const binaryCiphertext = arrayBufferToString(base64ToArrayBuffer(ciphertextBase64));
+    const rawCiphertextBuffer = base64ToArrayBuffer(ciphertextBase64);
 
     try {
       let decryptedBuf: ArrayBuffer;
       if (messageType === 3) {
         // PreKey / X3DH initiating message
-        decryptedBuf = await cipher.decryptPreKeyWhisperMessage(binaryCiphertext, 'binary');
+        decryptedBuf = await cipher.decryptPreKeyWhisperMessage(rawCiphertextBuffer, 'binary');
       } else {
         // Double Ratchet message
-        decryptedBuf = await cipher.decryptWhisperMessage(binaryCiphertext, 'binary');
+        decryptedBuf = await cipher.decryptWhisperMessage(rawCiphertextBuffer, 'binary');
       }
 
       // Record incoming sender session in active cache

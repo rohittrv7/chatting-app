@@ -209,6 +209,56 @@ export const apiService = {
 
     return refreshInFlight;
   },
+
+  /**
+   * Universal authenticated fetch wrapper.
+   * - Awaits any in-flight token refresh to prevent redundant 401 storms.
+   * - Seamlessly catches 401, refreshes token once, and retries original request.
+   */
+  async fetchWithAuth(
+    url: string,
+    options: RequestInit = {},
+    tokenOverride?: string,
+  ): Promise<Response> {
+    if (refreshInFlight) {
+      try {
+        await refreshInFlight;
+      } catch (_) {}
+    }
+
+    let token = tokenOverride || (await safeStorage.getItem(AUTH_STORAGE_KEYS.TOKEN));
+    const customHeaders: Record<string, string> = {};
+    if (options.headers) {
+      if (typeof (options.headers as any).forEach === 'function') {
+        (options.headers as any).forEach((value: string, key: string) => {
+          customHeaders[key] = value;
+        });
+      } else if (Array.isArray(options.headers)) {
+        for (const [key, value] of options.headers) customHeaders[key] = value;
+      } else {
+        Object.assign(customHeaders, options.headers);
+      }
+    }
+    if (token) {
+      customHeaders['Authorization'] = `Bearer ${token}`;
+    }
+
+    let response = await fetch(url, { ...options, headers: customHeaders });
+
+    if (response.status === 401) {
+      console.log(`🔄 [ApiService] 401 on ${url} — attempting automatic token refresh & retry`);
+      const refreshed = await this.refreshAuthToken();
+      if (refreshed?.accessToken) {
+        customHeaders['Authorization'] = `Bearer ${refreshed.accessToken}`;
+        response = await fetch(url, { ...options, headers: customHeaders });
+      } else {
+        await handleSessionExpired();
+      }
+    }
+
+    return response;
+  },
+
   /**
    * Request OTP from backend API
    */
@@ -512,43 +562,18 @@ export const apiService = {
     const reqBody = { phoneNumbers };
 
     try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify(reqBody),
-      });
-      const durationMs = Date.now() - startTime;
-
-      if (response.status === 401) {
-        devInspector.logApi({
-          url,
+      const response = await this.fetchWithAuth(
+        url,
+        {
           method: 'POST',
-          requestData: reqBody,
-          responseData: { status: 401, error: 'Unauthorized - attempting token refresh' },
-          status: 401,
-          durationMs,
-          fromRedisCache: false,
-          error: '401 Unauthorized',
-        });
-
-        // 🔄 Automatic Token Refresh
-        const refreshed = await this.refreshAuthToken();
-        if (refreshed?.accessToken) {
-          return this.syncContacts(refreshed.accessToken, phoneNumbers);
-        } else {
-          // Both access token and refresh token expired -> log out to Login screen
-          devInspector.logUi(
-            'Auth',
-            'unmount',
-            'Session expired (401) - navigating to Login screen',
-          );
-          await handleSessionExpired();
-          return { registered: [], unregistered: phoneNumbers };
-        }
-      }
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(reqBody),
+        },
+        token,
+      );
+      const durationMs = Date.now() - startTime;
 
       if (response.ok) {
         const json = await response.json();
@@ -863,22 +888,14 @@ export const apiService = {
   async fetchUserConversations(token: string): Promise<any[]> {
     const url = `${getApiBaseUrl()}/conversations`;
     try {
-      const response = await fetch(url, {
-        method: 'GET',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
+      const response = await this.fetchWithAuth(
+        url,
+        {
+          method: 'GET',
+          headers: { 'Content-Type': 'application/json' },
         },
-      });
-
-      if (response.status === 401) {
-        const refreshed = await this.refreshAuthToken();
-        if (refreshed?.accessToken) {
-          return this.fetchUserConversations(refreshed.accessToken);
-        }
-        await handleSessionExpired();
-        return [];
-      }
+        token,
+      );
 
       if (response.ok) {
         const json = await response.json();
@@ -895,22 +912,14 @@ export const apiService = {
   async fetchHistoricalMessages(token: string, conversationId: string): Promise<any[]> {
     const url = `${getApiBaseUrl()}/messages/${conversationId}?limit=50`;
     try {
-      const response = await fetch(url, {
-        method: 'GET',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
+      const response = await this.fetchWithAuth(
+        url,
+        {
+          method: 'GET',
+          headers: { 'Content-Type': 'application/json' },
         },
-      });
-
-      if (response.status === 401) {
-        const refreshed = await this.refreshAuthToken();
-        if (refreshed?.accessToken) {
-          return this.fetchHistoricalMessages(refreshed.accessToken, conversationId);
-        }
-        await handleSessionExpired();
-        return [];
-      }
+        token,
+      );
 
       if (response.ok) {
         const json = await response.json();
@@ -1098,10 +1107,11 @@ export const apiService = {
 
   async getBlockedUsers(token: string): Promise<any[]> {
     try {
-      const response = await fetch(`${getApiBaseUrl()}/auth/users/blocked`, {
-        method: 'GET',
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      const response = await this.fetchWithAuth(
+        `${getApiBaseUrl()}/auth/users/blocked`,
+        { method: 'GET' },
+        token,
+      );
       if (response.ok) {
         const json = await response.json();
         return json.data || json || [];
@@ -1117,10 +1127,11 @@ export const apiService = {
     targetUserId: string,
   ): Promise<{ blockedByMe: boolean; blockedByThem: boolean }> {
     try {
-      const response = await fetch(`${getApiBaseUrl()}/auth/users/block-status/${targetUserId}`, {
-        method: 'GET',
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      const response = await this.fetchWithAuth(
+        `${getApiBaseUrl()}/auth/users/block-status/${targetUserId}`,
+        { method: 'GET' },
+        token,
+      );
       if (response.ok) {
         const json = await response.json();
         return json.data || json || { blockedByMe: false, blockedByThem: false };

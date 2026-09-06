@@ -83,6 +83,7 @@ class CallService {
   public init() {
     if (this.isInitialized) return;
     this.isInitialized = true;
+    socketService.setInCallChecker(() => this.isInCall());
     this.setupSocketListeners();
   }
 
@@ -716,6 +717,14 @@ class CallService {
 
   public getSession(): ActiveCallSession | null {
     return this.currentSession;
+  }
+
+  public isInCall(): boolean {
+    return Boolean(
+      this.currentSession &&
+      this.currentSession.state !== 'IDLE' &&
+      this.currentSession.state !== 'ENDED',
+    );
   }
 
   public addListener(listener: CallListener): () => void {
