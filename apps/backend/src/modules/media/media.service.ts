@@ -321,7 +321,13 @@ export class MediaService implements OnModuleInit {
       throw new BadRequestException('base64Data is required');
     }
 
-    // FIX: Validate MIME type before writing to disk — previously any MIME type could be uploaded
+    const mimeType = dto.mimeType || 'image/jpeg';
+
+    // Allowed MIME types for chat media uploads.
+    // 'application/octet-stream' is explicitly allowed because the mobile client
+    // encrypts media before upload (XSalsa20-Poly1305) — the ciphertext is a raw binary
+    // blob with no recognisable MIME signature. Magic-byte checking is pointless on
+    // encrypted data. The plaintext was already validated client-side before encryption.
     const allowedMimeTypes = [
       'image/jpeg',
       'image/png',
@@ -334,13 +340,12 @@ export class MediaService implements OnModuleInit {
       'audio/ogg',
       'audio/wav',
       'application/pdf',
+      'application/octet-stream', // encrypted media blobs
     ];
-    const mimeType = dto.mimeType || 'image/jpeg';
     if (!allowedMimeTypes.includes(mimeType)) {
       throw new BadRequestException(`MIME type '${mimeType}' is not allowed for direct upload`);
     }
 
-    // FIX: Validate extension derived from MIME type — prevents .php/.exe uploads via MIME spoofing
     const mimeToExt: Record<string, string> = {
       'image/jpeg': 'jpg',
       'image/png': 'png',
@@ -353,17 +358,42 @@ export class MediaService implements OnModuleInit {
       'audio/ogg': 'ogg',
       'audio/wav': 'wav',
       'application/pdf': 'pdf',
+      'application/octet-stream': 'bin',
     };
     const ext = mimeToExt[mimeType] || 'bin';
 
     const cleanBase64 = dto.base64Data.replace(/^data:[^;]+;base64,/, '');
     const buffer = Buffer.from(cleanBase64, 'base64');
 
-    // FIX: Enforce 10MB limit on direct upload buffer too
+    // Enforce 10MB limit
     if (buffer.length > MAX_MEDIA_FILE_SIZE_BYTES) {
       throw new BadRequestException(
         `File size ${buffer.length} bytes exceeds the maximum of ${MAX_MEDIA_FILE_SIZE_BYTES} bytes (10 MB)`,
       );
+    }
+
+    // Magic-bytes validation only applies to non-encrypted uploads.
+    // application/octet-stream indicates an encrypted payload — skip magic check.
+    if (mimeType !== 'application/octet-stream') {
+      const isJpeg = buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+      const isPng =
+        buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47;
+      const isGif = buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46;
+      const isWebp =
+        buffer.length > 11 &&
+        buffer[8] === 0x57 &&
+        buffer[9] === 0x45 &&
+        buffer[10] === 0x42 &&
+        buffer[11] === 0x50;
+      const isPdf =
+        buffer[0] === 0x25 && buffer[1] === 0x50 && buffer[2] === 0x44 && buffer[3] === 0x46;
+      const isVideoAudio = mimeType.startsWith('video/') || mimeType.startsWith('audio/');
+
+      if (!isVideoAudio && !isJpeg && !isPng && !isGif && !isWebp && !isPdf) {
+        throw new BadRequestException(
+          'File content does not match the declared MIME type. Supported image formats: JPEG, PNG, GIF, WebP.',
+        );
+      }
     }
 
     const filename = `img_${Date.now()}_${Math.random().toString(36).substring(2, 7)}.${ext}`;
@@ -373,7 +403,6 @@ export class MediaService implements OnModuleInit {
     const filePath = path.join(uploadsDir, filename);
     fs.writeFileSync(filePath, buffer);
 
-    // Sync directly to Backblaze B2 Cloud Object Storage
     const b2Key = `media/${filename}`;
     const b2Url = await this.uploadBuffer(buffer, b2Key, mimeType);
 

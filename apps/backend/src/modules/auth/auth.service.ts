@@ -410,14 +410,20 @@ export class AuthService {
       );
     }
 
-    // FIX: Validate that the decoded bytes are actually a valid image
-    // by checking magic bytes (file signature) — prevents disguised executable uploads
+    // Validate that the decoded bytes are actually a valid image
+    // by checking magic bytes (file signature) — prevents disguised executable uploads.
+    // Avatar images are NOT encrypted so this check is both valid and meaningful here.
     const isJpeg = buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
     const isPng =
       buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47;
     const isGif = buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46;
+    // WebP: bytes 0-3 = 'RIFF', bytes 8-11 = 'WEBP'
     const isWebp =
-      buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50;
+      buffer.length >= 12 &&
+      buffer[8] === 0x57 &&
+      buffer[9] === 0x45 &&
+      buffer[10] === 0x42 &&
+      buffer[11] === 0x50;
     if (!isJpeg && !isPng && !isGif && !isWebp) {
       throw new BadRequestException('Avatar must be a valid image file (JPEG, PNG, GIF, or WebP)');
     }

@@ -1,6 +1,17 @@
+/**
+ * chatSlice — Redux state for conversations + messages.
+ *
+ * PERFORMANCE FIX (multi-user slowdown):
+ * All safeStorage.setItem() calls have been REMOVED from reducers.
+ * Previously every Redux action (appendMessage, updateMessageStatus, etc.)
+ * called JSON.stringify(ENTIRE_messagesMap) synchronously — blocking the JS
+ * thread on every single message event, causing UI freeze under multi-user load.
+ *
+ * Persistence is now handled by a debounced listener in store/index.ts that
+ * writes to AsyncStorage at most once per 1500ms, off the hot path.
+ */
 import { createSlice, PayloadAction } from '@reduxjs/toolkit';
 import { ConversationItem, ChatMessage } from '../types';
-import { safeStorage } from '../services/storageHelper';
 
 export const CHAT_STORAGE_KEYS = {
   CONVERSATIONS: '@whatsapp_connect_conversations',
@@ -39,7 +50,7 @@ export const chatSlice = createSlice({
       }
 
       state.conversations = uniqueList;
-      safeStorage.setItem(CHAT_STORAGE_KEYS.CONVERSATIONS, JSON.stringify(uniqueList));
+      // NOTE: No AsyncStorage write here — debounced listener in store/index.ts handles it.
     },
     addConversation: (state, action: PayloadAction<ConversationItem>) => {
       const newConv = action.payload;
@@ -59,20 +70,17 @@ export const chatSlice = createSlice({
           ...newConv,
           id: state.conversations[existingIdx].id || newConv.id,
         };
-        // Move to the top of the chat list
         state.conversations.splice(existingIdx, 1);
         state.conversations.unshift(updated);
       } else {
         state.conversations.unshift(newConv);
       }
-      safeStorage.setItem(CHAT_STORAGE_KEYS.CONVERSATIONS, JSON.stringify(state.conversations));
     },
     setMessagesForConversation: (
       state,
       action: PayloadAction<{ conversationId: string; messages: ChatMessage[] }>,
     ) => {
       state.messagesMap[action.payload.conversationId] = action.payload.messages;
-      safeStorage.setItem(CHAT_STORAGE_KEYS.MESSAGES, JSON.stringify(state.messagesMap));
     },
     appendMessage: (
       state,
@@ -101,10 +109,8 @@ export const chatSlice = createSlice({
       });
 
       if (exactIdx >= 0) {
-        // Update existing (e.g. status change)
+        // Update existing (e.g. status change on re-delivery)
         msgs[exactIdx] = { ...msgs[exactIdx], ...message, id: msgs[exactIdx].id };
-        safeStorage.setItem(CHAT_STORAGE_KEYS.MESSAGES, JSON.stringify(state.messagesMap));
-        safeStorage.setItem(CHAT_STORAGE_KEYS.CONVERSATIONS, JSON.stringify(state.conversations));
         return;
       }
 
@@ -126,13 +132,9 @@ export const chatSlice = createSlice({
         conv.lastMessageStatus = message.status;
         conv.lastMessageIsMe = message.isMe;
 
-        // Move to index 0 (top of the chat list)
         state.conversations.splice(convIdx, 1);
         state.conversations.unshift(conv);
       }
-
-      safeStorage.setItem(CHAT_STORAGE_KEYS.MESSAGES, JSON.stringify(state.messagesMap));
-      safeStorage.setItem(CHAT_STORAGE_KEYS.CONVERSATIONS, JSON.stringify(state.conversations));
     },
     updateMessageStatus: (
       state,
@@ -153,8 +155,6 @@ export const chatSlice = createSlice({
           const matchById = msg.id === messageId;
           const matchByClient = clientMessageId && msg.id === clientMessageId;
           if (matchById || matchByClient) {
-            // If we got a real serverMessageId, replace the optimistic clientMessageId
-            // This prevents a duplicate bubble when message:new also arrives
             if (clientMessageId && messageId && messageId !== clientMessageId) {
               msgs[i] = { ...msg, id: messageId, status };
             } else {
@@ -164,7 +164,6 @@ export const chatSlice = createSlice({
         }
       }
 
-      // Update lastMessageStatus in conversation
       for (const c of state.conversations) {
         const msgs = state.messagesMap[c.id];
         if (!msgs || msgs.length === 0) continue;
@@ -173,9 +172,6 @@ export const chatSlice = createSlice({
           c.lastMessageStatus = status;
         }
       }
-
-      safeStorage.setItem(CHAT_STORAGE_KEYS.MESSAGES, JSON.stringify(state.messagesMap));
-      safeStorage.setItem(CHAT_STORAGE_KEYS.CONVERSATIONS, JSON.stringify(state.conversations));
     },
     updateMessageProgress: (
       state,
@@ -199,7 +195,8 @@ export const chatSlice = createSlice({
           }
         }
       }
-      safeStorage.setItem(CHAT_STORAGE_KEYS.MESSAGES, JSON.stringify(state.messagesMap));
+      // NOTE: No AsyncStorage write — upload progress is ephemeral UI state,
+      // not worth persisting. Debounced listener handles eventual persistence.
     },
     updateMessageMediaDownloaded: (
       state,
@@ -221,7 +218,6 @@ export const chatSlice = createSlice({
           }
         }
       }
-      safeStorage.setItem(CHAT_STORAGE_KEYS.MESSAGES, JSON.stringify(state.messagesMap));
     },
     markAllMessagesRead: (state, action: PayloadAction<{ conversationId: string }>) => {
       const { conversationId } = action.payload;
@@ -237,7 +233,6 @@ export const chatSlice = createSlice({
       if (conv) {
         conv.unread = '0';
       }
-      safeStorage.setItem(CHAT_STORAGE_KEYS.MESSAGES, JSON.stringify(state.messagesMap));
     },
     toggleStarMessage: (
       state,
@@ -251,7 +246,6 @@ export const chatSlice = createSlice({
           msg.isStarred = !msg.isStarred;
         }
       }
-      safeStorage.setItem(CHAT_STORAGE_KEYS.MESSAGES, JSON.stringify(state.messagesMap));
     },
     toggleMessageReaction: (
       state,
@@ -288,7 +282,6 @@ export const chatSlice = createSlice({
           }
         }
       }
-      safeStorage.setItem(CHAT_STORAGE_KEYS.MESSAGES, JSON.stringify(state.messagesMap));
     },
     removeConversation: (
       state,
@@ -322,9 +315,6 @@ export const chatSlice = createSlice({
           }
         }
       }
-
-      safeStorage.setItem(CHAT_STORAGE_KEYS.CONVERSATIONS, JSON.stringify(state.conversations));
-      safeStorage.setItem(CHAT_STORAGE_KEYS.MESSAGES, JSON.stringify(state.messagesMap));
     },
     clearConversationMessages: (
       state,
@@ -342,9 +332,6 @@ export const chatSlice = createSlice({
         conv.lastMessage = '';
         conv.unread = '0';
       }
-
-      safeStorage.setItem(CHAT_STORAGE_KEYS.CONVERSATIONS, JSON.stringify(state.conversations));
-      safeStorage.setItem(CHAT_STORAGE_KEYS.MESSAGES, JSON.stringify(state.messagesMap));
     },
     setActiveConversationId: (state, action: PayloadAction<string | null>) => {
       state.activeConversationId = action.payload;

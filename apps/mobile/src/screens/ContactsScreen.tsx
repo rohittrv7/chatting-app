@@ -15,7 +15,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types';
-import { useChat } from '../context/ChatContext';
+import { useChat, usePresence } from '../context/ChatContext';
 import { useTheme } from '../context/ThemeContext';
 import { useToast } from '../context/ToastContext';
 import { useSelector } from 'react-redux';
@@ -46,7 +46,8 @@ import { devInspector } from '../services/devInspectorService';
 type Props = NativeStackScreenProps<RootStackParamList, 'Contacts'>;
 
 export const ContactsScreen: React.FC<Props> = ({ navigation }) => {
-  const { userProfile, addConversation, isUserOnline, conversations } = useChat();
+  const { userProfile, addConversation, conversations } = useChat();
+  const { isUserOnline } = usePresence();
   const { themeMode, colors } = useTheme();
   const { showToast } = useToast();
   const token = useSelector((state: RootState) => state.auth.token);

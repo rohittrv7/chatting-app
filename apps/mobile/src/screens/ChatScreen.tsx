@@ -22,7 +22,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList, ChatMessage } from '../types';
-import { useChat } from '../context/ChatContext';
+import { useChat, usePresence, useTyping } from '../context/ChatContext';
 import { useTheme } from '../context/ThemeContext';
 import { useToast } from '../context/ToastContext';
 import { useSelector } from 'react-redux';
@@ -302,11 +302,8 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
     openChatRoom,
     closeChatRoom,
     addConversation,
-    isUserOnline,
-    getLastSeen,
     queryPresence,
     userProfile,
-    isUserTyping,
     isUserBlocked,
     isBlockedBy,
     blockUser,
@@ -314,6 +311,10 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
     secureStorageError,
     retrySecureStorageInit,
   } = useChat();
+  // PERF FIX: Use split contexts — presence and typing updates no longer
+  // cause a full ChatScreen re-render, only the specific sub-tree that reads them.
+  const { isUserOnline, getLastSeen } = usePresence();
+  const { isUserTyping } = useTyping();
 
   const { themeMode, colors } = useTheme();
   const { showToast } = useToast();

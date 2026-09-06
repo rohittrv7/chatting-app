@@ -142,6 +142,16 @@ class RealtimeSocketService {
   private disconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private inCallChecker: (() => boolean) | null = null;
   private outboxQueue: any[] = [];
+  // Debounced last-message-id write timer
+  private lastMsgIdWriteTimer: ReturnType<typeof setTimeout> | null = null;
+
+  private _scheduleLastMessageIdWrite(messageId: string): void {
+    if (this.lastMsgIdWriteTimer) clearTimeout(this.lastMsgIdWriteTimer);
+    this.lastMsgIdWriteTimer = setTimeout(() => {
+      this.lastMsgIdWriteTimer = null;
+      safeStorage.setItem('@chat_last_message_id', messageId).catch(() => {});
+    }, 2000); // Coalesce burst of acks — only write once per 2s
+  }
 
   private _flushOutbox(): void {
     if (!this.socket?.connected || this.outboxQueue.length === 0) return;
@@ -495,9 +505,11 @@ class RealtimeSocketService {
     // ── Server ack (sender side — DB confirmed, single tick → double tick) ─
     this.socket.on(EVT_MESSAGE_ACK, (ack: MessageAck) => {
       if (!ack?.clientMessageId) return;
-      // Persist the last confirmed serverMessageId for gap-fill on next connect
+      // PERF FIX: Debounce the last-message-id persistence.
+      // Previously wrote to AsyncStorage on EVERY ack — with fast chat this was
+      // many writes/second. We only need the latest value, so debounce 2s.
       if (ack.serverMessageId) {
-        safeStorage.setItem('@chat_last_message_id', ack.serverMessageId).catch(() => {});
+        this._scheduleLastMessageIdWrite(ack.serverMessageId);
       }
       this.callbacks.onMessageAck?.(ack);
     });

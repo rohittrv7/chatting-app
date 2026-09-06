@@ -77,6 +77,10 @@ class WebRTCService {
   private isRemoteDescriptionSet = false;
   private isBitrateApplied = false;
 
+  // Renegotiation glare guard: prevents concurrent renegotiation attempts
+  // Only one renegotiation can be in flight at a time to avoid signaling collisions.
+  private _isRenegotiating = false;
+
   private localStreamListeners: Set<StreamListener> = new Set();
   private remoteStreamListeners: Set<StreamListener> = new Set();
   private connectionStateListeners: Set<ConnectionStateListener> = new Set();
@@ -221,6 +225,7 @@ class WebRTCService {
     this.pendingIceCandidates = [];
     this.isRemoteDescriptionSet = false;
     this.isBitrateApplied = false;
+    this._isRenegotiating = false;
 
     // Cleanup existing peer connection if active
     if (this.peerConnection) {
@@ -420,8 +425,12 @@ class WebRTCService {
    * Mid-call video upgrade: capture camera track, attach to peer connection,
    * then perform full SDP renegotiation so the remote side receives the video stream.
    *
-   * BUG FIX: Previously addTrack() was called without renegotiation — the remote peer
-   * never got notified of the new video track, causing one-sided (or no) video.
+   * POLITE/IMPOLITE PEER PATTERN:
+   * - isCaller (impolite peer) = initiates renegotiation via _renegotiate()
+   * - !isCaller (polite peer) = only prepares tracks; waits for caller's renegotiation offer.
+   *   The callee calling addTrack() before receiving the new offer is correct — when the
+   *   renegotiate-offer arrives and setRemoteDescription/createAnswer runs, the callee's
+   *   track is already in the sender list and will be included in the answer.
    */
   public async upgradeToVideo(): Promise<boolean> {
     const webrtc = getWebRTC();
@@ -435,9 +444,10 @@ class WebRTCService {
           t.enabled = true;
         });
         this._notifyLocalStream(this.localStream);
-        // Even if track already existed but was disabled, renegotiate to ensure
-        // remote knows video is now active
-        await this._renegotiate();
+        // Caller initiates renegotiation; callee waits for caller's offer
+        if (this.isCaller) {
+          await this._renegotiate();
+        }
         return true;
       }
 
@@ -469,9 +479,17 @@ class WebRTCService {
 
         this._notifyLocalStream(this.localStream);
 
-        // ── CRITICAL FIX: Renegotiate SDP after adding video track ──────────
-        // Without this, the remote peer never learns about the new video track.
-        await this._renegotiate();
+        // Polite/impolite peer pattern:
+        // - Caller (impolite): sends renegotiation offer
+        // - Callee (polite): track is added and ready; waits for caller's offer.
+        //   The offer will arrive via webrtc:renegotiate-offer → handleRenegotiationOffer().
+        if (this.isCaller) {
+          await this._renegotiate();
+        } else {
+          console.log(
+            '📹 [WebRTC] Callee: video track added, waiting for renegotiation offer from caller',
+          );
+        }
         return true;
       }
     } catch (err) {
@@ -482,14 +500,23 @@ class WebRTCService {
 
   /**
    * Perform an in-call SDP renegotiation (new offer → remote answer cycle).
-   * Used when tracks are added/removed mid-call (e.g. audio→video upgrade).
-   * Emits the new offer via socket; caller must handle the answer via handleIncomingAnswer().
+   * Only the CALLER (impolite peer) calls this to avoid signaling glare.
+   *
+   * GLARE GUARD: If a renegotiation is already in flight, skip — prevents
+   * collision when both sides try to renegotiate simultaneously.
    */
   private async _renegotiate(): Promise<void> {
     if (!this.peerConnection || !this.isCaller) {
-      // Only the original caller initiates renegotiation to avoid glare
+      // Polite peer pattern: only the original caller initiates renegotiation
       return;
     }
+
+    if (this._isRenegotiating) {
+      console.log('⏸️ [WebRTC] Renegotiation already in flight — skipping duplicate request');
+      return;
+    }
+
+    this._isRenegotiating = true;
     try {
       console.log('🔄 [WebRTC] Starting SDP renegotiation for video upgrade');
       const offer = await this.peerConnection.createOffer({
@@ -498,7 +525,7 @@ class WebRTCService {
       } as any);
       await this.peerConnection.setLocalDescription(offer);
 
-      // Reset so incoming answer is processed correctly
+      // Reset remote description flag so incoming answer is processed correctly
       this.isRemoteDescriptionSet = false;
 
       socketService.emit('webrtc:renegotiate-offer', {
@@ -509,11 +536,13 @@ class WebRTCService {
       console.log('📡 [WebRTC] Renegotiation offer sent to remote peer');
     } catch (err: any) {
       console.warn('⚠️ [WebRTC] Renegotiation failed:', err?.message || err);
+      this._isRenegotiating = false; // Release lock on failure
     }
+    // Lock is released in handleRenegotiationAnswer() after the cycle completes
   }
 
   /**
-   * Handle incoming renegotiation offer from remote (when they upgrade to video).
+   * Handle incoming renegotiation offer from remote (callee side — polite peer).
    * Creates and sends back the renegotiation answer.
    */
   public async handleRenegotiationOffer(offerSdp: any): Promise<void> {
@@ -524,6 +553,19 @@ class WebRTCService {
     try {
       console.log('🔄 [WebRTC] Handling incoming renegotiation offer');
       const sessionDesc = new webrtc.RTCSessionDescription(offerSdp);
+
+      // If we're in the middle of our own offer (shouldn't happen since only caller
+      // initiates, but guard against it), rollback first
+      if (
+        this.peerConnection.signalingState === 'have-local-offer' ||
+        this.peerConnection.signalingState === 'have-remote-offer'
+      ) {
+        console.warn('⚠️ [WebRTC] Unexpected signalingState during renegotiation — rolling back');
+        try {
+          await this.peerConnection.setLocalDescription({ type: 'rollback' } as any);
+        } catch (_) {}
+      }
+
       await this.peerConnection.setRemoteDescription(sessionDesc);
       this.isRemoteDescriptionSet = true;
       await this._flushPendingIceCandidates();
@@ -543,7 +585,8 @@ class WebRTCService {
   }
 
   /**
-   * Handle incoming renegotiation answer (caller receives this after sending renegotiation offer).
+   * Handle incoming renegotiation answer (caller side — impolite peer).
+   * Called after the callee processes our renegotiation offer.
    */
   public async handleRenegotiationAnswer(answerSdp: any): Promise<void> {
     if (!this.peerConnection) return;
@@ -559,6 +602,9 @@ class WebRTCService {
       console.log('✅ [WebRTC] Renegotiation complete — video track active on both sides');
     } catch (err: any) {
       console.warn('⚠️ [WebRTC] Failed to apply renegotiation answer:', err?.message || err);
+    } finally {
+      // Always release the renegotiation lock when the cycle ends
+      this._isRenegotiating = false;
     }
   }
 
@@ -648,6 +694,7 @@ class WebRTCService {
     this.pendingIceCandidates = [];
     this.isRemoteDescriptionSet = false;
     this.isBitrateApplied = false;
+    this._isRenegotiating = false;
     this.currentCallId = null;
     this.targetUserId = null;
     this.isCaller = false;

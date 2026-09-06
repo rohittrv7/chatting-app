@@ -9,7 +9,15 @@
  *    This is the anti-duplication reconciliation — optimistic bubble never becomes two.
  */
 
-import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
+import React, {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+  useMemo,
+} from 'react';
 import { useSelector, useDispatch } from 'react-redux';
 import { RootState } from '../store';
 import {
@@ -204,6 +212,33 @@ const ChatContext = createContext<ChatContextType>({
   secureStorageError: null,
   retrySecureStorageInit: async () => {},
   addCallLogMessage: () => {},
+});
+
+// ─── Split Lightweight Contexts ───────────────────────────────────────────────
+// PERF FIX: presenceMap and typingMap are split into their own contexts so that
+// presence heartbeats (every 30s) and typing events (every keystroke) only cause
+// re-renders in components that actually subscribe to them — not the entire app tree.
+
+interface PresenceContextType {
+  presenceMap: Record<string, { isOnline: boolean; lastSeen?: string | null }>;
+  isUserOnline: (userId?: string) => boolean;
+  getLastSeen: (userId?: string) => string | null | undefined;
+}
+
+interface TypingContextType {
+  typingMap: Record<string, boolean>;
+  isUserTyping: (conversationId?: string, senderId?: string) => boolean;
+}
+
+export const PresenceContext = createContext<PresenceContextType>({
+  presenceMap: {},
+  isUserOnline: () => false,
+  getLastSeen: () => undefined,
+});
+
+export const TypingContext = createContext<TypingContextType>({
+  typingMap: {},
+  isUserTyping: () => false,
 });
 
 // ─── Provider ─────────────────────────────────────────────────────────────────
@@ -628,35 +663,17 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       isStarred: false,
     };
 
-    // 1. Dispatch to canonical server conversationId
+    // 1. Dispatch to canonical server conversationId ONLY.
+    // PERF FIX: Previously dispatched appendMessage 3 times for same message —
+    // once to convId, once to existingConv.id (if different), once to payload.senderId.
+    // Each dispatch triggers a reducer run + scheduled AsyncStorage write.
+    // Now: single dispatch. UI de-duplication handles display across alias IDs.
     dispatch(appendMessage({ conversationId: convId, message: incomingMsg }));
 
     // 2. Find any matching existing conversation by ID or recipientDbId
     const existingConv = conversationsRef.current.find(
       (c) => c.id === convId || (c.recipientDbId && c.recipientDbId === payload.senderId),
     );
-
-    // 3. Also append to local conversation ID if different (e.g. deterministic or contact ID)
-    if (existingConv && existingConv.id !== convId) {
-      dispatch(
-        appendMessage({
-          conversationId: existingConv.id,
-          message: { ...incomingMsg, conversationId: existingConv.id },
-        }),
-      );
-    }
-    if (
-      payload.senderId &&
-      payload.senderId !== convId &&
-      (!existingConv || existingConv.id !== payload.senderId)
-    ) {
-      dispatch(
-        appendMessage({
-          conversationId: payload.senderId,
-          message: { ...incomingMsg, conversationId: payload.senderId },
-        }),
-      );
-    }
 
     const isUserLooking =
       activeConvIdRef.current === convId ||
@@ -762,24 +779,21 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const _handlePresenceUpdate = useCallback((presence: PresenceUpdate) => {
-    setPresenceMap((prev) => ({
-      ...prev,
-      [presence.userId]: {
+    // PERF FIX: Only update presenceMap (lightweight object merge).
+    // Previously this also called dispatch(setConversations(conversations.map())) which
+    // rebuilt the ENTIRE conversations array on every single presence ping — causing a
+    // full re-render of ConversationListScreen + every conversation row every 30 seconds.
+    // isUserOnline() reads directly from presenceMap, so the UI updates without rebuilding
+    // the conversations array. The isOnline field in ConversationItem is now derived at
+    // render time via isUserOnline() rather than embedded in the store.
+    setPresenceMap((prev) => {
+      const next = { ...prev };
+      next[presence.userId] = {
         isOnline: presence.isOnline,
         lastSeen: presence.isOnline ? null : presence.lastSeen,
-      },
-    }));
-
-    dispatch(
-      setConversations(
-        conversationsRef.current.map((c) => {
-          if ((c as any).recipientDbId === presence.userId || c.id === presence.userId) {
-            return { ...c, isOnline: presence.isOnline };
-          }
-          return c;
-        }),
-      ),
-    );
+      };
+      return next;
+    });
   }, []);
 
   const _handlePresenceResult = useCallback(
@@ -1621,11 +1635,33 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
             encoding: FileSystem.EncodingType.Base64,
           });
           if (token && base64) {
+            // FIX: Encrypt before re-upload — matches the original sendMediaMessage flow.
+            // Previously sent plaintext base64 with hardcoded 'image/jpeg' which:
+            //  (a) failed magic-bytes check for non-JPEG files (PNG, WebP, etc.)
+            //  (b) exposed unencrypted media bytes to the server
+            const fileKey = nacl.randomBytes(32);
+            const fileNonce = nacl.randomBytes(24);
+            const rawBytes = new Uint8Array(base64ToArrayBuffer(base64));
+            const encryptedBytes = nacl.secretbox(rawBytes, fileNonce, fileKey);
+            const encryptedBase64 = arrayBufferToBase64(encryptedBytes);
+
+            // Derive fileName with correct extension from local URI
+            const uriLower = finalImagePath.toLowerCase();
+            const detectedExt = uriLower.includes('.png')
+              ? 'png'
+              : uriLower.includes('.gif')
+                ? 'gif'
+                : uriLower.includes('.webp')
+                  ? 'webp'
+                  : 'jpg';
+
             const uploadRes = await apiService.uploadMediaFile(
               token,
-              base64,
-              `photo_${Date.now()}.jpg`,
-              'image/jpeg',
+              encryptedBase64,
+              `enc_photo_${Date.now()}.bin`,
+              // Always 'application/octet-stream' for encrypted content —
+              // backend explicitly allows this for authenticated encrypted uploads
+              'application/octet-stream',
             );
             if (uploadRes.success && uploadRes.url) {
               finalImagePath = uploadRes.url;
@@ -1637,6 +1673,8 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
                   imagePath: finalImagePath,
                 }),
               );
+            } else {
+              throw new Error('Re-upload failed');
             }
           }
         } catch (e) {
@@ -1656,7 +1694,6 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       const realConvId = await _resolveConvId(conversationId, receiverId);
       if (realConvId) {
-        // ── Direct retry message send (E2EE completely removed) ───────────
         socketService.sendMessage({
           clientMessageId: msg.id,
           conversationId: realConvId,
@@ -2003,49 +2040,95 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     });
   }, [addCallLogMessage]);
 
+  // ─── Memoized context values ────────────────────────────────────────────────
+  // PERF FIX: Without useMemo, every setState in this Provider (e.g. setTypingMap from
+  // a typing event) creates a new value={} object literal → ALL useChat() consumers
+  // re-render even if the data they care about hasn't changed.
+  //
+  // With three separate memoized contexts:
+  // - presenceValue only changes when presenceMap changes (every ~30s)
+  // - typingValue only changes when typingMap changes (on typing events)
+  // - chatValue only changes when conversations/messages/profile changes
+  // Each screen subscribes only to what it needs.
+
+  const presenceValue = useMemo<PresenceContextType>(
+    () => ({ presenceMap, isUserOnline, getLastSeen }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [presenceMap],
+  );
+
+  const typingValue = useMemo<TypingContextType>(
+    () => ({ typingMap, isUserTyping }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [typingMap],
+  );
+
+  const chatValue = useMemo<ChatContextType>(
+    () => ({
+      userProfile,
+      updateUserProfile,
+      conversations,
+      messagesMap,
+      // Keep presenceMap/typingMap in main context too for backward compat
+      presenceMap,
+      typingMap,
+      isUserOnline,
+      getLastSeen,
+      isUserTyping,
+      queryPresence,
+      syncServerConversations,
+      loadHistoricalMessagesForConversation,
+      addMessage,
+      sendMediaMessage,
+      updateMessageUploadProgress,
+      updateMessageMediaDownloaded,
+      addConversation,
+      deleteConversation,
+      clearMessages,
+      updateLastMessage,
+      toggleStarMessage,
+      reactToMessage,
+      resendMessage,
+      markConversationRead,
+      openChatRoom,
+      closeChatRoom,
+      blockedUserIds,
+      blockedByUserIds,
+      isUserBlocked,
+      isBlockedBy,
+      blockUser,
+      unblockUser,
+      addCallLogMessage,
+      secureStorageError,
+      retrySecureStorageInit,
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      userProfile,
+      conversations,
+      messagesMap,
+      blockedUserIds,
+      blockedByUserIds,
+      secureStorageError,
+      // Stable callbacks (useCallback with []) are excluded — they never change.
+      // presenceMap/typingMap are intentionally omitted here because they have their
+      // own contexts above. Including them would defeat the split-context optimization.
+    ],
+  );
+
   return (
-    <ChatContext.Provider
-      value={{
-        userProfile,
-        updateUserProfile,
-        conversations,
-        messagesMap,
-        presenceMap,
-        typingMap,
-        isUserOnline,
-        getLastSeen,
-        isUserTyping,
-        queryPresence,
-        syncServerConversations,
-        loadHistoricalMessagesForConversation,
-        addMessage,
-        sendMediaMessage,
-        updateMessageUploadProgress,
-        updateMessageMediaDownloaded,
-        addConversation,
-        deleteConversation,
-        clearMessages,
-        updateLastMessage,
-        toggleStarMessage,
-        reactToMessage,
-        resendMessage,
-        markConversationRead,
-        openChatRoom,
-        closeChatRoom,
-        blockedUserIds,
-        blockedByUserIds,
-        isUserBlocked,
-        isBlockedBy,
-        blockUser,
-        unblockUser,
-        addCallLogMessage,
-        secureStorageError,
-        retrySecureStorageInit,
-      }}
-    >
-      {children}
+    <ChatContext.Provider value={chatValue}>
+      <PresenceContext.Provider value={presenceValue}>
+        <TypingContext.Provider value={typingValue}>{children}</TypingContext.Provider>
+      </PresenceContext.Provider>
     </ChatContext.Provider>
   );
 };
 
 export const useChat = () => useContext(ChatContext);
+
+// Lightweight hooks — subscribe ONLY to presence or typing state.
+// Use these in components that need online status or typing indicators
+// to avoid re-rendering when unrelated chat state changes.
+export const usePresence = () => useContext(PresenceContext);
+export const useTyping = () => useContext(TypingContext);

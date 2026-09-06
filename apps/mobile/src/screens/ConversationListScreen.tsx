@@ -21,7 +21,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useFocusEffect } from '@react-navigation/native';
 import { RootStackParamList, ConversationItem } from '../types';
-import { useChat } from '../context/ChatContext';
+import { useChat, usePresence, useTyping } from '../context/ChatContext';
 import { useTheme } from '../context/ThemeContext';
 import { useSelector, useDispatch } from 'react-redux';
 import { RootState } from '../store';
@@ -132,11 +132,13 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
     clearMessages,
     markConversationRead,
     userProfile,
-    isUserOnline,
-    isUserTyping,
     queryPresence,
     syncServerConversations,
   } = useChat();
+  // PERF FIX: Use split contexts so presence heartbeats and typing events
+  // only re-render this component, not ALL useChat() consumers in the tree.
+  const { isUserOnline } = usePresence();
+  const { isUserTyping } = useTyping();
   const { themeMode, colors, setThemeMode } = useTheme();
   const { showToast } = useToast();
   const token = useSelector((state: RootState) => state.auth.token);
