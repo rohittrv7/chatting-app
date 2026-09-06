@@ -170,7 +170,7 @@ export class AuthRepository {
   async updateUserProfile(
     userId: string,
     data: { name?: string; username?: string; status?: string; avatarUrl?: string },
-  ): Promise<User> {
+  ): Promise<Omit<User, 'createdAt' | 'updatedAt'> & { createdAt: Date; updatedAt: Date }> {
     return this.prisma.user.update({
       where: { id: userId },
       data: {
@@ -179,7 +179,18 @@ export class AuthRepository {
         about: data.status,
         avatarUrl: data.avatarUrl,
       },
-    });
+      // FIX: Select only safe fields — never return password hash or sensitive DB fields
+      select: {
+        id: true,
+        phoneNumber: true,
+        displayName: true,
+        username: true,
+        about: true,
+        avatarUrl: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    }) as any;
   }
 
   /**

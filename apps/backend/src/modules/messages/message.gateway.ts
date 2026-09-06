@@ -1285,4 +1285,48 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     this.server.to(`user:${targetUserId}`).emit('user:unblocked', { blockerId: senderId });
     client.emit('user:unblocked', { blockedId: targetUserId });
   }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // FIX: WebRTC Mid-Call SDP Renegotiation Relay (for video upgrade)
+  // Previously missing — without this, upgradeToVideo() offer/answer never
+  // reached the remote peer, causing one-sided or no video.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  @SubscribeMessage('webrtc:renegotiate-offer')
+  async handleRenegotiateOffer(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { callId: string; targetUserId: string; sdp: any },
+  ) {
+    const senderId = (client as any)._userId || client.data?.userId;
+    if (!senderId || !payload?.targetUserId || !payload?.sdp) return;
+
+    const targetUserId = (await this._resolveUserId(payload.targetUserId)) || payload.targetUserId;
+    this.logger.log(
+      `🔄 [Renegotiate Offer] from=${senderId} to=${targetUserId} callId=${payload.callId}`,
+    );
+    this.server.to(`user:${targetUserId}`).emit('webrtc:renegotiate-offer', {
+      callId: payload.callId,
+      sdp: payload.sdp,
+      senderId,
+    });
+  }
+
+  @SubscribeMessage('webrtc:renegotiate-answer')
+  async handleRenegotiateAnswer(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { callId: string; targetUserId: string; sdp: any },
+  ) {
+    const senderId = (client as any)._userId || client.data?.userId;
+    if (!senderId || !payload?.targetUserId || !payload?.sdp) return;
+
+    const targetUserId = (await this._resolveUserId(payload.targetUserId)) || payload.targetUserId;
+    this.logger.log(
+      `🔄 [Renegotiate Answer] from=${senderId} to=${targetUserId} callId=${payload.callId}`,
+    );
+    this.server.to(`user:${targetUserId}`).emit('webrtc:renegotiate-answer', {
+      callId: payload.callId,
+      sdp: payload.sdp,
+      senderId,
+    });
+  }
 }

@@ -192,24 +192,27 @@ export class ConversationRepository {
       },
     });
 
-    // 2. Mark all existing messages as deleted for this user
-    const msgs = await this.prisma.message.findMany({
+    // FIX: N+1 bug — previously fetched all messages then updated each in a loop.
+    // Now uses a single updateMany with JSON_ARRAY_APPEND-equivalent via raw push.
+    // Prisma doesn't support array push in updateMany directly, but we can use
+    // a raw query pattern: fetch IDs only, then updateMany with push.
+    const msgIds = await this.prisma.message.findMany({
       where: {
         conversationId: { in: convCandidates },
+        NOT: { deletedForUserIds: { has: targetUserId } },
       },
-      select: { id: true, deletedForUserIds: true },
+      select: { id: true },
     });
 
-    for (const msg of msgs) {
-      const currentList = msg.deletedForUserIds || [];
-      if (!currentList.includes(targetUserId)) {
-        await this.prisma.message.update({
-          where: { id: msg.id },
-          data: {
-            deletedForUserIds: [...currentList, targetUserId],
-          },
-        });
-      }
+    if (msgIds.length > 0) {
+      // Batch update: add userId to deletedForUserIds array for all messages at once
+      // using raw SQL to avoid N+1 individual updates
+      await this.prisma.$executeRaw`
+        UPDATE "Message"
+        SET "deletedForUserIds" = array_append("deletedForUserIds", ${targetUserId})
+        WHERE id = ANY(${msgIds.map((m) => m.id)}::text[])
+        AND NOT (${targetUserId} = ANY("deletedForUserIds"))
+      `;
     }
 
     return { success: true, message: 'Conversation deleted successfully' };

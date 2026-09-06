@@ -286,24 +286,23 @@ export class MessageRepository {
       },
     });
 
-    // 2. Mark existing messages as deleted for this user
-    const msgs = await this.prisma.message.findMany({
+    // FIX: N+1 bug — previously looped over all messages with individual updates.
+    // Now uses a single raw SQL update to add userId to deletedForUserIds array.
+    const msgIds = await this.prisma.message.findMany({
       where: {
         conversationId: { in: convCandidates },
+        NOT: { deletedForUserIds: { has: targetUserId } },
       },
-      select: { id: true, deletedForUserIds: true },
+      select: { id: true },
     });
 
-    for (const msg of msgs) {
-      const currentList = msg.deletedForUserIds || [];
-      if (!currentList.includes(targetUserId)) {
-        await this.prisma.message.update({
-          where: { id: msg.id },
-          data: {
-            deletedForUserIds: [...currentList, targetUserId],
-          },
-        });
-      }
+    if (msgIds.length > 0) {
+      await this.prisma.$executeRaw`
+        UPDATE "Message"
+        SET "deletedForUserIds" = array_append("deletedForUserIds", ${targetUserId})
+        WHERE id = ANY(${msgIds.map((m) => m.id)}::text[])
+        AND NOT (${targetUserId} = ANY("deletedForUserIds"))
+      `;
     }
 
     return { success: true, message: 'Chat history cleared successfully' };

@@ -98,15 +98,22 @@ const SmartAvatarComponent: React.FC<SmartAvatarProps> = ({
   const handleImageError = (e?: any) => {
     if (!resolvedUri) return;
 
-    // Immediately trigger fallback view and stay on fallback so UI never flickers or blinks
+    // Immediately trigger fallback view so UI never flickers or blinks
     setImageError(true);
 
-    const errorMsg = String(e?.nativeEvent?.error || '');
-    const isDirect404 = errorMsg.includes('404');
+    const errorMsg = String(e?.nativeEvent?.error || e?.nativeEvent?.description || '');
+    // FIX: React Native Image gives inconsistent error messages across platforms.
+    // Treat ALL load failures as permanent for this session to prevent retry loops.
+    // The URL is only retried after RETRY_EXPIRY_MS (5 minutes) for non-404 errors.
+    // For confirmed 404s (backend now returns proper 404), mark permanent.
+    const looksLike404 =
+      errorMsg.includes('404') ||
+      errorMsg.includes('Not Found') ||
+      errorMsg.toLowerCase().includes('not found');
 
     failedAvatarMap.set(resolvedUri, {
       timestamp: Date.now(),
-      isPermanent404: isDirect404,
+      isPermanent404: looksLike404,
     });
   };
 

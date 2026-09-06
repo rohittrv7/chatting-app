@@ -320,9 +320,52 @@ export class MediaService implements OnModuleInit {
     if (!dto.base64Data) {
       throw new BadRequestException('base64Data is required');
     }
+
+    // FIX: Validate MIME type before writing to disk — previously any MIME type could be uploaded
+    const allowedMimeTypes = [
+      'image/jpeg',
+      'image/png',
+      'image/gif',
+      'image/webp',
+      'image/bmp',
+      'video/mp4',
+      'video/webm',
+      'audio/mpeg',
+      'audio/ogg',
+      'audio/wav',
+      'application/pdf',
+    ];
+    const mimeType = dto.mimeType || 'image/jpeg';
+    if (!allowedMimeTypes.includes(mimeType)) {
+      throw new BadRequestException(`MIME type '${mimeType}' is not allowed for direct upload`);
+    }
+
+    // FIX: Validate extension derived from MIME type — prevents .php/.exe uploads via MIME spoofing
+    const mimeToExt: Record<string, string> = {
+      'image/jpeg': 'jpg',
+      'image/png': 'png',
+      'image/gif': 'gif',
+      'image/webp': 'webp',
+      'image/bmp': 'bmp',
+      'video/mp4': 'mp4',
+      'video/webm': 'webm',
+      'audio/mpeg': 'mp3',
+      'audio/ogg': 'ogg',
+      'audio/wav': 'wav',
+      'application/pdf': 'pdf',
+    };
+    const ext = mimeToExt[mimeType] || 'bin';
+
     const cleanBase64 = dto.base64Data.replace(/^data:[^;]+;base64,/, '');
     const buffer = Buffer.from(cleanBase64, 'base64');
-    const ext = dto.mimeType ? dto.mimeType.split('/')[1] || 'jpg' : 'jpg';
+
+    // FIX: Enforce 10MB limit on direct upload buffer too
+    if (buffer.length > MAX_MEDIA_FILE_SIZE_BYTES) {
+      throw new BadRequestException(
+        `File size ${buffer.length} bytes exceeds the maximum of ${MAX_MEDIA_FILE_SIZE_BYTES} bytes (10 MB)`,
+      );
+    }
+
     const filename = `img_${Date.now()}_${Math.random().toString(36).substring(2, 7)}.${ext}`;
     const uploadsDir = path.join(process.cwd(), 'uploads', 'images');
     if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
@@ -332,7 +375,7 @@ export class MediaService implements OnModuleInit {
 
     // Sync directly to Backblaze B2 Cloud Object Storage
     const b2Key = `media/${filename}`;
-    const b2Url = await this.uploadBuffer(buffer, b2Key, dto.mimeType || 'image/jpeg');
+    const b2Url = await this.uploadBuffer(buffer, b2Key, mimeType);
 
     const duration = Date.now() - start;
     this.otelService?.recordFileStorage(

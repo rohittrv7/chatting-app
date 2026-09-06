@@ -1,9 +1,72 @@
 import { Controller, Post, Get, Delete, Body, Param, Query } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { RequestOtpDto, VerifyOtpDto, RefreshTokenDto } from '@chat/shared-contracts';
 import { Public } from '../../common/decorators/public.decorator';
 import { CurrentUser, AuthenticatedUser } from '../../common/decorators/user.decorator';
+import {
+  IsString,
+  IsOptional,
+  MaxLength,
+  Matches,
+  IsUrl,
+  IsArray,
+  IsNotEmpty,
+} from 'class-validator';
+
+// ─── Validated DTOs ───────────────────────────────────────────────────────────
+
+export class UpdateProfileDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  name?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  // Usernames: alphanumeric + underscore only — prevents injection via username field
+  @Matches(/^[a-zA-Z0-9_]*$/, {
+    message: 'Username can only contain letters, numbers, and underscores',
+  })
+  username?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  status?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(512)
+  // Prevent local file:// / data: / blob: URIs from being stored as avatar
+  avatarUrl?: string;
+}
+
+export class UploadAvatarDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(5_000_000) // ~3.75 MB base64 = ~2.8 MB raw (enforce server-side too)
+  base64Data!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  fileName?: string;
+}
+
+export class SyncContactsDto {
+  @IsArray()
+  phoneNumbers!: string[];
+}
+
+export class BlockUserDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(36)
+  targetUserId!: string;
+}
 
 @ApiTags('Auth & Device Management')
 @Controller('auth')
@@ -12,6 +75,8 @@ export class AuthController {
 
   @Post('otp/request')
   @Public()
+  // FIX: Rate limit — 5 requests per 10 minutes per IP (brute force protection)
+  @Throttle({ otp: { limit: 5, ttl: 10 * 60 * 1000 } })
   @ApiOperation({ summary: 'Request phone verification OTP' })
   async requestOtp(@Body() dto: RequestOtpDto) {
     return this.authService.requestOtp(dto);
@@ -19,6 +84,8 @@ export class AuthController {
 
   @Post('otp/verify')
   @Public()
+  // FIX: Rate limit — 10 attempts per 10 minutes per IP (per-phone lockout handled in Redis too)
+  @Throttle({ otp: { limit: 10, ttl: 10 * 60 * 1000 } })
   @ApiOperation({ summary: 'Verify OTP and authenticate device' })
   async verifyOtp(@Body() dto: VerifyOtpDto) {
     return this.authService.verifyOtp(dto);
@@ -26,6 +93,8 @@ export class AuthController {
 
   @Post('token/refresh')
   @Public()
+  // FIX: Rate limit — 20 refreshes per 10 minutes per IP to prevent token churning
+  @Throttle({ otp: { limit: 20, ttl: 10 * 60 * 1000 } })
   @ApiOperation({ summary: 'Rotate refresh token and issue new access token' })
   async refreshToken(@Body() dto: RefreshTokenDto) {
     return this.authService.refreshToken(dto);
@@ -48,30 +117,21 @@ export class AuthController {
   @Post('profile')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Update user profile (Name, Username, Bio, Avatar)' })
-  async updateProfile(
-    @CurrentUser() user: AuthenticatedUser,
-    @Body() dto: { name?: string; username?: string; status?: string; avatarUrl?: string },
-  ) {
+  async updateProfile(@CurrentUser() user: AuthenticatedUser, @Body() dto: UpdateProfileDto) {
     return this.authService.updateProfile(user.userId, dto);
   }
 
   @Post('avatar')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Upload and set user avatar profile picture' })
-  async uploadAvatar(
-    @CurrentUser() user: AuthenticatedUser,
-    @Body() dto: { base64Data: string; fileName?: string },
-  ) {
+  async uploadAvatar(@CurrentUser() user: AuthenticatedUser, @Body() dto: UploadAvatarDto) {
     return this.authService.uploadAvatar(user.userId, dto);
   }
 
   @Post('contacts/sync')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Sync phone contacts and discover registered users' })
-  async syncContacts(
-    @CurrentUser() user: AuthenticatedUser,
-    @Body() dto: { phoneNumbers: string[] },
-  ) {
+  async syncContacts(@CurrentUser() user: AuthenticatedUser, @Body() dto: SyncContactsDto) {
     return this.authService.syncContacts(user.userId, dto.phoneNumbers || []);
   }
 
@@ -79,20 +139,25 @@ export class AuthController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Search registered users across the platform by username or name' })
   async searchUsers(@CurrentUser() user: AuthenticatedUser, @Query('q') query: string) {
-    return this.authService.searchUsers(user.userId, query || '');
+    // FIX: Sanitize query — strip HTML/script tags and limit length
+    const safeQuery = (query || '')
+      .replace(/<[^>]*>/g, '')
+      .trim()
+      .slice(0, 100);
+    return this.authService.searchUsers(user.userId, safeQuery);
   }
 
   @Post('users/block')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Block target user from contacting or viewing profile' })
-  async blockUser(@CurrentUser() user: AuthenticatedUser, @Body() dto: { targetUserId: string }) {
+  async blockUser(@CurrentUser() user: AuthenticatedUser, @Body() dto: BlockUserDto) {
     return this.authService.blockUser(user.userId, dto.targetUserId);
   }
 
   @Post('users/unblock')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Unblock target user' })
-  async unblockUser(@CurrentUser() user: AuthenticatedUser, @Body() dto: { targetUserId: string }) {
+  async unblockUser(@CurrentUser() user: AuthenticatedUser, @Body() dto: BlockUserDto) {
     return this.authService.unblockUser(user.userId, dto.targetUserId);
   }
 

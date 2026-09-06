@@ -30,10 +30,18 @@ const REDIS_CLIENT_PROVIDER = {
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
-      useFactory: (configService: ConfigService) => ({
-        secret: configService.get<string>('JWT_SECRET', 'super_secret_jwt_access_key_12345'),
-        signOptions: { expiresIn: '15m' },
-      }),
+      useFactory: (configService: ConfigService) => {
+        const secret = configService.get<string>('JWT_SECRET');
+        // FIX: Crash loudly in production if JWT_SECRET is not set.
+        // A missing/weak secret would let attackers forge tokens.
+        if (!secret && process.env.NODE_ENV === 'production') {
+          throw new Error('JWT_SECRET environment variable is required in production');
+        }
+        return {
+          secret: secret || 'dev_only_jwt_secret_change_in_production',
+          signOptions: { expiresIn: '15m' },
+        };
+      },
     }),
     /**
      * OTP send-endpoint throttle: 5 requests per 10 minutes per IP.

@@ -1,12 +1,15 @@
 import { socketService } from './socket';
 
 // ─── STUN / TURN Server Configuration ──────────────────────────────────────────
+// FIX: Reduced iceCandidatePoolSize from 10 to 4 — large pool causes ICE gathering
+// to block waiting for all candidates before sending any, adding ~3-5s delay.
+// iceTransportPolicy 'all' ensures UDP is tried first (fastest path).
+// bundlePolicy 'max-bundle' reduces ICE candidates needed (single transport for all tracks).
 export const ICE_SERVERS_CONFIG = {
   iceServers: [
-    // Google Public STUN
+    // Google Public STUN (fastest, most reliable globally)
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' },
 
     // Free Open Relay Project Public TURN (Supports UDP & TCP on ports 80, 443, 3478)
     {
@@ -20,7 +23,14 @@ export const ICE_SERVERS_CONFIG = {
       credential: 'openrelayproject',
     },
   ],
-  iceCandidatePoolSize: 10,
+  // FIX: Reduced from 10 → 4. iceCandidatePoolSize pre-gathers candidates at
+  // RTCPeerConnection creation time. Value of 10 caused excessive pre-gathering
+  // that competed with the actual offer/answer flow on low-bandwidth mobile connections.
+  iceCandidatePoolSize: 4,
+  // Ensure all media (audio+video) shares one ICE transport — fewer candidates needed
+  bundlePolicy: 'max-bundle' as RTCBundlePolicy,
+  // Try UDP first (lowest latency), fall back to TCP/TURN automatically
+  iceTransportPolicy: 'all' as RTCIceTransportPolicy,
 };
 
 export type MediaStream = any;
@@ -120,6 +130,23 @@ class WebRTCService {
         if (data?.candidate && (!data.callId || data.callId === this.currentCallId)) {
           await this.addIceCandidate(data.candidate);
         }
+      },
+    );
+
+    // ── FIX: Handle mid-call SDP renegotiation (video upgrade flow) ───────
+    socketService.on(
+      'webrtc:renegotiate-offer',
+      async (data: { callId: string; sdp: any; senderId?: string }) => {
+        if (!data?.sdp || (data.callId && data.callId !== this.currentCallId)) return;
+        await this.handleRenegotiationOffer(data.sdp);
+      },
+    );
+
+    socketService.on(
+      'webrtc:renegotiate-answer',
+      async (data: { callId: string; sdp: any; senderId?: string }) => {
+        if (!data?.sdp || (data.callId && data.callId !== this.currentCallId)) return;
+        await this.handleRenegotiationAnswer(data.sdp);
       },
     );
   }
@@ -389,7 +416,13 @@ class WebRTCService {
     }
   }
 
-  /** Mid-call switch: dynamically acquire camera video track and attach to active call */
+  /**
+   * Mid-call video upgrade: capture camera track, attach to peer connection,
+   * then perform full SDP renegotiation so the remote side receives the video stream.
+   *
+   * BUG FIX: Previously addTrack() was called without renegotiation — the remote peer
+   * never got notified of the new video track, causing one-sided (or no) video.
+   */
   public async upgradeToVideo(): Promise<boolean> {
     const webrtc = getWebRTC();
     if (!webrtc || !webrtc.mediaDevices) return false;
@@ -402,6 +435,9 @@ class WebRTCService {
           t.enabled = true;
         });
         this._notifyLocalStream(this.localStream);
+        // Even if track already existed but was disabled, renegotiate to ensure
+        // remote knows video is now active
+        await this._renegotiate();
         return true;
       }
 
@@ -432,12 +468,98 @@ class WebRTCService {
         }
 
         this._notifyLocalStream(this.localStream);
+
+        // ── CRITICAL FIX: Renegotiate SDP after adding video track ──────────
+        // Without this, the remote peer never learns about the new video track.
+        await this._renegotiate();
         return true;
       }
     } catch (err) {
       console.warn('⚠️ [WebRTC] Failed to capture video on switch:', err);
     }
     return false;
+  }
+
+  /**
+   * Perform an in-call SDP renegotiation (new offer → remote answer cycle).
+   * Used when tracks are added/removed mid-call (e.g. audio→video upgrade).
+   * Emits the new offer via socket; caller must handle the answer via handleIncomingAnswer().
+   */
+  private async _renegotiate(): Promise<void> {
+    if (!this.peerConnection || !this.isCaller) {
+      // Only the original caller initiates renegotiation to avoid glare
+      return;
+    }
+    try {
+      console.log('🔄 [WebRTC] Starting SDP renegotiation for video upgrade');
+      const offer = await this.peerConnection.createOffer({
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: true,
+      } as any);
+      await this.peerConnection.setLocalDescription(offer);
+
+      // Reset so incoming answer is processed correctly
+      this.isRemoteDescriptionSet = false;
+
+      socketService.emit('webrtc:renegotiate-offer', {
+        callId: this.currentCallId,
+        targetUserId: this.targetUserId,
+        sdp: offer,
+      });
+      console.log('📡 [WebRTC] Renegotiation offer sent to remote peer');
+    } catch (err: any) {
+      console.warn('⚠️ [WebRTC] Renegotiation failed:', err?.message || err);
+    }
+  }
+
+  /**
+   * Handle incoming renegotiation offer from remote (when they upgrade to video).
+   * Creates and sends back the renegotiation answer.
+   */
+  public async handleRenegotiationOffer(offerSdp: any): Promise<void> {
+    if (!this.peerConnection) return;
+    const webrtc = getWebRTC();
+    if (!webrtc || !webrtc.RTCSessionDescription) return;
+
+    try {
+      console.log('🔄 [WebRTC] Handling incoming renegotiation offer');
+      const sessionDesc = new webrtc.RTCSessionDescription(offerSdp);
+      await this.peerConnection.setRemoteDescription(sessionDesc);
+      this.isRemoteDescriptionSet = true;
+      await this._flushPendingIceCandidates();
+
+      const answer = await this.peerConnection.createAnswer();
+      await this.peerConnection.setLocalDescription(answer);
+
+      socketService.emit('webrtc:renegotiate-answer', {
+        callId: this.currentCallId,
+        targetUserId: this.targetUserId,
+        sdp: answer,
+      });
+      console.log('📡 [WebRTC] Renegotiation answer sent');
+    } catch (err: any) {
+      console.warn('⚠️ [WebRTC] Failed to handle renegotiation offer:', err?.message || err);
+    }
+  }
+
+  /**
+   * Handle incoming renegotiation answer (caller receives this after sending renegotiation offer).
+   */
+  public async handleRenegotiationAnswer(answerSdp: any): Promise<void> {
+    if (!this.peerConnection) return;
+    const webrtc = getWebRTC();
+    if (!webrtc || !webrtc.RTCSessionDescription) return;
+
+    try {
+      console.log('🔄 [WebRTC] Applying renegotiation answer from remote');
+      const sessionDesc = new webrtc.RTCSessionDescription(answerSdp);
+      await this.peerConnection.setRemoteDescription(sessionDesc);
+      this.isRemoteDescriptionSet = true;
+      await this._flushPendingIceCandidates();
+      console.log('✅ [WebRTC] Renegotiation complete — video track active on both sides');
+    } catch (err: any) {
+      console.warn('⚠️ [WebRTC] Failed to apply renegotiation answer:', err?.message || err);
+    }
   }
 
   public disableVideo(): void {

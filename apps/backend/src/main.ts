@@ -75,7 +75,33 @@ async function bootstrap() {
   app.useGlobalInterceptors(app.get(PrometheusInterceptor), new TransformInterceptor());
   app.useGlobalFilters(new HttpExceptionFilter());
 
-  app.enableCors({ origin: '*' });
+  // FIX: CORS — previously origin:'*' allowed any website to make credentialed requests.
+  // Now restrict to known origins; mobile apps send no Origin header (treated as allowed).
+  // In production, set ALLOWED_ORIGINS env var to comma-separated list of trusted domains.
+  const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
+
+  app.enableCors({
+    origin: (origin, callback) => {
+      // Allow requests with no origin (mobile apps, curl, Postman, server-to-server)
+      if (!origin) return callback(null, true);
+      // Allow explicitly whitelisted origins
+      if (allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+      // In development, allow localhost on any port
+      if (process.env.NODE_ENV !== 'production' && /^https?:\/\/localhost(:\d+)?$/.test(origin)) {
+        return callback(null, true);
+      }
+      return callback(new Error(`CORS: origin '${origin}' not allowed`), false);
+    },
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-Id', 'X-CSRF-Token'],
+    credentials: true,
+    maxAge: 86400,
+  });
 
   // Ensure uploads directories exist for static media and avatars
   const uploadsDir = path.join(process.cwd(), 'uploads');
@@ -90,22 +116,18 @@ async function bootstrap() {
     '/uploads/avatars',
     (req: express.Request, res: express.Response, next: express.NextFunction) => {
       const filename = path.basename(req.path);
+      // Security: reject path traversal attempts
+      if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+        return res.status(400).end();
+      }
       const requestedFile = path.join(avatarsDir, filename);
       if (fs.existsSync(requestedFile) && fs.statSync(requestedFile).isFile()) {
         return res.sendFile(requestedFile);
       }
-      // Return a clean 200 SVG avatar placeholder instead of throwing 404 NOT_FOUND
-      res.setHeader('Content-Type', 'image/svg+xml');
-      res.setHeader('Cache-Control', 'public, max-age=86400');
-      return res
-        .status(200)
-        .send(
-          `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200">` +
-            `<rect width="200" height="200" fill="#1E293B"/>` +
-            `<circle cx="100" cy="75" r="40" fill="#64748B"/>` +
-            `<path d="M40 180 C40 135, 70 120, 100 120 C130 120, 160 135, 160 180 Z" fill="#64748B"/>` +
-            `</svg>`,
-        );
+      // FIX: Previously returned 200 + SVG which React Native Image component cannot render,
+      // causing onError to fire and permanently blacklist the URL in SmartAvatar.
+      // Now return a proper 404 so SmartAvatar falls back to the initials placeholder.
+      return res.status(404).json({ error: 'Avatar not found' });
     },
   );
 

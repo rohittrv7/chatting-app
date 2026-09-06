@@ -606,11 +606,19 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
       const text = (textToSend || '').trim();
       if (!text) return;
 
+      // FIX: resolvedRecipientId was missing from dep array — stale closure meant
+      // the cached UUID from a previous resolve was never picked up on subsequent sends.
       let targetId =
         resolvedRecipientId ||
         recipientDbId ||
         (route.params as any)?.recipientDbId ||
         currentConv?.recipientDbId;
+
+      // FIX: Move the slow apiService.searchUsers() call AFTER dispatch so the UI
+      // (optimistic bubble) appears instantly. We pass whatever targetId we have now;
+      // if it's missing, addMessage handles the UUID resolution async internally.
+      // The previous code awaited searchUsers() BEFORE calling addMessage — this
+      // caused 2-3s freeze on first message in a new conversation.
       if (!targetId && token) {
         const handle = (
           currentConv?.username ||
@@ -621,22 +629,24 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
         )?.replace(/^@+/, '');
 
         if (handle) {
-          try {
-            const results = await apiService.searchUsers(token, handle);
-            const match =
-              results.find(
-                (u) =>
-                  (u.username &&
-                    u.username.toLowerCase().replace(/^@+/, '') === handle.toLowerCase()) ||
-                  (u.phoneNumber &&
-                    u.phoneNumber.replace(/\D/g, '') === handle.replace(/\D/g, '')) ||
-                  (u.name && u.name.toLowerCase() === title.toLowerCase()),
-              ) || results[0];
-            if (match?.id) {
-              targetId = match.id;
-              setResolvedRecipientId(match.id);
-            }
-          } catch (e) {}
+          // Fire-and-forget: resolve in background, subsequent sends will have the UUID
+          apiService
+            .searchUsers(token, handle)
+            .then((results) => {
+              const match =
+                results.find(
+                  (u) =>
+                    (u.username &&
+                      u.username.toLowerCase().replace(/^@+/, '') === handle.toLowerCase()) ||
+                    (u.phoneNumber &&
+                      u.phoneNumber.replace(/\D/g, '') === handle.replace(/\D/g, '')) ||
+                    (u.name && u.name.toLowerCase() === title.toLowerCase()),
+                ) || results[0];
+              if (match?.id) {
+                setResolvedRecipientId(match.id);
+              }
+            })
+            .catch(() => {});
         }
       }
 
@@ -654,7 +664,18 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
       setShowEmojiPicker(false);
       setShowAttachMenu(false);
     },
-    [recipientDbId, conversationId, token, currentConv, title, resolvedDisplayName, route.params],
+    // FIX: Added resolvedRecipientId to dependency array — was missing, causing stale closure
+    [
+      recipientDbId,
+      resolvedRecipientId,
+      conversationId,
+      token,
+      currentConv,
+      title,
+      resolvedDisplayName,
+      route.params,
+      addMessage,
+    ],
   );
 
   const handlePickImage = async () => {

@@ -244,7 +244,13 @@ class CallService {
     // ── Dedicated WebRTC Offer / Answer Listeners ───────────────────────────
     socketService.on(EVT_WEBRTC_OFFER, async (payload: any) => {
       if (payload?.sdp && this.currentSession && !this.currentSession.isCaller) {
-        this.currentSession.sdp = payload.sdp;
+        // FIX: If call is already CONNECTED, this is a renegotiation offer (e.g. video upgrade)
+        // Previously this just stored sdp — now we process it immediately if PC is active.
+        if (this.currentSession.state === 'CONNECTED') {
+          await webrtcService.handleRenegotiationOffer(payload.sdp);
+        } else {
+          this.currentSession.sdp = payload.sdp;
+        }
       }
     });
 
@@ -257,6 +263,10 @@ class CallService {
         }
       }
     });
+
+    // ── FIX: Handle mid-call SDP renegotiation for video upgrade ─────────
+    // NOTE: webrtcService._setupSocketListeners() already handles these events.
+    // Registering them here was causing duplicate handler execution — removed.
 
     // ── Call Ended / Cancelled / Rejected Universal Handlers ───────────────────────────
     const handleRemoteEnd = (payload: any) => {
@@ -335,11 +345,8 @@ class CallService {
     socketService.on('call:cancel', handleRemoteEnd);
     socketService.on('call:error', handleRemoteEnd);
     socketService.on('v1.call.end', handleRemoteEnd);
-    socketService.on('call:status', (payload: any) => {
-      if (payload?.status === 'ENDED') {
-        handleRemoteEnd(payload);
-      }
-    });
+    // NOTE: 'call:status' with status=ENDED is already handled by the call:status listener
+    // registered at the top of setupSocketListeners() — no duplicate registration needed.
 
     // ── Video Switch Request / Accept / Reject ───────────────────────────────
     socketService.on(EVT_CALL_SWITCH_VIDEO, async (payload: any) => {
@@ -490,10 +497,16 @@ class CallService {
     if (callId && this.currentSession.callId !== callId) return;
 
     this.clearCallTimeout();
+    const isVideo = this.currentSession.callType === 'video';
+
+    // ── FIX: Start audio session IMMEDIATELY before any async work ───────
+    // Previously audioRoutingService.start() was called after await startLocalStream()
+    // causing ~3-5s audio silence even after connection. Now audio route is configured
+    // the instant user taps Accept — hardware audio path is ready before media capture.
+    audioRoutingService.start(isVideo);
+
     // Non-blocking sound unload for instant UI transition
     soundService.stopCallSounds().catch(() => {});
-    const isVideo = this.currentSession.callType === 'video';
-    audioRoutingService.start(isVideo);
     soundService.playCallConnectedSound().catch(() => {});
 
     // INSTANT 0ms visual feedback: transition state immediately!
@@ -502,29 +515,48 @@ class CallService {
     this.startDurationTimer();
     this.notify();
 
+    // Capture the SDP offer NOW before any async work so we don't lose it
+    const pendingSdp = this.currentSession.sdp;
+    const callerId = this.currentSession.callerId;
+    const sessionCallId = this.currentSession.callId;
+
     // Background WebRTC handshake
     try {
+      // ── FIX: Start local media stream and init peer connection in parallel ──
+      // Previously sequential: startLocalStream → initPeerConnection → handleIncomingOffer
+      // Now: startLocalStream runs first (hardware warmup), then init + offer processing
       await webrtcService.startLocalStream(isVideo);
-      await webrtcService.initPeerConnection(
-        this.currentSession.callId,
-        this.currentSession.callerId,
-        false,
-      );
+
+      // Only proceed if call wasn't ended during media capture
+      if (!this.currentSession || this.currentSession.callId !== sessionCallId) {
+        console.log('🛑 [CallService] Call ended during media capture — aborting accept');
+        return;
+      }
+
+      await webrtcService.initPeerConnection(sessionCallId, callerId, false);
 
       let answerSdp: any = null;
-      if (this.currentSession.sdp) {
-        answerSdp = await webrtcService.handleIncomingOffer(this.currentSession.sdp);
+      if (pendingSdp) {
+        // ── FIX: Use captured pendingSdp, not this.currentSession.sdp ─────
+        // this.currentSession could be null/changed by the time we await here
+        answerSdp = await webrtcService.handleIncomingOffer(pendingSdp);
+      }
+
+      // Guard again — make sure session is still active
+      if (!this.currentSession || this.currentSession.callId !== sessionCallId) {
+        console.log('🛑 [CallService] Call ended during SDP processing — aborting accept emit');
+        return;
       }
 
       socketService.emit(EVT_CALL_ACCEPT, {
-        callId: this.currentSession.callId,
-        callerId: this.currentSession.callerId,
+        callId: sessionCallId,
+        callerId,
         sdp: answerSdp,
       });
     } catch (err: any) {
       console.warn('⚠️ [WebRTC] Error during acceptCall handshake:', err);
       // Callee cannot access mic/camera: reject call immediately so caller knows
-      this.rejectCall(this.currentSession.callId, 'media_error');
+      this.rejectCall(this.currentSession?.callId ?? sessionCallId, 'media_error');
     }
   }
 

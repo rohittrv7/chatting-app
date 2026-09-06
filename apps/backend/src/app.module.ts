@@ -1,6 +1,7 @@
 import { MiddlewareConsumer, Module } from '@nestjs/common';
 import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
+import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { AuthModule } from './modules/auth/auth.module';
 import { KeyModule } from './modules/keys/key.module';
 import { ConversationModule } from './modules/conversations/conversation.module';
@@ -28,6 +29,22 @@ import { LastActiveInterceptor } from './common/interceptors/last-active.interce
       isGlobal: true,
       envFilePath: ['.env', '.env.example'],
     }),
+    // FIX: ThrottlerModule registered globally so @Throttle() decorators work app-wide.
+    // Auth-specific limits are applied via @Throttle() on individual controller methods.
+    ThrottlerModule.forRoot({
+      throttlers: [
+        {
+          name: 'otp',
+          ttl: 10 * 60 * 1000, // 10 minutes
+          limit: 10, // default; overridden per-endpoint with @Throttle()
+        },
+        {
+          name: 'global',
+          ttl: 60 * 1000, // 1 minute
+          limit: 120, // 120 req/min per IP for general API endpoints
+        },
+      ],
+    }),
     // ObservabilityModule is @Global() — exports OtelService and PrometheusInterceptor
     // to the entire application without additional imports.
     ObservabilityModule,
@@ -45,6 +62,9 @@ import { LastActiveInterceptor } from './common/interceptors/last-active.interce
   controllers: [AppController, HealthController, MetricsController],
   providers: [
     SystemDiagnosticsService,
+    // FIX: Global throttler guard — enforces rate limits defined in ThrottlerModule
+    // and per-endpoint @Throttle() decorators across the entire application.
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
     // Global JWT guard — requires @Public() to bypass authentication
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     // Global interceptor — updates Device.lastActiveAt on authenticated requests

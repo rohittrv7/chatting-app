@@ -95,11 +95,18 @@ export class AuthService {
     // Store in Redis hash otp:{phoneNumber} with 10-min TTL
     await this.otpRedis.storeOtp(normalizedPhone, code);
 
-    console.log(`🔑 [AuthService] Generated random 6-digit OTP for ${normalizedPhone}: ${code}`);
+    console.log(
+      `🔑 [AuthService] OTP generated for ${normalizedPhone.slice(0, 4)}****${normalizedPhone.slice(-2)}`,
+    );
+    // FIX: OTP value is NOT logged — logging the actual code is a security vulnerability
+    // as logs may be forwarded to monitoring systems (Datadog, CloudWatch, etc.)
+    // In production, integrate with an SMS provider (Twilio, MSG91) to deliver the OTP.
 
     return {
       message: 'OTP sent successfully',
-      mockOtp: code,
+      // FIX: Only expose mockOtp in non-production environments.
+      // In production this field is omitted — the OTP is delivered via SMS.
+      ...(process.env.NODE_ENV !== 'production' ? { mockOtp: code } : {}),
     };
   }
 
@@ -210,10 +217,13 @@ export class AuthService {
     // ── 10. Issue RefreshToken hashed with argon2id (7 days) (Requirement 1.2) ─
     const rawRefreshToken = this.jwtService.sign(payload, {
       expiresIn: '7d',
-      secret: this.configService.get<string>(
-        'JWT_REFRESH_SECRET',
-        'super_secret_jwt_refresh_key_12345',
-      ),
+      secret:
+        this.configService.get<string>('JWT_REFRESH_SECRET') ||
+        (process.env.NODE_ENV === 'production'
+          ? (() => {
+              throw new Error('JWT_REFRESH_SECRET is required in production');
+            })()
+          : 'dev_only_refresh_secret_change_in_production'),
     });
 
     const tokenHash = hashRefreshToken(rawRefreshToken);
@@ -223,12 +233,30 @@ export class AuthService {
 
     const isNewUser = !user.displayName;
 
+    // FIX: Strip sensitive fields before returning — fcmToken, DB internals should not
+    // be exposed to the client. Only return the fields the mobile app actually needs.
+    const safeUser = {
+      id: user.id,
+      phoneNumber: user.phoneNumber,
+      displayName: user.displayName,
+      username: user.username,
+      about: user.about,
+      avatarUrl: user.avatarUrl,
+    };
+
+    const safeDevice = {
+      id: device.id,
+      deviceId: device.deviceId,
+      deviceName: device.deviceName,
+      platform: device.platform,
+    };
+
     return {
       accessToken,
       refreshToken: rawRefreshToken,
       isNewUser,
-      user,
-      device,
+      user: safeUser,
+      device: safeDevice,
     };
   }
 
@@ -238,10 +266,13 @@ export class AuthService {
   async refreshToken(dto: RefreshTokenDto): Promise<{ accessToken: string; refreshToken: string }> {
     try {
       const payload = this.jwtService.verify(dto.refreshToken, {
-        secret: this.configService.get<string>(
-          'JWT_REFRESH_SECRET',
-          'super_secret_jwt_refresh_key_12345',
-        ),
+        secret:
+          this.configService.get<string>('JWT_REFRESH_SECRET') ||
+          (process.env.NODE_ENV === 'production'
+            ? (() => {
+                throw new Error('JWT_REFRESH_SECRET is required in production');
+              })()
+            : 'dev_only_refresh_secret_change_in_production'),
       });
 
       const deviceId = dto.deviceId || (payload as any).deviceId;
@@ -286,10 +317,13 @@ export class AuthService {
       const newAccessToken = this.jwtService.sign(newPayload, { expiresIn: '15m' });
       const newRefreshToken = this.jwtService.sign(newPayload, {
         expiresIn: '7d',
-        secret: this.configService.get<string>(
-          'JWT_REFRESH_SECRET',
-          'super_secret_jwt_refresh_key_12345',
-        ),
+        secret:
+          this.configService.get<string>('JWT_REFRESH_SECRET') ||
+          (process.env.NODE_ENV === 'production'
+            ? (() => {
+                throw new Error('JWT_REFRESH_SECRET is required in production');
+              })()
+            : 'dev_only_refresh_secret_change_in_production'),
       });
 
       const tokenHash = hashRefreshToken(newRefreshToken);
@@ -367,6 +401,27 @@ export class AuthService {
     if (!dto.base64Data) throw new BadRequestException('base64Data is required');
     const cleanBase64 = dto.base64Data.replace(/^data:[^;]+;base64,/, '');
     const buffer = Buffer.from(cleanBase64, 'base64');
+
+    // FIX: Validate avatar size — max 2MB for profile pictures
+    const MAX_AVATAR_SIZE = 2 * 1024 * 1024; // 2 MB
+    if (buffer.length > MAX_AVATAR_SIZE) {
+      throw new BadRequestException(
+        `Avatar file size ${buffer.length} bytes exceeds the 2 MB limit`,
+      );
+    }
+
+    // FIX: Validate that the decoded bytes are actually a valid image
+    // by checking magic bytes (file signature) — prevents disguised executable uploads
+    const isJpeg = buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+    const isPng =
+      buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47;
+    const isGif = buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46;
+    const isWebp =
+      buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50;
+    if (!isJpeg && !isPng && !isGif && !isWebp) {
+      throw new BadRequestException('Avatar must be a valid image file (JPEG, PNG, GIF, or WebP)');
+    }
+
     const filename = `avatar_${userId}_${Date.now()}.jpg`;
     const avatarsDir = path.join(process.cwd(), 'uploads', 'avatars');
     if (!fs.existsSync(avatarsDir)) fs.mkdirSync(avatarsDir, { recursive: true });
