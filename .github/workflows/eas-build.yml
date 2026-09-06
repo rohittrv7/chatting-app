@@ -17,6 +17,7 @@ on:
       - '.github/workflows/eas-build.yml'
     branches:
       - build-apk
+      - develop
 
 jobs:
   build-apk:
