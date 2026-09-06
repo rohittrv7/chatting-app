@@ -141,6 +141,18 @@ class RealtimeSocketService {
   private eventListeners: Map<string, Set<(...args: any[]) => void>> = new Map();
   private disconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private inCallChecker: (() => boolean) | null = null;
+  private outboxQueue: any[] = [];
+
+  private _flushOutbox(): void {
+    if (!this.socket?.connected || this.outboxQueue.length === 0) return;
+    console.log(`📤 [Socket] Flushing ${this.outboxQueue.length} queued messages from outbox`);
+    while (this.outboxQueue.length > 0) {
+      const payload = this.outboxQueue.shift();
+      if (payload) {
+        this.socket.emit(EVT_MESSAGE_SEND, payload);
+      }
+    }
+  }
 
   constructor() {
     // Reconnect when server URL toggles (Local ↔ Live in dev)
@@ -292,7 +304,16 @@ class RealtimeSocketService {
     mediaSize?: string;
     type?: string;
   }): void {
-    if (!this.socket?.connected) return;
+    if (!this.socket?.connected) {
+      console.warn(
+        `⏳ [Socket] Not connected — enqueuing message ${payload.clientMessageId} in outbox`,
+      );
+      this.outboxQueue.push(payload);
+      if (this.socket && !this.socket.connected) {
+        this.socket.connect();
+      }
+      return;
+    }
     this.socket.emit(EVT_MESSAGE_SEND, payload);
   }
 
@@ -413,6 +434,7 @@ class RealtimeSocketService {
 
     this.socket.on('connect', () => {
       console.log('🟢 [Socket] Connected successfully! Socket ID:', this.socket?.id);
+      this._flushOutbox();
       this.callbacks.onConnect?.();
     });
 

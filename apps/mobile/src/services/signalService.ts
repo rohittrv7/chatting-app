@@ -58,6 +58,8 @@ async function preloadActiveSessions(): Promise<void> {
 const failedBundleCache = new Map<string, number>();
 const FAILED_BUNDLE_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes
 
+export const ENCRYPTION_ENABLED = false;
+
 class SignalService {
   private isInitialized = false;
   private currentUserId?: string;
@@ -71,6 +73,15 @@ class SignalService {
   async initDeviceKeys(userId: string, deviceId: number = 1, token: string): Promise<boolean> {
     this.currentUserId = userId;
     this.currentDeviceId = deviceId;
+    this.isInitialized = true;
+
+    if (!ENCRYPTION_ENABLED) {
+      console.log(
+        '🔓 [Signal] E2EE bypassed (ENCRYPTION_ENABLED = false) - skipping key registration',
+      );
+      return true;
+    }
+
     await signalProtocolStore.init();
 
     const existingIdentity = await signalProtocolStore.getIdentityKeyPair();
@@ -152,6 +163,18 @@ class SignalService {
     token: string,
   ): Promise<SignalCiphertextEntry[]> {
     if (!plaintext) return [];
+
+    if (!ENCRYPTION_ENABLED) {
+      // Direct fast bypass: send plaintext as ciphertext with 0 network calls and 0 crypto overhead
+      return [
+        {
+          deviceId: 1,
+          ciphertext: plaintext,
+          messageType: 1,
+        },
+      ];
+    }
+
     await signalProtocolStore.init();
     await preloadActiveSessions();
 
@@ -265,6 +288,11 @@ class SignalService {
     ciphertextBase64: string,
     messageType: number,
   ): Promise<string> {
+    if (!ENCRYPTION_ENABLED) {
+      // Direct fast bypass: return text directly without any crypto overhead
+      return ciphertextBase64;
+    }
+
     await signalProtocolStore.init();
     await preloadActiveSessions();
 

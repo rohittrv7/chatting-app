@@ -274,8 +274,22 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     }
 
     const mediaSize = (payload as any).mediaSize || (payload as any).fileSize;
-    const ciphertexts = (payload as any).ciphertexts || {
-      text: text ?? '',
+    let extractedText = typeof text === 'string' ? text : '';
+    const rawCiphertexts = (payload as any).ciphertexts;
+    if (!extractedText && rawCiphertexts) {
+      if (
+        typeof rawCiphertexts === 'object' &&
+        !Array.isArray(rawCiphertexts) &&
+        rawCiphertexts.text
+      ) {
+        extractedText = rawCiphertexts.text;
+      } else if (Array.isArray(rawCiphertexts) && rawCiphertexts[0]?.ciphertext) {
+        extractedText = rawCiphertexts[0].ciphertext;
+      }
+    }
+
+    const ciphertexts = rawCiphertexts || {
+      text: extractedText,
       imagePath,
       location,
       document,
@@ -343,7 +357,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       senderAvatarUrl: senderProfile?.avatarUrl ?? undefined,
       senderPhone: senderProfile?.phoneNumber ?? undefined,
       ciphertexts,
-      text: typeof text === 'string' ? text : '',
+      text: extractedText,
       imagePath,
       location,
       document,
@@ -688,6 +702,12 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       // Deliver each missed message to the reconnected client
       for (const msg of missed) {
         const ct = msg.ciphertexts as any;
+        const msgText =
+          typeof ct === 'object' && ct !== null
+            ? Array.isArray(ct)
+              ? (ct[0]?.ciphertext ?? '')
+              : (ct?.text ?? '')
+            : '';
         client.emit(EVT_MESSAGE_NEW, {
           serverMessageId: msg.id,
           clientMessageId: msg.clientMessageId,
@@ -698,7 +718,8 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
           senderUsername: (msg as any).sender?.username,
           senderAvatarUrl: (msg as any).sender?.avatarUrl,
           senderPhone: (msg as any).sender?.phoneNumber,
-          text: ct?.text ?? '',
+          ciphertexts: msg.ciphertexts,
+          text: msgText,
           imagePath: ct?.imagePath,
           location: ct?.location,
           type: msg.type,

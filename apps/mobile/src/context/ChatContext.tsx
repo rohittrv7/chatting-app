@@ -57,7 +57,7 @@ import {
 } from '../services/contactsService';
 import { callService } from '../services/callService';
 import { e2eCryptoService } from '../services/e2eCryptoService';
-import { signalService } from '../services/signalService';
+import { signalService, ENCRYPTION_ENABLED } from '../services/signalService';
 import nacl from 'tweetnacl';
 import { arrayBufferToBase64, base64ToArrayBuffer } from '../services/signalProtocolStore';
 
@@ -613,27 +613,35 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       ? apiService.getResolvedMediaUrl(payload.senderAvatarUrl)
       : undefined;
 
-    // 🔐 Signal Protocol Multi-Device Decryption:
+    // 🔐 Signal Protocol Multi-Device Decryption / Bypass:
     let decryptedText = payload.text || '';
-    if (payload.ciphertexts && Array.isArray(payload.ciphertexts)) {
-      const myDeviceId = signalService.getDeviceId();
-      const myEntry =
-        payload.ciphertexts.find((e: any) => e.deviceId === myDeviceId) || payload.ciphertexts[0];
+    if (!decryptedText && payload.ciphertexts) {
+      if (Array.isArray(payload.ciphertexts)) {
+        const myDeviceId = signalService.getDeviceId();
+        const myEntry =
+          payload.ciphertexts.find((e: any) => e.deviceId === myDeviceId) || payload.ciphertexts[0];
 
-      if (myEntry?.ciphertext) {
-        try {
-          decryptedText = await signalService.decryptMessage(
-            payload.senderId,
-            myEntry.deviceId || 1,
-            myEntry.ciphertext,
-            myEntry.messageType || 1,
-          );
-        } catch (decErr) {
-          console.warn('⚠️ [Signal] Decryption error:', decErr);
-          decryptedText = '🔒 Encrypted message';
+        if (myEntry?.ciphertext) {
+          if (!ENCRYPTION_ENABLED) {
+            decryptedText = myEntry.ciphertext;
+          } else {
+            try {
+              decryptedText = await signalService.decryptMessage(
+                payload.senderId,
+                myEntry.deviceId || 1,
+                myEntry.ciphertext,
+                myEntry.messageType || 1,
+              );
+            } catch (decErr) {
+              console.warn('⚠️ [Signal] Decryption error:', decErr);
+              decryptedText = myEntry.ciphertext || '🔒 Encrypted message';
+            }
+          }
         }
+      } else if (typeof payload.ciphertexts === 'object') {
+        decryptedText = payload.ciphertexts.text || payload.ciphertexts.ciphertext || '';
       }
-    } else if (payload.nonce) {
+    } else if (!decryptedText && payload.nonce && ENCRYPTION_ENABLED) {
       // Fallback: legacy pre-Signal message
       try {
         const senderPubKey = await e2eCryptoService.getRecipientPublicKey(payload.senderId);
@@ -1003,13 +1011,26 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         let lastMsgIsMe = undefined;
         if (lastMsgObj) {
           const ct = lastMsgObj.ciphertexts as any;
+          const extractedCtText =
+            typeof ct?.text === 'string' && ct.text
+              ? ct.text
+              : Array.isArray(ct) && ct[0]?.ciphertext
+                ? ct[0].ciphertext
+                : typeof ct?.content === 'string' && ct.content
+                  ? ct.content
+                  : '';
           lastMsgText =
-            ct?.text ||
+            lastMsgObj.text ||
+            extractedCtText ||
             (lastMsgObj.type === 'IMAGE'
               ? '📷 Photo'
               : lastMsgObj.type === 'LOCATION'
                 ? '📍 Location'
-                : 'Message');
+                : lastMsgObj.type === 'DOCUMENT'
+                  ? '📄 Document'
+                  : lastMsgObj.type === 'CONTACT'
+                    ? '👤 Contact'
+                    : 'Message');
           if (lastMsgObj.createdAt) {
             const d = new Date(lastMsgObj.createdAt);
             lastMsgTime = `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
@@ -1156,25 +1177,34 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
           const rawContent = ct.content || ct.text || '';
           const nonce = ct.nonce;
-          let decryptedText = typeof ct.text === 'string' ? ct.text : '';
+          let decryptedText =
+            typeof ct.text === 'string' && ct.text
+              ? ct.text
+              : typeof m.text === 'string' && m.text
+                ? m.text
+                : '';
 
-          if (Array.isArray(m.ciphertexts)) {
+          if (!decryptedText && Array.isArray(m.ciphertexts)) {
             const myDeviceId = signalService.getDeviceId();
             const myEntry =
               m.ciphertexts.find((e: any) => e.deviceId === myDeviceId) || m.ciphertexts[0];
             if (myEntry?.ciphertext) {
-              try {
-                decryptedText = await signalService.decryptMessage(
-                  m.senderId,
-                  myEntry.deviceId || 1,
-                  myEntry.ciphertext,
-                  myEntry.messageType || 1,
-                );
-              } catch (err) {
-                decryptedText = '🔒 Encrypted message';
+              if (!ENCRYPTION_ENABLED) {
+                decryptedText = myEntry.ciphertext;
+              } else {
+                try {
+                  decryptedText = await signalService.decryptMessage(
+                    m.senderId,
+                    myEntry.deviceId || 1,
+                    myEntry.ciphertext,
+                    myEntry.messageType || 1,
+                  );
+                } catch (err) {
+                  decryptedText = myEntry.ciphertext || '🔒 Encrypted message';
+                }
               }
             }
-          } else if (nonce) {
+          } else if (!decryptedText && nonce && ENCRYPTION_ENABLED) {
             try {
               const targetConv = conversationsRef.current.find(
                 (c) => c.id === targetConvId || c.id === conversationId,
@@ -1425,14 +1455,19 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
           );
         }
 
-        // 🔐 Signal Protocol Multi-Device Encryption:
+        // 🔐 Signal Protocol Multi-Device Encryption / Direct Fast Bypass:
         let ciphertexts: any = undefined;
         if (text) {
-          try {
-            const tok = token || (await safeStorage.getItem('@chat_token')) || '';
-            ciphertexts = await signalService.encryptForDevices(receiverId, text, tok);
-          } catch (encErr) {
-            console.warn('⚠️ [Signal] addMessage encryption error:', encErr);
+          if (!ENCRYPTION_ENABLED) {
+            ciphertexts = [{ deviceId: 1, ciphertext: text, messageType: 1 }];
+          } else {
+            try {
+              const tok = token || (await safeStorage.getItem('@chat_token')) || '';
+              ciphertexts = await signalService.encryptForDevices(receiverId, text, tok);
+            } catch (encErr) {
+              console.warn('⚠️ [Signal] addMessage encryption error:', encErr);
+              ciphertexts = [{ deviceId: 1, ciphertext: text, messageType: 1 }];
+            }
           }
         }
 
@@ -1440,7 +1475,8 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
           clientMessageId,
           conversationId: realConvId,
           receiverId,
-          ciphertexts,
+          text: text ?? '',
+          ciphertexts: ciphertexts || [{ deviceId: 1, ciphertext: text ?? '', messageType: 1 }],
           imagePath,
           location,
           document,
@@ -1593,16 +1629,22 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
           });
 
           let ciphertexts: any = undefined;
-          try {
-            ciphertexts = await signalService.encryptForDevices(receiverId, mediaPayload, token);
-          } catch (encErr) {
-            console.warn('⚠️ [Signal] Media caption encryption error:', encErr);
+          if (!ENCRYPTION_ENABLED) {
+            ciphertexts = [{ deviceId: 1, ciphertext: caption || '', messageType: 1 }];
+          } else {
+            try {
+              ciphertexts = await signalService.encryptForDevices(receiverId, mediaPayload, token);
+            } catch (encErr) {
+              console.warn('⚠️ [Signal] Media caption encryption error:', encErr);
+              ciphertexts = [{ deviceId: 1, ciphertext: caption || '', messageType: 1 }];
+            }
           }
 
           socketService.sendMessage({
             clientMessageId,
             conversationId: realConvId,
             receiverId,
+            text: caption || '',
             ciphertexts,
             imagePath: uploadRes.url, // REMOTE URL FOR RECEIVER!
             mediaSize: formattedSize,
@@ -1737,11 +1779,16 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       let ciphertexts: any = undefined;
       if (msg.text) {
-        try {
-          const tok = (await safeStorage.getItem('@chat_token')) || '';
-          ciphertexts = await signalService.encryptForDevices(receiverId, msg.text, tok);
-        } catch (encErr) {
-          console.warn('⚠️ [Signal] resendMessage encryption error:', encErr);
+        if (!ENCRYPTION_ENABLED) {
+          ciphertexts = [{ deviceId: 1, ciphertext: msg.text, messageType: 1 }];
+        } else {
+          try {
+            const tok = (await safeStorage.getItem('@chat_token')) || '';
+            ciphertexts = await signalService.encryptForDevices(receiverId, msg.text, tok);
+          } catch (encErr) {
+            console.warn('⚠️ [Signal] resendMessage encryption error:', encErr);
+            ciphertexts = [{ deviceId: 1, ciphertext: msg.text, messageType: 1 }];
+          }
         }
       }
 
@@ -1751,7 +1798,8 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
           clientMessageId: msg.id,
           conversationId: realConvId,
           receiverId,
-          ciphertexts,
+          text: msg.text || '',
+          ciphertexts: ciphertexts || [{ deviceId: 1, ciphertext: msg.text || '', messageType: 1 }],
           imagePath: finalImagePath,
           mediaSize: msg.mediaSize,
           location: msg.location,
