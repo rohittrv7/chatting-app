@@ -12,6 +12,7 @@ import * as argon2 from 'argon2';
 import { AuthRepository } from './auth.repository';
 import { OtpRedisService } from './otp-redis.service';
 import { AuthGateway } from './auth.gateway';
+import { TokenCleanupService } from './token-cleanup.service';
 import { RequestOtpDto, VerifyOtpDto, RefreshTokenDto, SocketEvent } from '@chat/shared-contracts';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -73,6 +74,7 @@ function normalizePhoneNumber(raw: string): string {
 }
 
 import { MediaService } from '../media/media.service';
+import { PrismaService } from '../../database/prisma.service';
 
 @Injectable()
 export class AuthService {
@@ -81,8 +83,10 @@ export class AuthService {
     private readonly otpRedis: OtpRedisService,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
+    private readonly prisma: PrismaService,
     @Optional() private readonly mediaService: MediaService,
     @Optional() private readonly authGateway: AuthGateway,
+    @Optional() private readonly tokenCleanup?: TokenCleanupService,
   ) {}
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -172,6 +176,19 @@ export class AuthService {
     // ── 5. Create or find User (Requirement 1.2) ─────────────────────────
     let user = await this.authRepository.findUserByPhoneNumber(normalizedPhone);
     if (!user) {
+      // Check if account exists but is deactivated — give a clear error instead of
+      // silently creating a ghost account with the same phone number.
+      const deactivatedUser = await this.authRepository.findDeactivatedUserByPhone(normalizedPhone);
+      if (deactivatedUser) {
+        throw new HttpException(
+          {
+            code: 'ACCOUNT_DEACTIVATED',
+            message:
+              'This account has been deactivated. Contact support to reactivate your account.',
+          },
+          HttpStatus.FORBIDDEN,
+        );
+      }
       user = await this.authRepository.createUser(normalizedPhone);
     }
 
@@ -231,6 +248,10 @@ export class AuthService {
 
     await this.authRepository.saveRefreshToken(device.id, tokenHash, expiresAt);
 
+    // Opportunistic cleanup: delete any already-expired tokens for this device.
+    // Fire-and-forget — never blocks the login response.
+    this.tokenCleanup?.cleanupForDevice(device.id).catch(() => {});
+
     const isNewUser = !user.displayName;
 
     // FIX: Strip sensitive fields before returning — fcmToken, DB internals should not
@@ -284,6 +305,23 @@ export class AuthService {
         throw new UnauthorizedException('Device not found or session terminated');
       }
 
+      // Check that the account is still active before issuing a new access token
+      const accountUser = await this.prisma.user.findFirst({
+        where: { id: device.userId, isActive: true },
+        select: { id: true },
+      });
+      if (!accountUser) {
+        // Invalidate all tokens for this device so the client is fully logged out
+        await this.authRepository.deleteAllRefreshTokensByDeviceId(device.id);
+        throw new HttpException(
+          {
+            code: 'ACCOUNT_DEACTIVATED',
+            message: 'This account has been deactivated. Contact support to reactivate.',
+          },
+          HttpStatus.FORBIDDEN,
+        );
+      }
+
       // Verify the supplied raw token matches one of the stored hashes for this device (<1ms)
       const storedTokens = await this.authRepository.findRefreshTokensByDeviceId(device.id);
       let matchedToken: { id: string } | null = null;
@@ -331,6 +369,9 @@ export class AuthService {
 
       await this.authRepository.saveRefreshToken(device.id, tokenHash, expiresAt);
 
+      // Opportunistic cleanup on every rotation — fire-and-forget
+      this.tokenCleanup?.cleanupForDevice(device.id).catch(() => {});
+
       return { accessToken: newAccessToken, refreshToken: newRefreshToken };
     } catch (err) {
       if (err instanceof UnauthorizedException) throw err;
@@ -343,6 +384,19 @@ export class AuthService {
   // ──────────────────────────────────────────────────────────────────────────
   async listDevices(userId: string) {
     return this.authRepository.listDevicesByUserId(userId);
+  }
+
+  /**
+   * Update the FCM push token for a specific device.
+   * Called by the mobile app after requesting push notification permission.
+   */
+  async updateFcmToken(userId: string, deviceId: string, fcmToken: string) {
+    const device = await this.authRepository.findDeviceById(deviceId);
+    if (!device || device.userId !== userId) {
+      throw new BadRequestException('Device not found or access denied');
+    }
+    await this.authRepository.updateDeviceFcmToken(deviceId, fcmToken);
+    return { success: true, message: 'FCM token updated' };
   }
 
   async revokeDevice(userId: string, deviceIdToDelete: string) {
@@ -361,6 +415,40 @@ export class AuthService {
     }
 
     return { success: true, message: 'Device session revoked' };
+  }
+
+  /**
+   * Deactivate (soft-delete) a user account.
+   * Sets isActive=false + deletedAt=now, invalidates all refresh tokens,
+   * and force-disconnects all active sockets.
+   *
+   * For account recovery, a separate reactivation flow must use the admin
+   * or a special OTP-based route that bypasses the isActive filter.
+   */
+  async deactivateAccount(userId: string): Promise<{ success: boolean }> {
+    await this.authRepository.deactivateUser(userId);
+
+    // Invalidate all refresh tokens for all devices so existing sessions can't be renewed
+    const devices = await this.authRepository.listDevicesByUserId(userId);
+    await Promise.all(
+      devices.map((d) => this.authRepository.deleteAllRefreshTokensByDeviceId(d.id)),
+    );
+
+    // Force-disconnect all active sockets immediately.
+    // This guarantees the deactivated account stops receiving messages/calls in real-time.
+    if (this.authGateway?.server) {
+      this.authGateway.server
+        .to(`user_${userId}`)
+        .emit(SocketEvent.DEVICE_FORCE_LOGOUT, { reason: 'account_deactivated' });
+
+      // Disconnect every socket in the user's room
+      const sockets = await this.authGateway.server.in(`user_${userId}`).fetchSockets();
+      for (const socket of sockets) {
+        socket.disconnect(true);
+      }
+    }
+
+    return { success: true };
   }
 
   async updateProfile(

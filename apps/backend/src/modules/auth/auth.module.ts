@@ -12,7 +12,7 @@ import { OtpRedisService } from './otp-redis.service';
 import { JwtStrategy } from './jwt.strategy';
 import { PrismaService } from '../../database/prisma.service';
 import { MediaModule } from '../media/media.module';
-
+import { TokenCleanupService } from './token-cleanup.service';
 import { createRedisClient } from '../../common/utils/redis-factory';
 
 const REDIS_CLIENT_PROVIDER = {
@@ -66,7 +66,11 @@ const REDIS_CLIENT_PROVIDER = {
     AuthGateway,
     OtpRedisService,
     JwtStrategy,
+    PrismaService,
+    // FIX 3: Daily cron job — deletes expired RefreshToken rows at 03:00 UTC.
+    // Requires ScheduleModule.forRoot() in AppModule (already registered).
+    TokenCleanupService,
   ],
-  exports: [AuthService, AuthRepository, JwtModule, PassportModule],
+  exports: [AuthService, AuthRepository, JwtModule, PassportModule, TokenCleanupService],
 })
 export class AuthModule {}

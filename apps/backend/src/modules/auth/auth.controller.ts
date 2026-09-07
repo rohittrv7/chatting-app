@@ -128,6 +128,16 @@ export class AuthController {
     return this.authService.uploadAvatar(user.userId, dto);
   }
 
+  @Post('fcm-token')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Update FCM push notification device token for this device' })
+  async updateFcmToken(@CurrentUser() user: AuthenticatedUser, @Body() dto: { fcmToken: string }) {
+    if (!dto?.fcmToken || typeof dto.fcmToken !== 'string' || dto.fcmToken.length < 10) {
+      return { success: false, message: 'Valid fcmToken is required' };
+    }
+    return this.authService.updateFcmToken(user.userId, user.deviceId, dto.fcmToken);
+  }
+
   @Post('contacts/sync')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Sync phone contacts and discover registered users' })
@@ -176,5 +186,14 @@ export class AuthController {
     @Param('targetUserId') targetUserId: string,
   ) {
     return this.authService.getBlockStatus(user.userId, targetUserId);
+  }
+
+  @Post('account/deactivate')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Deactivate (soft-delete) own account — sets isActive=false, disconnects all sessions',
+  })
+  async deactivateAccount(@CurrentUser() user: AuthenticatedUser) {
+    return this.authService.deactivateAccount(user.userId);
   }
 }

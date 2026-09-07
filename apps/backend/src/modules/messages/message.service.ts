@@ -70,7 +70,7 @@ export class MessageService {
   /**
    * Soft delete:
    * - EVERYONE  → marks deletedAt, wipes ciphertexts, broadcasts MESSAGE_DELETED to all members
-   * - ME        → adds userId to deletedForUserIds (hidden only for requester)
+   * - ME        → creates a MessageDeletion row (hidden only for requester)
    */
   async deleteMessage(userId: string, messageId: string, deleteType: 'EVERYONE' | 'ME' = 'ME') {
     const message = await this.messageRepository.findMessageById(messageId);

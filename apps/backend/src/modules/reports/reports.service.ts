@@ -4,7 +4,23 @@ import { PrismaService } from '../../database/prisma.service';
 export interface CreateReportDto {
   messageId?: string;
   reportedUserId: string;
-  messageContent: string;
+  /**
+   * Plaintext content the reporting user decrypted locally — provided with
+   * explicit consent at report-submission time (shown in a consent dialog on
+   * the mobile app before sending).  Never populated server-side.
+   */
+  decryptedContent: string;
+  /**
+   * Raw ciphertext blob from the message — lets moderators verify that
+   * decryptedContent matches what was actually stored in the database.
+   * Optional: only present when the client can provide the original ciphertext.
+   */
+  encryptedCiphertext?: string;
+  /**
+   * ISO timestamp when the user tapped "I agree" on the consent dialog.
+   * Recorded for legal/audit purposes.
+   */
+  reporterConsentAt: string;
   reason: string;
   contextMessages?: any[];
 }
@@ -14,8 +30,13 @@ export class ReportsService {
   constructor(private readonly prisma: PrismaService) {}
 
   async createReport(reporterId: string, dto: CreateReportDto) {
-    if (!dto.reportedUserId || !dto.messageContent || !dto.reason) {
-      throw new BadRequestException('reportedUserId, messageContent, and reason are required');
+    if (!dto.reportedUserId || !dto.decryptedContent || !dto.reason) {
+      throw new BadRequestException('reportedUserId, decryptedContent, and reason are required');
+    }
+    if (!dto.reporterConsentAt) {
+      throw new BadRequestException(
+        'reporterConsentAt is required — user must explicitly consent before submitting a report',
+      );
     }
 
     // Resolve reported user
@@ -48,7 +69,9 @@ export class ReportsService {
         reporterId,
         reportedUserId: targetUser.id,
         messageId: dto.messageId,
-        messageContent: dto.messageContent,
+        decryptedContent: dto.decryptedContent,
+        encryptedCiphertext: dto.encryptedCiphertext,
+        reporterConsentAt: new Date(dto.reporterConsentAt),
         reason: dto.reason,
         contextMessages: dto.contextMessages ? (dto.contextMessages as any) : undefined,
         status: 'pending',

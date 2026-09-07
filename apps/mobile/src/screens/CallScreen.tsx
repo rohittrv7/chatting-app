@@ -106,12 +106,22 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
   const reactionAnim = useRef(new Animated.Value(0)).current;
 
   // WebRTC Live Media Streams
+  // FIX: remoteStreamVersion / localStreamVersion counters force React to fully
+  // re-mount the RTCView when a new stream is assigned (e.g. after renegotiation).
+  // Without this, RTCView receives the same streamURL and does NOT update the
+  // native video layer — causing one-sided or missing video after video upgrade.
   const [localStream, setLocalStream] = useState<MediaStream | null>(
     webrtcService.getLocalStream(),
   );
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(
     webrtcService.getRemoteStream(),
   );
+  const [localStreamVersion, setLocalStreamVersion] = useState(0);
+  const [remoteStreamVersion, setRemoteStreamVersion] = useState(0);
+
+  // ICE & signaling state tracking for both local and debug status display
+  const [iceState, setIceState] = useState<string>('new');
+  const [mediaConnected, setMediaConnected] = useState(false);
 
   const hasNavigatedBack = useRef(false);
 
@@ -123,18 +133,43 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
     }
   }, [navigation]);
 
-  // Subscribe to live WebRTC media streams
+  // Subscribe to live WebRTC media streams + ICE connection state
   useEffect(() => {
     const unsubLocal = webrtcService.subscribeLocalStream((stream) => {
+      console.log(
+        '📹 [CallScreen] Local stream updated:',
+        stream
+          ? `tracks=${stream.getTracks().length} video=${stream.getVideoTracks().length} audio=${stream.getAudioTracks().length}`
+          : 'null',
+      );
       setLocalStream(stream);
+      setLocalStreamVersion((v) => v + 1);
     });
     const unsubRemote = webrtcService.subscribeRemoteStream((stream) => {
+      console.log(
+        '📹 [CallScreen] Remote stream updated:',
+        stream
+          ? `tracks=${stream.getTracks().length} video=${stream.getVideoTracks().length} audio=${stream.getAudioTracks().length} url=${stream.toURL?.()}`
+          : 'null',
+      );
       setRemoteStream(stream);
+      setRemoteStreamVersion((v) => v + 1);
+    });
+    const unsubState = webrtcService.subscribeConnectionState((state) => {
+      console.log(`📡 [CallScreen] Connection state → ${state}`);
+      const connected = state === 'connected';
+      setMediaConnected(connected);
+    });
+    const unsubIce = webrtcService.subscribeIceConnectionState((state) => {
+      console.log(`📡 [CallScreen] ICE state → ${state}`);
+      setIceState(state);
     });
 
     return () => {
       unsubLocal();
       unsubRemote();
+      unsubState();
+      unsubIce();
     };
   }, []);
 
@@ -300,24 +335,34 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
   const isCalling = callSession?.state === 'OUTGOING_CALLING';
 
   const isEnded = callSession?.state === 'ENDED';
+
+  // FIX: Show accurate media state — "Connected" only when ICE is really connected.
+  // Previously showed timer immediately after acceptCall() even though audio was
+  // still establishing (ICE negotiating). Now shows Connecting... until media flows.
+  const isMediaFlowing = mediaConnected || iceState === 'connected' || iceState === 'completed';
+  const displayConnectedStatus = isConnected && isMediaFlowing;
+
   const statusText = isEnded
     ? callSession?.endReason === 'permission_denied'
       ? 'Permission Denied'
       : callSession?.endReason === 'media_error'
         ? 'Media Error'
         : 'Call Ended'
-    : isConnected
+    : displayConnectedStatus
       ? formatDuration(secondsElapsed)
-      : isRinging
-        ? 'Ringing...'
-        : isCalling
-          ? 'Calling...'
-          : isCaller
+      : isConnected && !isMediaFlowing
+        ? 'Connecting...'
+        : isRinging
+          ? 'Ringing...'
+          : isCalling
             ? 'Calling...'
-            : 'Incoming Call...';
+            : isCaller
+              ? 'Calling...'
+              : 'Incoming Call...';
 
   const hasRemoteVideo = isVideo && remoteStream && remoteStream.getVideoTracks().length > 0;
   const hasLocalVideo = isVideo && localStream && localStream.getVideoTracks().length > 0;
+
   const avatarSize = screenHeight < 700 ? 110 : 130;
 
   // Active audio route icon helper
@@ -431,6 +476,7 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
             {hasRemoteVideo ? (
               <View style={styles.remoteVideoWrapper}>
                 <SafeRTCView
+                  key={`remote-stream-${remoteStreamVersion}`}
                   streamURL={remoteStream!.toURL()}
                   style={StyleSheet.absoluteFillObject}
                   objectFit="cover"
@@ -463,6 +509,7 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
           {hasLocalVideo && (
             <View style={styles.pipContainer}>
               <SafeRTCView
+                key={`local-stream-${localStreamVersion}`}
                 streamURL={localStream!.toURL()}
                 style={styles.pipCamera}
                 objectFit="cover"

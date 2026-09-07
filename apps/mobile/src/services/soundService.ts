@@ -229,6 +229,8 @@ class SoundService {
   private audioCtx: any = null;
   private isAudioModeConfigured = false;
   private localFilesInitialized = false;
+  // Pre-warm promise so callers can await it
+  private _initPromise: Promise<void> | null = null;
 
   private popFileUri = '';
   private chimeFileUri = '';
@@ -251,7 +253,8 @@ class SoundService {
         }
       } catch (_) {}
     } else {
-      this._initNativeAudio().catch(() => {});
+      // Eagerly pre-warm audio engine at construction so the first call ring is instant
+      this._initPromise = this._initNativeAudio().catch(() => {});
     }
   }
 
@@ -434,10 +437,13 @@ class SoundService {
 
   /**
    * 4. Outgoing Call Ringback Tone (Looped dial tone: tring... tring...)
+   * Awaits audio init promise before playing — ensures first-call ring is instant.
    */
   public async startOutgoingRingbackTone() {
     const gen = ++this.currentSoundGeneration;
     try {
+      // Await pre-warm to guarantee WAV files are written before we try to load them
+      if (this._initPromise) await this._initPromise;
       await this.stopCallSounds();
       await this._initNativeAudio();
       if (this.currentSoundGeneration !== gen || !Audio) return;
@@ -466,10 +472,12 @@ class SoundService {
 
   /**
    * 5. Incoming Ringtone (Looped melody chime when call is incoming)
+   * Awaits audio init promise before playing — ensures first-call ring is instant.
    */
   public async startIncomingRingtone() {
     const gen = ++this.currentSoundGeneration;
     try {
+      if (this._initPromise) await this._initPromise;
       await this.stopCallSounds();
       await this._initNativeAudio();
       if (this.currentSoundGeneration !== gen || !Audio) return;
@@ -554,3 +562,11 @@ class SoundService {
 }
 
 export const soundService = new SoundService();
+
+/**
+ * Call this once at app startup (e.g. in App.tsx after navigation is ready)
+ * to pre-warm the audio engine so the very first incoming call ringtone is instant.
+ */
+export function warmupSoundService(): void {
+  soundService['_initPromise'] ?? (soundService as any)._initNativeAudio?.().catch(() => {});
+}

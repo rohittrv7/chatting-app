@@ -84,6 +84,7 @@ class WebRTCService {
   private localStreamListeners: Set<StreamListener> = new Set();
   private remoteStreamListeners: Set<StreamListener> = new Set();
   private connectionStateListeners: Set<ConnectionStateListener> = new Set();
+  private iceConnectionStateListeners: Set<ConnectionStateListener> = new Set();
 
   constructor() {
     this._setupSocketListeners();
@@ -106,6 +107,11 @@ class WebRTCService {
   public subscribeConnectionState(listener: ConnectionStateListener): () => void {
     this.connectionStateListeners.add(listener);
     return () => this.connectionStateListeners.delete(listener);
+  }
+
+  public subscribeIceConnectionState(listener: ConnectionStateListener): () => void {
+    this.iceConnectionStateListeners.add(listener);
+    return () => this.iceConnectionStateListeners.delete(listener);
   }
 
   public getLocalStream(): MediaStream | null {
@@ -268,36 +274,61 @@ class WebRTCService {
       }
     };
 
-    // Remote Track received event
+    // Remote Track received event — full path logging for debugging
     pc.ontrack = (event: any) => {
-      console.log('🎬 [WebRTC] Remote track received:', event.track?.kind);
+      const trackKind = event.track?.kind;
+      const trackId = event.track?.id?.substring(0, 8);
+      const streamCount = event.streams?.length ?? 0;
+      console.log(
+        `🎬 [WebRTC] ontrack fired: kind=${trackKind} id=${trackId} streamCount=${streamCount} enabled=${event.track?.enabled}`,
+      );
+
       if (event.streams && event.streams[0]) {
-        this.remoteStream = event.streams[0];
-        this._notifyRemoteStream(event.streams[0]);
+        const s = event.streams[0];
+        console.log(
+          `🎬 [WebRTC] Using streams[0]: videoTracks=${s.getVideoTracks().length} audioTracks=${s.getAudioTracks().length} url=${s.toURL?.()}`,
+        );
+        this.remoteStream = s;
+        this._notifyRemoteStream(s);
       } else if (event.track) {
+        // No stream attached — create/reuse MediaStream and add track manually
         if (!this.remoteStream && webrtc.MediaStream) {
           this.remoteStream = new webrtc.MediaStream();
+          console.log('🎬 [WebRTC] Created new MediaStream for trackless track');
         }
         if (this.remoteStream) {
-          this.remoteStream.addTrack(event.track);
+          // Check for duplicate tracks before adding
+          const existingTracks = this.remoteStream.getTracks();
+          const alreadyAdded = existingTracks.some((t: any) => t.id === event.track.id);
+          if (!alreadyAdded) {
+            this.remoteStream.addTrack(event.track);
+            console.log(
+              `🎬 [WebRTC] Added ${trackKind} track to remoteStream. Total tracks: ${this.remoteStream.getTracks().length}`,
+            );
+          }
           this._notifyRemoteStream(this.remoteStream);
         }
       }
     };
 
-    // ICE Connection State
+    // ICE Connection State — log every transition and notify subscribers
     pc.oniceconnectionstatechange = () => {
       const iceState = pc.iceConnectionState;
-      console.log(`📡 [WebRTC] ICE Connection State: 👉 ${iceState?.toUpperCase()}`);
+      console.log(
+        `📡 [WebRTC] ICE Connection State: 👉 ${iceState?.toUpperCase()}  (signalingState=${pc.signalingState})`,
+      );
+      this._notifyIceConnectionState(iceState);
       if (iceState === 'connected' || iceState === 'completed') {
         this._applyHighQualityVideoBitrate();
       }
     };
 
-    // Peer Connection State
+    // Peer Connection State — log every transition
     pc.onconnectionstatechange = () => {
       const state = pc.connectionState;
-      console.log(`📡 [WebRTC] Peer Connection State: 👉 ${state?.toUpperCase()}`);
+      console.log(
+        `📡 [WebRTC] Peer Connection State: 👉 ${state?.toUpperCase()}  (iceState=${pc.iceConnectionState} signalingState=${pc.signalingState})`,
+      );
       if (state === 'connected') {
         this._applyHighQualityVideoBitrate();
       }
@@ -698,6 +729,8 @@ class WebRTCService {
     this.currentCallId = null;
     this.targetUserId = null;
     this.isCaller = false;
+    // Notify ICE closed state
+    this._notifyIceConnectionState('closed');
   }
 
   private isNoiseSuppressionEnabled = false;
@@ -835,6 +868,14 @@ class WebRTCService {
 
   private _notifyConnectionState(state: string) {
     for (const listener of this.connectionStateListeners) {
+      try {
+        listener(state);
+      } catch (_) {}
+    }
+  }
+
+  private _notifyIceConnectionState(state: string) {
+    for (const listener of this.iceConnectionStateListeners) {
       try {
         listener(state);
       } catch (_) {}

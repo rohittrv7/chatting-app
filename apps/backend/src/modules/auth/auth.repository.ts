@@ -10,6 +10,7 @@ export class AuthRepository {
     const clean10 = (phoneNumber || '').replace(/\D/g, '').slice(-10);
     return this.prisma.user.findFirst({
       where: {
+        isActive: true,
         OR: [
           ...(clean10
             ? [
@@ -66,6 +67,62 @@ export class AuthRepository {
   async findDeviceById(id: string): Promise<Device | null> {
     return this.prisma.device.findUnique({
       where: { id },
+    });
+  }
+
+  async updateDeviceFcmToken(deviceId: string, fcmToken: string): Promise<void> {
+    await this.prisma.device.update({
+      where: { id: deviceId },
+      data: { fcmToken },
+    });
+  }
+
+  /**
+   * Soft-delete a user account by setting isActive=false + deletedAt=now.
+   * Does NOT delete the DB row — preserves foreign key integrity for messages,
+   * calls, reports, etc. Use a separate reactivation flow to reverse this.
+   */
+  async deactivateUser(userId: string): Promise<void> {
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { isActive: false, deletedAt: new Date() },
+    });
+  }
+
+  /**
+   * Reactivate a user account (e.g. after identity re-verification).
+   * Only used by admin or account-recovery flows — NOT exposed to normal users.
+   */
+  async reactivateUser(userId: string): Promise<void> {
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { isActive: true, deletedAt: null },
+    });
+  }
+
+  /**
+   * Find a deactivated user by phone number — used in OTP verify to detect
+   * ghost-account resurrection attempts and return a meaningful error.
+   * This intentionally does NOT filter isActive=true.
+   */
+  async findDeactivatedUserByPhone(phoneNumber: string): Promise<{ id: string } | null> {
+    const clean10 = (phoneNumber || '').replace(/\D/g, '').slice(-10);
+    return this.prisma.user.findFirst({
+      where: {
+        isActive: false,
+        OR: [
+          ...(clean10
+            ? [
+                { phoneNumber: clean10 },
+                { phoneNumber: `+91${clean10}` },
+                { phoneNumber: `+${clean10}` },
+                { phoneNumber: `91${clean10}` },
+              ]
+            : []),
+          { phoneNumber },
+        ],
+      },
+      select: { id: true },
     });
   }
 
@@ -217,6 +274,7 @@ export class AuthRepository {
 
     return this.prisma.user.findMany({
       where: {
+        isActive: true,
         phoneNumber: { in: Array.from(variations) },
         ...(excludeUserId ? { id: { not: excludeUserId } } : {}),
       },
@@ -250,6 +308,7 @@ export class AuthRepository {
 
     return this.prisma.user.findMany({
       where: {
+        isActive: true,
         OR: orConditions,
       },
       select: {

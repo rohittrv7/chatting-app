@@ -64,6 +64,8 @@ import {
   syncContactsWithBackend,
 } from '../services/contactsService';
 import { callService } from '../services/callService';
+import { e2eCryptoService } from '../services/e2eCryptoService';
+import { notificationService } from '../services/notificationService';
 import nacl from 'tweetnacl';
 import { arrayBufferToBase64, base64ToArrayBuffer } from '../services/signalProtocolStore';
 
@@ -399,7 +401,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     });
   }, []);
 
-  // ─── On login: sync server conversations + contacts ───────────────────────
+  // ─── On login: sync server conversations, contacts + register E2EE keys ──
 
   useEffect(() => {
     if (!token) return;
@@ -425,6 +427,12 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         dispatch(setConversations(updated));
       })
       .catch(() => {});
+
+    // Register / refresh E2EE nacl.box public key with backend once per login
+    e2eCryptoService.registerPublicKeyWithBackend(token).catch(() => {});
+
+    // Initialize push notifications — request permission, get FCM token, upload to backend
+    notificationService.init(token).catch(() => {});
   }, [token]);
 
   // ─── Socket: connect / reconnect whenever token or userId changes ─────────
@@ -470,6 +478,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!token && socketService.isConnected()) {
       socketService.disconnect();
       sentReceiptsRef.current.clear();
+      notificationService.cleanup();
     }
   }, [token]);
 
@@ -619,11 +628,24 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       ? apiService.getResolvedMediaUrl(payload.senderAvatarUrl)
       : undefined;
 
-    // ── Direct plain text message (E2EE completely removed) ──────────────
+    // ── E2EE: Decrypt incoming message text using nacl.box ───────────────
+    // If ciphertexts contains e2e fields (ciphertext + nonce + senderPublicKey),
+    // decrypt using our private key. Falls back to plaintext for legacy messages.
     let finalDecryptedText = payload.text || '';
     if (!finalDecryptedText && payload.ciphertexts) {
       if (typeof payload.ciphertexts === 'object' && !Array.isArray(payload.ciphertexts)) {
-        finalDecryptedText = payload.ciphertexts.text || payload.ciphertexts.caption || '';
+        const ct = payload.ciphertexts as any;
+        if (ct.ciphertext && ct.nonce) {
+          // E2EE message — decrypt with sender's public key
+          const senderPubKey = ct.senderPublicKey || null;
+          finalDecryptedText = await e2eCryptoService.decryptMessage(
+            ct.ciphertext,
+            ct.nonce,
+            senderPubKey,
+          );
+        } else {
+          finalDecryptedText = ct.text || ct.caption || '';
+        }
       } else if (Array.isArray(payload.ciphertexts)) {
         finalDecryptedText = payload.ciphertexts[0]?.ciphertext || '';
       }
@@ -1138,6 +1160,16 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
                     ? ct.content
                     : '';
 
+          // E2EE: decrypt historical message if it has nacl.box ciphertext + nonce
+          if (!isMe && ct.ciphertext && ct.nonce) {
+            const senderPubKey = ct.senderPublicKey || null;
+            decryptedText = await e2eCryptoService.decryptMessage(
+              ct.ciphertext,
+              ct.nonce,
+              senderPubKey,
+            );
+          }
+
           let finalDecryptedText = decryptedText;
           let attachmentCrypto: { fileKey: string; fileNonce: string } | undefined;
           try {
@@ -1368,13 +1400,37 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
           );
         }
 
-        // ── Direct plain text message send (E2EE completely removed) ─────
+        // ── E2EE: Encrypt text with recipient's nacl.box public key ─────
+        // Fetch recipient's public key (cached after first fetch — ~0ms on subsequent messages).
+        // Falls back to plaintext if key not available (graceful degradation).
+        let msgCiphertexts: any = { text: text ?? '' };
+        try {
+          const myPubKey = await e2eCryptoService.getMyPublicKey();
+          const recipientPubKey = await e2eCryptoService.getRecipientPublicKey(
+            receiverId,
+            tokenRef.current || undefined,
+          );
+          if (recipientPubKey && myPubKey) {
+            const encrypted = await e2eCryptoService.encryptMessage(text ?? '', recipientPubKey);
+            if (encrypted) {
+              msgCiphertexts = {
+                ciphertext: encrypted.ciphertext,
+                nonce: encrypted.nonce,
+                senderPublicKey: myPubKey,
+              };
+            }
+          }
+        } catch (_encErr) {
+          // Encryption failed — send as plaintext, never drop the message
+          msgCiphertexts = { text: text ?? '' };
+        }
+
         socketService.sendMessage({
           clientMessageId,
           conversationId: realConvId,
           receiverId,
           text: text ?? '',
-          ciphertexts: { text: text ?? '' },
+          ciphertexts: msgCiphertexts,
           imagePath,
           location,
           document,
@@ -2132,3 +2188,14 @@ export const useChat = () => useContext(ChatContext);
 // to avoid re-rendering when unrelated chat state changes.
 export const usePresence = () => useContext(PresenceContext);
 export const useTyping = () => useContext(TypingContext);
+
+/**
+ * Register the navigation callback for push notification deep-linking.
+ * Call this once from your root navigator component after it has mounted.
+ * Example: notificationNavigationHandler((screen, params) => navigation.navigate(screen, params))
+ */
+export function notificationNavigationHandler(
+  cb: (screen: string, params: Record<string, any>) => void,
+): void {
+  notificationService.setNavigationHandler(cb);
+}

@@ -500,6 +500,28 @@ export const apiService = {
   },
 
   /**
+   * Upload FCM device token to backend so server can send push notifications.
+   * Called once on login and whenever the token changes.
+   */
+  async updateFcmToken(token: string, fcmToken: string): Promise<boolean> {
+    try {
+      const response = await this.fetchWithAuth(
+        `${getApiBaseUrl()}/auth/fcm-token`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fcmToken }),
+        },
+        token,
+      );
+      return response.ok;
+    } catch (e) {
+      console.warn('updateFcmToken error:', e);
+      return false;
+    }
+  },
+
+  /**
    * Load stored authentication session on app launch
    */
   async loadStoredSession(): Promise<{
@@ -1165,7 +1187,34 @@ export const apiService = {
   },
 
   async uploadPublicKey(token: string, publicKey: string): Promise<{ success: boolean }> {
-    return { success: true };
+    // Store the nacl.box X25519 public key via the Signal key registration endpoint.
+    // We use a minimal RegisterKeysDto — identityPublicKey holds our X25519 public key,
+    // signedPreKey and oneTimePreKeys are set to minimal valid placeholder values.
+    // The backend's key.service validates key lengths but still stores the identity key.
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/keys/register`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          deviceId: 1,
+          identityPublicKey: publicKey,
+          // Minimal 32-byte placeholder for signedPreKey (backend stores identity key regardless)
+          signedPreKeyId: 1,
+          signedPrePublicKey: publicKey,
+          signedPreKeySignature:
+            'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+          registrationId: 1,
+          oneTimePreKeys: [],
+        }),
+      });
+      if (response.ok) return { success: true };
+    } catch (e) {
+      console.warn('uploadPublicKey error:', e);
+    }
+    return { success: false };
   },
 
   /**
@@ -1228,7 +1277,8 @@ export const apiService = {
   },
 
   /**
-   * Get target user's X25519 public key from backend
+   * Get target user's X25519 public key (nacl.box identity key) from backend.
+   * Uses the Signal key bundle endpoint which returns identityPublicKey.
    */
   async getUserPublicKey(
     targetUserId: string,
@@ -1236,8 +1286,9 @@ export const apiService = {
   ): Promise<{ userId: string; publicKey: string | null } | null> {
     try {
       const authToken = token || (await safeStorage.getItem('@chat_token'));
+      // Use the existing key bundle endpoint — identityPublicKey is our nacl.box key
       const response = await fetch(
-        `${getApiBaseUrl()}/users/${encodeURIComponent(targetUserId)}/public-key`,
+        `${getApiBaseUrl()}/keys/bundle/${encodeURIComponent(targetUserId)}/1`,
         {
           method: 'GET',
           headers: {
@@ -1249,7 +1300,8 @@ export const apiService = {
       if (response.ok) {
         const json = await response.json();
         const data = json.data || json;
-        return { userId: data.userId, publicKey: data.publicKey };
+        const publicKey = data.identityPublicKey || data.publicKey || null;
+        return { userId: targetUserId, publicKey };
       }
     } catch (e) {
       console.warn('getUserPublicKey error:', e);

@@ -88,6 +88,7 @@ export class ConversationRepository {
     const clean10 = clean.replace(/\D/g, '').slice(-10);
     const dbUser = await this.prisma.user.findFirst({
       where: {
+        isActive: true,
         OR: [
           { id: userId },
           { username: { equals: clean, mode: 'insensitive' } },
@@ -164,6 +165,7 @@ export class ConversationRepository {
     const clean10 = clean.replace(/\D/g, '').slice(-10);
     const dbUser = await this.prisma.user.findFirst({
       where: {
+        isActive: true,
         OR: [
           { id: userId },
           { username: { equals: clean, mode: 'insensitive' } },
@@ -184,7 +186,7 @@ export class ConversationRepository {
     const cleanConv = conversationId.replace('room_', '');
     const convCandidates = Array.from(new Set([conversationId, cleanConv, `room_${cleanConv}`]));
 
-    // 1. Remove user from ConversationMember for this conversation so it no longer appears in conversation list
+    // 1. Remove user from ConversationMember so conversation no longer appears in list
     await this.prisma.conversationMember.deleteMany({
       where: {
         userId: targetUserId,
@@ -192,27 +194,21 @@ export class ConversationRepository {
       },
     });
 
-    // FIX: N+1 bug — previously fetched all messages then updated each in a loop.
-    // Now uses a single updateMany with JSON_ARRAY_APPEND-equivalent via raw push.
-    // Prisma doesn't support array push in updateMany directly, but we can use
-    // a raw query pattern: fetch IDs only, then updateMany with push.
-    const msgIds = await this.prisma.message.findMany({
+    // FIX: Use MessageDeletion table instead of deletedForUserIds array.
+    // createMany + skipDuplicates = single round-trip, fully idempotent.
+    const msgs = await this.prisma.message.findMany({
       where: {
         conversationId: { in: convCandidates },
-        NOT: { deletedForUserIds: { has: targetUserId } },
+        deletions: { none: { userId: targetUserId } },
       },
       select: { id: true },
     });
 
-    if (msgIds.length > 0) {
-      // Batch update: add userId to deletedForUserIds array for all messages at once
-      // using raw SQL to avoid N+1 individual updates
-      await this.prisma.$executeRaw`
-        UPDATE "Message"
-        SET "deletedForUserIds" = array_append("deletedForUserIds", ${targetUserId})
-        WHERE id = ANY(${msgIds.map((m) => m.id)}::text[])
-        AND NOT (${targetUserId} = ANY("deletedForUserIds"))
-      `;
+    if (msgs.length > 0) {
+      await this.prisma.messageDeletion.createMany({
+        data: msgs.map((m) => ({ messageId: m.id, userId: targetUserId })),
+        skipDuplicates: true,
+      });
     }
 
     return { success: true, message: 'Conversation deleted successfully' };

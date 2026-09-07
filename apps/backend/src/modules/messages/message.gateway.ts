@@ -337,8 +337,8 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       phoneNumber?: string | null;
     } | null = null;
     try {
-      senderProfile = await this.prisma.user.findUnique({
-        where: { id: senderId },
+      senderProfile = await this.prisma.user.findFirst({
+        where: { id: senderId, isActive: true },
         select: { displayName: true, username: true, avatarUrl: true, phoneNumber: true },
       });
     } catch {
@@ -425,6 +425,36 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
               status: 'READ',
             });
           }
+        } else {
+          // Receiver is offline — send FCM push notification so they see the message
+          // even when the app is in the background or killed.
+          const senderProfile = await this.prisma.user
+            .findFirst({
+              where: { id: senderId, isActive: true },
+              select: { displayName: true, avatarUrl: true },
+            })
+            .catch(() => null);
+
+          const preview = extractedText
+            ? extractedText.substring(0, 100)
+            : imagePath
+              ? '📷 Photo'
+              : document
+                ? `📄 ${(document as any)?.name || 'Document'}`
+                : location
+                  ? '📍 Location'
+                  : 'New message';
+
+          this.pushNotificationService
+            .sendMessagePush(receiverId, {
+              conversationId,
+              senderId,
+              senderName: senderProfile?.displayName || 'Contact',
+              senderAvatar: senderProfile?.avatarUrl || undefined,
+              messagePreview: preview,
+              messageType: msgType,
+            })
+            .catch(() => {});
         }
         // If receiver is offline, message stays SENT in DB.
         // It will be delivered via _deliverMissedMessages when they reconnect.
@@ -678,7 +708,8 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
           status: { in: ['SERVER_RECEIVED' as any] },
           createdAt: { gt: since },
           deletedAt: null,
-          NOT: { deletedForUserIds: { has: userId } },
+          // FIX: Use MessageDeletion join table instead of array column
+          deletions: { none: { userId } },
         },
         orderBy: { createdAt: 'asc' },
         take: 200,
@@ -762,12 +793,13 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       } catch (_) {}
     }
 
-    // 2. Try looking up User by username, displayName, or phoneNumber
+    // 2. Try looking up User by username, displayName, or phoneNumber — active users only
     try {
       const cleanHandle = input.replace(/^@/, '').trim();
       const phoneDigits = input.replace(/\D/g, '').slice(-10);
       const user = await this.prisma.user.findFirst({
         where: {
+          isActive: true,
           OR: [
             { id: input },
             { username: { equals: cleanHandle, mode: 'insensitive' } },

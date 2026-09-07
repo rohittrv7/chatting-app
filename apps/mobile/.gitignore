@@ -5,3 +5,4 @@ dist/
 /ios
 *.apk
 *.aab
+.kiro/

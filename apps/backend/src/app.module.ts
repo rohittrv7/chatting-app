@@ -1,6 +1,7 @@
 import { MiddlewareConsumer, Module } from '@nestjs/common';
 import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
+import { ScheduleModule } from '@nestjs/schedule';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { AuthModule } from './modules/auth/auth.module';
 import { KeyModule } from './modules/keys/key.module';
@@ -29,6 +30,9 @@ import { LastActiveInterceptor } from './common/interceptors/last-active.interce
       isGlobal: true,
       envFilePath: ['.env', '.env.example'],
     }),
+    // FIX 3: ScheduleModule registers the NestJS task-scheduler that powers the
+    // daily RefreshToken cleanup cron in TokenCleanupService (auth module).
+    ScheduleModule.forRoot(),
     // FIX: ThrottlerModule registered globally so @Throttle() decorators work app-wide.
     // Auth-specific limits are applied via @Throttle() on individual controller methods.
     ThrottlerModule.forRoot({

@@ -125,7 +125,9 @@ class CallService {
             this.currentSession.state = 'OUTGOING_RINGING';
             // Start ringback tone only when receiver is confirmed online/ringing
             if (this.currentSession.isCaller) {
-              soundService.startOutgoingRingbackTone();
+              soundService
+                .startOutgoingRingbackTone()
+                .catch((e) => console.warn('⚠️ [CallService] Ringback tone failed:', e));
             }
             this.notify();
           }
@@ -200,8 +202,12 @@ class CallService {
       // 45s incoming call timeout (auto-missed if unpicked)
       this.startCallTimeout(45000);
 
-      // Play looping incoming ringtone
-      soundService.startIncomingRingtone();
+      // FIX: startIncomingRingtone now awaits its own init promise internally,
+      // but fire as non-blocking so incoming call UI shows instantly.
+      // The ringtone will start playing as soon as the audio session is ready (~50ms).
+      soundService
+        .startIncomingRingtone()
+        .catch((e) => console.warn('⚠️ [CallService] Incoming ringtone failed:', e));
       this.notify();
     });
 

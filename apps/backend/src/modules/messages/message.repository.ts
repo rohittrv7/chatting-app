@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
 import { DeliveryStatus, ConversationType } from '@chat/shared-contracts';
 import { Prisma } from '@prisma/client';
@@ -18,11 +18,14 @@ export class MessageRepository {
   constructor(private readonly prisma: PrismaService) {}
 
   async createMessage(senderUserId: string, senderDeviceId: string, dto: CreateMessageInput) {
-    // 1. Resolve or ensure sender User exists in DB
+    // 1. Resolve sender — only active users can send messages.
+    // Ghost account resurrection guard: if sender is deactivated, findFirst returns null
+    // and we throw ForbiddenException instead of creating a new user record (old behaviour).
     const cleanUsernameOrPhone = (senderUserId || '').replace(/^@+/, '');
     const clean10 = cleanUsernameOrPhone.replace(/\D/g, '').slice(-10);
-    let user = await this.prisma.user.findFirst({
+    const user = await this.prisma.user.findFirst({
       where: {
+        isActive: true,
         OR: [
           { id: senderUserId },
           { username: cleanUsernameOrPhone },
@@ -40,15 +43,10 @@ export class MessageRepository {
     });
 
     if (!user) {
-      // Fallback create user if non-existent
-      user = await this.prisma.user.create({
-        data: {
-          id: senderUserId.includes('-') && senderUserId.length === 36 ? senderUserId : undefined,
-          phoneNumber: clean10 || cleanUsernameOrPhone || `user_${Date.now()}`,
-          username: cleanUsernameOrPhone || `user_${Date.now()}`,
-          displayName: cleanUsernameOrPhone || 'User',
-        },
-      });
+      // Sender is deactivated or doesn't exist — reject the message.
+      // Previously: created a ghost account here, which allowed deactivated users to
+      // keep sending messages under a new record. That path is now removed.
+      throw new ForbiddenException(`Sender not found or account is deactivated: ${senderUserId}`);
     }
 
     // 2. Ensure Device exists for the user
@@ -100,6 +98,7 @@ export class MessageRepository {
       const rec10 = cleanRec.replace(/\D/g, '').slice(-10);
       let recUser = await this.prisma.user.findFirst({
         where: {
+          isActive: true,
           OR: [
             { id: receiverRaw },
             { username: { equals: cleanRec, mode: 'insensitive' } },
@@ -136,6 +135,7 @@ export class MessageRepository {
         const p10 = cleanP.replace(/\D/g, '').slice(-10);
         const pUser = await this.prisma.user.findFirst({
           where: {
+            isActive: true,
             OR: [
               { id: part },
               { username: { equals: cleanP, mode: 'insensitive' } },
@@ -223,27 +223,25 @@ export class MessageRepository {
 
   /**
    * Soft Delete for Me:
-   * Adds the requesting user's ID to deletedForUserIds array.
+   * Creates a MessageDeletion row (replaces old deletedForUserIds array approach).
+   * The @@unique([messageId, userId]) constraint makes this idempotent on retry.
    */
   async softDeleteForMe(messageId: string, userId: string) {
     const msg = await this.prisma.message.findUnique({
       where: { id: messageId },
-      select: { deletedForUserIds: true },
+      select: { id: true },
     });
 
     if (!msg) return null;
 
-    const currentList = msg.deletedForUserIds || [];
-    if (!currentList.includes(userId)) {
-      currentList.push(userId);
-    }
-
-    return this.prisma.message.update({
-      where: { id: messageId },
-      data: {
-        deletedForUserIds: currentList,
-      },
+    // upsert is safe against concurrent duplicates
+    await this.prisma.messageDeletion.upsert({
+      where: { messageId_userId: { messageId, userId } },
+      create: { messageId, userId },
+      update: {}, // already deleted — no-op
     });
+
+    return { id: messageId };
   }
 
   /**
@@ -255,6 +253,7 @@ export class MessageRepository {
     const clean10 = clean.replace(/\D/g, '').slice(-10);
     const dbUser = await this.prisma.user.findFirst({
       where: {
+        isActive: true,
         OR: [
           { id: userId },
           { username: { equals: clean, mode: 'insensitive' } },
@@ -286,23 +285,21 @@ export class MessageRepository {
       },
     });
 
-    // FIX: N+1 bug — previously looped over all messages with individual updates.
-    // Now uses a single raw SQL update to add userId to deletedForUserIds array.
-    const msgIds = await this.prisma.message.findMany({
+    // FIX: Insert MessageDeletion rows for all messages in this conversation.
+    // Uses createMany with skipDuplicates — idempotent and a single DB round-trip.
+    const msgs = await this.prisma.message.findMany({
       where: {
         conversationId: { in: convCandidates },
-        NOT: { deletedForUserIds: { has: targetUserId } },
+        deletions: { none: { userId: targetUserId } },
       },
       select: { id: true },
     });
 
-    if (msgIds.length > 0) {
-      await this.prisma.$executeRaw`
-        UPDATE "Message"
-        SET "deletedForUserIds" = array_append("deletedForUserIds", ${targetUserId})
-        WHERE id = ANY(${msgIds.map((m) => m.id)}::text[])
-        AND NOT (${targetUserId} = ANY("deletedForUserIds"))
-      `;
+    if (msgs.length > 0) {
+      await this.prisma.messageDeletion.createMany({
+        data: msgs.map((m) => ({ messageId: m.id, userId: targetUserId })),
+        skipDuplicates: true,
+      });
     }
 
     return { success: true, message: 'Chat history cleared successfully' };
@@ -327,6 +324,7 @@ export class MessageRepository {
         const u2 = parts[1];
         const dbUsers = await this.prisma.user.findMany({
           where: {
+            isActive: true,
             OR: [
               { username: { in: [u1, u2], mode: 'insensitive' } },
               { id: { in: [u1, u2] } },
@@ -371,26 +369,15 @@ export class MessageRepository {
       where: {
         conversationId: { in: Array.from(candidateIds) },
         ...(clearedHistoryAt ? { createdAt: { gt: clearedHistoryAt } } : {}),
-        ...(requestingUserId
-          ? {
-              NOT: {
-                deletedForUserIds: {
-                  has: requestingUserId,
-                },
-              },
-            }
-          : {}),
+        // FIX: Use MessageDeletion join table instead of array column for O(log n) lookup
+        ...(requestingUserId ? { deletions: { none: { userId: requestingUserId } } } : {}),
       },
       take: limit,
       skip: cursor ? 1 : 0,
       cursor: cursor ? { id: cursor } : undefined,
       orderBy: { createdAt: 'desc' },
       include: {
-        attachments: {
-          where: {
-            deletedAt: null,
-          },
-        },
+        attachments: { where: { deletedAt: null } },
         reactions: true,
         receipts: true,
       },

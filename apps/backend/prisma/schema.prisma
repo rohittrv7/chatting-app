@@ -1,3 +1,29 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// DATABASE NOTES FOR FUTURE MAINTAINERS
+//
+// FUTURE: Message table partitioning
+//   When Message row count exceeds ~50M rows, consider native PostgreSQL
+//   declarative partitioning on Message.createdAt (monthly or quarterly ranges).
+//   Options:
+//     - pg_partman extension for automatic partition creation/retention
+//     - Manual DDL with CREATE TABLE Message_2025_Q1 PARTITION OF Message
+//       FOR VALUES FROM ('2025-01-01') TO ('2025-04-01')
+//   Migration path: create new partitioned table, back-fill in batches,
+//   swap via atomic rename. Prisma's $executeRaw can drive the DDL.
+//   Do NOT attempt this without a full DB backup and downtime window.
+//
+// FUTURE: Group chat enhancements
+//   ConversationType.GROUP and ConversationMember.role are intentionally minimal.
+//   When building full group-chat features, the following schema additions will
+//   be needed (create a separate migration for each):
+//     - Conversation: maxMembers Int @default(256), description String?,
+//       inviteLinkToken String? @unique, muteUntil per-member
+//     - ConversationMember: mutedUntil DateTime?, isAdmin Boolean, nickname String?
+//     - New table: GroupInviteLink { id, conversationId, token, createdBy,
+//       expiresAt, usageCount, maxUsage }
+//   Enforce maxMembers at the application layer (ConversationService), not just DB.
+// ─────────────────────────────────────────────────────────────────────────────
+
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
@@ -51,6 +77,10 @@ enum CallStatus {
   BUSY
 }
 
+// FIX 5: Added isActive + deletedAt for soft account deletion/deactivation.
+// Use isActive=false + deletedAt=now for GDPR-compliant deletion (preserves
+// foreign key integrity while hiding the account from all queries).
+// Application layer MUST filter WHERE isActive = true on all user-facing queries.
 model User {
   id            String               @id @default(uuid())
   phoneNumber   String               @unique
@@ -58,6 +88,8 @@ model User {
   displayName   String?
   avatarUrl     String?
   about         String?              @default("Hey there! I am using WhatsApp.")
+  isActive      Boolean              @default(true)
+  deletedAt     DateTime?
   createdAt     DateTime             @default(now())
   updatedAt     DateTime             @updatedAt
 
@@ -76,8 +108,11 @@ model User {
   reportsFiled  Report[]             @relation("ReportReporter")
   reportsReceived Report[]           @relation("ReportReportedUser")
   settings      Setting?
+  messageDeletions MessageDeletion[]
 
   @@index([phoneNumber])
+  @@index([isActive])
+  @@index([deletedAt])
 }
 
 model Device {
@@ -89,7 +124,7 @@ model Device {
   fcmToken       String?
   lastActiveAt   DateTime       @default(now())
   createdAt      DateTime       @default(now())
-  
+
   user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
   refreshTokens  RefreshToken[]
   sentMessages   Message[]      @relation("SenderDevice")
@@ -109,6 +144,10 @@ model RefreshToken {
   createdAt DateTime @default(now())
 
   device    Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  // FIX 3: Daily cron job (TokenCleanupService) deletes rows WHERE expiresAt < now().
+  // Index on expiresAt makes the DELETE fast even on large tables.
+  @@index([expiresAt])
 }
 
 model IdentityKey {
@@ -184,6 +223,30 @@ model ConversationMember {
   @@index([userId])
 }
 
+// FIX 2: Replaced deletedForUserIds String[] array column on Message with a
+// dedicated MessageDeletion join table. Reasons:
+//   - Postgres array columns require a GIN index for fast "has userId" checks;
+//     without it, every getHistoricalMessages query does a full seq-scan on
+//     the array for filtering. With crores of messages this becomes O(n).
+//   - The join table allows a simple indexed lookup:
+//       SELECT 1 FROM "MessageDeletion" WHERE "messageId"=$1 AND "userId"=$2
+//     which hits the composite unique B-tree index in O(log n).
+//   - deletedAt on this table enables future TTL cleanup if needed.
+model MessageDeletion {
+  id          String   @id @default(uuid())
+  messageId   String
+  userId      String
+  deletedAt   DateTime @default(now())
+
+  message     Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId])
+  @@index([userId])
+  @@index([messageId])
+}
+
+// FUTURE partitioning note: see top-of-file comment.
 model Message {
   id                String         @id @default(uuid())
   /// Client-generated idempotency key — unique per sender to prevent duplicate inserts on retry
@@ -197,7 +260,7 @@ model Message {
   replyToId         String?
   isEdited          Boolean        @default(false)
   deletedAt         DateTime?
-  deletedForUserIds String[]       @default([])
+  // FIX 2: deletedForUserIds removed — replaced by MessageDeletion table above.
   createdAt         DateTime       @default(now())
   updatedAt         DateTime       @updatedAt
 
@@ -206,10 +269,11 @@ model Message {
   senderDevice      Device         @relation("SenderDevice", fields: [senderDeviceId], references: [id], onDelete: Restrict)
   replyTo           Message?       @relation("MessageReplies", fields: [replyToId], references: [id], onDelete: SetNull)
   replies           Message[]      @relation("MessageReplies")
-  
+
   attachments       Attachment[]
   reactions         Reaction[]
   receipts          Receipt[]
+  deletions         MessageDeletion[]
 
   @@unique([senderId, clientMessageId])
   @@index([conversationId, createdAt])
@@ -294,6 +358,8 @@ model Participant {
   @@unique([callId, userId])
 }
 
+// FIX 4: Added @@index([blockedId]) for reverse-lookup ("who has blocked me?").
+// The existing @@unique([blockerId, blockedId]) covers forward lookups efficiently.
 model BlockedUser {
   id        String   @id @default(uuid())
   blockerId String
@@ -304,6 +370,7 @@ model BlockedUser {
   blocked   User     @relation("BlockedTargetUser", fields: [blockedId], references: [id], onDelete: Cascade)
 
   @@unique([blockerId, blockedId])
+  @@index([blockedId])
 }
 
 model Setting {
@@ -319,19 +386,61 @@ model Setting {
   user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
+// FIX 1: Report model redesigned for E2EE compatibility.
+//
+// PROBLEM: The old `messageContent String` field stored plaintext message text.
+// In an E2EE system the server never has (or should have) access to plaintext,
+// so storing it violates the security model — any server breach would expose
+// the reported message content for all reports ever filed.
+//
+// CHOSEN APPROACH: "Client-side evidence bundle with explicit consent"
+//
+// When a user taps "Report", the mobile app:
+//   1. Has already decrypted the message locally (it's in the chat UI)
+//   2. Shows a consent dialog: "Your decrypted message will be sent to
+//      moderators to review this report. Proceed?"
+//   3. On confirm, sends: { messageId, reportedUserId, reason,
+//      decryptedContent (the plaintext the reporter saw),
+//      encryptedCiphertext (the raw ciphertext from the DB),
+//      senderPublicKey }
+//
+// WHY NOT "store only messageId + encrypted":
+//   - Moderators would need the recipient's private key to decrypt, which
+//     is on-device only — making moderation impossible without breaking E2EE.
+//   - The evidence bundle approach is the same model used by Signal and WhatsApp:
+//     the REPORTER voluntarily shares what they saw. The server only ever
+//     receives this plaintext in the specific report context, with consent.
+//
+// FIELD NOTES:
+//   - decryptedContent: what the reporting user saw (explicit consent required)
+//   - encryptedCiphertext: the raw ciphertext blob for cryptographic verification
+//     that the reported content matches what was actually sent
+//   - reporterConsentAt: timestamp proving the user consented before submission
+//   - contextMessages: encrypted blobs of surrounding messages (optional,
+//     for context) — moderation team can request decryption of specific ones
+//     if needed via a separate secure flow
 model Report {
-  id              String   @id @default(uuid())
-  reporterId      String
-  reportedUserId  String
-  messageId       String?
-  messageContent  String
-  reason          String
-  contextMessages Json?
-  status          String   @default("pending")
-  createdAt       DateTime @default(now())
+  id                    String   @id @default(uuid())
+  reporterId            String
+  reportedUserId        String
+  messageId             String?
+  /// Plaintext content the reporting user saw — provided with explicit consent at report time.
+  /// NEVER populated server-side; always submitted by the reporter's device after user confirmation.
+  decryptedContent      String
+  /// Raw ciphertext blob from the message — allows cryptographic verification that
+  /// decryptedContent matches what was actually sent (moderator cross-check).
+  encryptedCiphertext   String?
+  /// ISO timestamp recording when the user explicitly consented to share decrypted content.
+  reporterConsentAt     DateTime
+  reason                String
+  /// Encrypted ciphertext blobs of surrounding messages for context.
+  /// Moderators request per-message decryption via a separate secure out-of-band flow.
+  contextMessages       Json?
+  status                String   @default("pending")
+  createdAt             DateTime @default(now())
 
-  reporter        User     @relation("ReportReporter", fields: [reporterId], references: [id], onDelete: Cascade)
-  reportedUser    User     @relation("ReportReportedUser", fields: [reportedUserId], references: [id], onDelete: Cascade)
+  reporter              User     @relation("ReportReporter", fields: [reporterId], references: [id], onDelete: Cascade)
+  reportedUser          User     @relation("ReportReportedUser", fields: [reportedUserId], references: [id], onDelete: Cascade)
 
   @@index([reporterId])
   @@index([reportedUserId])
