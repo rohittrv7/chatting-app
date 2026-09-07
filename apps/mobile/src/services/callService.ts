@@ -15,6 +15,7 @@ import { soundService } from './soundService';
 import { callHistoryService } from './callHistoryService';
 import { webrtcService } from './webrtcService';
 import { audioRoutingService } from './audioRoutingService';
+import { ensureMicrophonePermission } from './permissionsService';
 
 export type CallType = 'audio' | 'video';
 
@@ -408,6 +409,10 @@ class CallService {
 
     const callId = `call_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const isVideo = params.callType === 'video';
+
+    // JIT: request microphone (and camera for video) before starting the call
+    // Fire-and-forget — permission UI shows, WebRTC will catch denial during getUserMedia
+    ensureMicrophonePermission().catch(() => {});
 
     this.currentSession = {
       callId,

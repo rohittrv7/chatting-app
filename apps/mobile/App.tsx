@@ -41,6 +41,13 @@ import { StorageSettingsScreen } from './src/screens/StorageSettingsScreen';
 import { HelpSettingsScreen } from './src/screens/HelpSettingsScreen';
 import { QrCodeScreen } from './src/screens/QrCodeScreen';
 import { IncomingCallModal } from './src/components/IncomingCallModal';
+import { notificationService } from './src/services/notificationService';
+
+// ─── Register FCM background message handler at module level ─────────────────
+// This MUST run before the React tree mounts. Firebase requires the background
+// handler to be registered synchronously at app boot, not inside a useEffect.
+// Handles data-only INCOMING_CALL pushes when the app is killed or backgrounded.
+notificationService.registerBackgroundHandler();
 
 export const navigationRef = createNavigationContainerRef<RootStackParamList>();
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -141,7 +148,18 @@ function AppNavigator() {
         barStyle={themeMode === 'dark' ? 'light-content' : 'dark-content'}
         backgroundColor={colors.bg}
       />
-      <NavigationContainer ref={navigationRef} theme={customNavTheme}>
+      <NavigationContainer
+        ref={navigationRef}
+        theme={customNavTheme}
+        onReady={() => {
+          // Wire notification tap deep-linking once the navigator is mounted
+          notificationService.setNavigationHandler((screen, params) => {
+            if (navigationRef.isReady()) {
+              (navigationRef as any).navigate(screen, params);
+            }
+          });
+        }}
+      >
         <Stack.Navigator
           id="root-stack"
           initialRouteName={initialRoute}

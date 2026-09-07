@@ -80,7 +80,7 @@ import {
   getResolvedDisplayName,
   getResolvedContact,
 } from '../services/contactsService';
-import { requestAllAppPermissions } from '../services/permissionsService';
+import { ensureContactsPermission } from '../services/permissionsService';
 import { AppLogo } from '../components/AppLogo';
 import { SmartAvatar } from '../components/SmartAvatar';
 import { ActiveCallBanner } from '../components/ActiveCallBanner';
@@ -155,10 +155,8 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
   const conversationsRef = useRef(conversations);
   conversationsRef.current = conversations;
 
-  // 🛡️ Request all permissions upfront on launch (Contacts, Camera, Mic, Media Library)
-  useEffect(() => {
-    requestAllAppPermissions().catch(() => {});
-  }, []);
+  // Contacts permission is requested JIT when the user actually taps "Sync Contacts"
+  // — not upfront at app start. See loadContacts() which calls ensureContactsPermission().
 
   useEffect(() => {
     const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -365,7 +363,8 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
   );
 
   const handleGrantPermission = async () => {
-    const granted = await requestContactsPermission();
+    // JIT contacts permission — shows Settings prompt if permanently denied
+    const granted = await ensureContactsPermission();
     if (granted) {
       loadContacts();
     }
@@ -2182,13 +2181,6 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
             icon: HelpCircle,
             iconBg: 'rgba(14, 165, 233, 0.12)',
             screen: 'HelpSettings',
-          },
-          {
-            title: '🛠️ Developer Live Inspector',
-            subtitle: 'Live API Telemetry, Redis Caching & UI Performance',
-            icon: Sparkles,
-            iconBg: 'rgba(99, 102, 241, 0.18)',
-            onPress: () => devInspector.setVisible(true),
           },
         ].map((setting: any, idx) => {
           const IconComp = setting.icon;

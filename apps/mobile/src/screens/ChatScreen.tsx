@@ -714,8 +714,12 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
   const handleDownloadMedia = async (msg: ChatMessage) => {
     if (!msg.imagePath || downloadingMediaIds.has(msg.id)) return;
     setDownloadingMediaIds((prev) => new Set(prev).add(msg.id));
+
+    const step = { current: 'init' }; // track which step failed for accurate error messages
+
     try {
       const remoteUrl = apiService.getResolvedMediaUrl(msg.imagePath);
+      console.log(`📥 [Download] Starting download for msg=${msg.id} url=${remoteUrl}`);
 
       // Determine if media is encrypted (.bin extension = nacl.secretbox ciphertext)
       const isEncrypted = msg.imagePath.includes('.bin') || !!msg.attachmentCrypto;
@@ -723,57 +727,102 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
       const filename = `photo_${msg.id}_${Date.now()}.${displayExt}`;
       const localUri = `${FileSystem.cacheDirectory}${filename}`;
 
-      // Download with auth header for server-hosted files (local /uploads/ paths)
+      // Auth header for server-hosted files — skip for Backblaze B2 (pre-signed URL)
+      // and for data: / file:// URIs
       const headers: Record<string, string> = {};
       const isServerHosted =
-        !remoteUrl.includes('backblazeb2.com') && !remoteUrl.startsWith('file://');
+        remoteUrl.startsWith('http') &&
+        !remoteUrl.includes('backblazeb2.com') &&
+        !remoteUrl.includes('amazonaws.com') &&
+        !remoteUrl.includes('Authorization='); // already has auth in query string
+
       if (token && isServerHosted) {
         headers['Authorization'] = `Bearer ${token}`;
+        console.log('📥 [Download] Adding Bearer auth header for server-hosted file');
       }
 
+      step.current = 'download';
       const result = await FileSystem.downloadAsync(remoteUrl, localUri, { headers });
 
+      console.log(`📥 [Download] HTTP ${result.status} — localUri=${result.uri}`);
+
+      if (result.status === 401) {
+        throw new Error(
+          'Authentication failed (401) — your session may have expired. Please log out and log in again.',
+        );
+      }
+      if (result.status === 403) {
+        throw new Error('Access denied (403) — you may not have permission to download this file.');
+      }
+      if (result.status === 404) {
+        throw new Error('File not found (404) — this media may have been deleted from the server.');
+      }
       if (result.status !== 200) {
-        showToast('Download failed', 'error');
-        return;
+        throw new Error(`Server returned HTTP ${result.status}. Try again later.`);
       }
 
       let finalUri = result.uri;
 
-      // E2EE decrypt: if ciphertext blob, decrypt with per-file key+nonce from message
-      if (isEncrypted && msg.attachmentCrypto?.fileKey && msg.attachmentCrypto?.fileNonce) {
-        try {
-          const encBase64 = await FileSystem.readAsStringAsync(result.uri, {
-            encoding: FileSystem.EncodingType.Base64,
-          });
-          const {
-            base64ToArrayBuffer,
-            arrayBufferToBase64,
-          } = require('../services/signalProtocolStore');
-          const nacl = require('tweetnacl').default || require('tweetnacl');
-          const encBytes = new Uint8Array(base64ToArrayBuffer(encBase64));
-          const fileKey = new Uint8Array(base64ToArrayBuffer(msg.attachmentCrypto.fileKey));
-          const fileNonce = new Uint8Array(base64ToArrayBuffer(msg.attachmentCrypto.fileNonce));
-          const plainBytes = nacl.secretbox.open(encBytes, fileNonce, fileKey);
-          if (plainBytes) {
-            const plainBase64 = arrayBufferToBase64(plainBytes);
-            const decryptedUri = `${FileSystem.cacheDirectory}decrypted_${filename}`;
-            await FileSystem.writeAsStringAsync(decryptedUri, plainBase64, {
+      // E2EE decrypt if this is an encrypted attachment
+      if (isEncrypted) {
+        if (msg.attachmentCrypto?.fileKey && msg.attachmentCrypto?.fileNonce) {
+          step.current = 'decrypt';
+          console.log('🔐 [Download] Decrypting E2EE attachment…');
+          try {
+            const encBase64 = await FileSystem.readAsStringAsync(result.uri, {
               encoding: FileSystem.EncodingType.Base64,
             });
-            finalUri = decryptedUri;
+            const {
+              base64ToArrayBuffer,
+              arrayBufferToBase64,
+            } = require('../services/signalProtocolStore');
+            const naclLib = require('tweetnacl').default || require('tweetnacl');
+            const encBytes = new Uint8Array(base64ToArrayBuffer(encBase64));
+            const fileKey = new Uint8Array(base64ToArrayBuffer(msg.attachmentCrypto.fileKey));
+            const fileNonce = new Uint8Array(base64ToArrayBuffer(msg.attachmentCrypto.fileNonce));
+            const plainBytes = naclLib.secretbox.open(encBytes, fileNonce, fileKey);
+            if (plainBytes) {
+              const plainBase64 = arrayBufferToBase64(plainBytes);
+              const decryptedUri = `${FileSystem.cacheDirectory}dec_${filename}`;
+              await FileSystem.writeAsStringAsync(decryptedUri, plainBase64, {
+                encoding: FileSystem.EncodingType.Base64,
+              });
+              finalUri = decryptedUri;
+              console.log('🔐 [Download] Decryption succeeded');
+            } else {
+              // secretbox.open returns null on auth failure — keys don't match
+              throw new Error(
+                'Decryption failed — the file key does not match. The sender may need to re-send the media.',
+              );
+            }
+          } catch (decErr: any) {
+            const decMsg = decErr?.message || String(decErr);
+            console.error('🔐 [Download] Decryption error:', decMsg);
+            throw new Error(`Decryption failed: ${decMsg}`);
           }
-        } catch (decErr) {
-          console.warn('Media decrypt failed:', decErr);
-          // Fall through: show the raw download path (may appear garbled but won't crash)
+        } else {
+          // Encrypted file but no keys in message — keys were lost (old message format)
+          console.warn('📥 [Download] Encrypted media but no attachmentCrypto keys — showing raw');
+          // Fall through: display the raw encrypted bytes (will look like noise but won't crash)
         }
       }
 
+      step.current = 'complete';
       updateMessageMediaDownloaded(msg.id, finalUri, true);
-      showToast('Photo downloaded', 'success');
-    } catch (e) {
-      console.warn('handleDownloadMedia error:', e);
-      showToast('Could not download photo', 'error');
+      showToast('Photo downloaded ✓', 'success');
+    } catch (e: any) {
+      const errorMsg = e?.message || String(e);
+      console.error(`📥 [Download] Failed at step="${step.current}":`, errorMsg);
+
+      // Show the actual error reason to the user so they can take action
+      const userMsg =
+        step.current === 'download'
+          ? `Download failed: ${errorMsg}`
+          : step.current === 'decrypt'
+            ? `Decryption failed: ${errorMsg}`
+            : `Could not open photo: ${errorMsg}`;
+
+      showToast(userMsg, 'error', 4000);
     } finally {
       setDownloadingMediaIds((prev) => {
         const next = new Set(prev);

@@ -1562,7 +1562,16 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
           throw new Error('Upload failed from server');
         }
 
-        // Upload succeeded! Update message state with remote URL and finish upload state
+        // Upload succeeded! Update message state with remote URL and transition to SENDING
+        // (clears any previous FAILED state from a prior attempt)
+        dispatch(
+          updateMessageStatus({
+            conversationId,
+            messageId: clientMessageId,
+            clientMessageId,
+            status: 'SENDING',
+          }),
+        );
         dispatch(
           updateMessageProgress({
             messageId: clientMessageId,
@@ -1750,6 +1759,15 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
             );
             if (uploadRes.success && uploadRes.url) {
               finalImagePath = uploadRes.url;
+              // Clear FAILED state immediately — upload succeeded, waiting for socket ack
+              dispatch(
+                updateMessageStatus({
+                  conversationId,
+                  messageId,
+                  clientMessageId: messageId,
+                  status: 'SENDING',
+                }),
+              );
               dispatch(
                 updateMessageProgress({
                   messageId,

@@ -522,6 +522,58 @@ export const apiService = {
   },
 
   /**
+   * Fetch user privacy & notification settings from backend.
+   */
+  async getUserSettings(token: string): Promise<Record<string, any> | null> {
+    try {
+      const response = await this.fetchWithAuth(
+        `${getApiBaseUrl()}/auth/settings`,
+        { method: 'GET', headers: { 'Content-Type': 'application/json' } },
+        token,
+      );
+      if (response.ok) {
+        const json = await response.json();
+        return json.data || json;
+      }
+    } catch (e) {
+      console.warn('getUserSettings error:', e);
+    }
+    return null;
+  },
+
+  /**
+   * Save user privacy & notification settings to backend.
+   */
+  async updateUserSettings(
+    token: string,
+    settings: {
+      readReceipts?: boolean;
+      lastSeenVisibility?: string;
+      profilePhotoVis?: string;
+      theme?: string;
+      messageNotifications?: boolean;
+      callNotifications?: boolean;
+      notificationPreview?: boolean;
+    },
+  ): Promise<boolean> {
+    try {
+      const response = await this.fetchWithAuth(
+        `${getApiBaseUrl()}/auth/settings`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(settings),
+        },
+        token,
+      );
+      return response.ok;
+    } catch (e) {
+      console.warn('updateUserSettings error:', e);
+      return false;
+    }
+  },
+
+  /**
    * Load stored authentication session on app launch
    */
   async loadStoredSession(): Promise<{

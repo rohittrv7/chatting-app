@@ -45,6 +45,7 @@ export class PushNotificationService {
       const payload = {
         registration_ids: tokens,
         priority: 'high',
+        content_available: true, // wake iOS background process
         data: {
           type: 'NEW_MESSAGE',
           conversationId: messageData.conversationId,
@@ -54,12 +55,17 @@ export class PushNotificationService {
           messagePreview: preview,
           timestamp: Date.now().toString(),
         },
+        // Message notifications DO show an OS banner (unlike calls)
         notification: {
           title: messageData.senderName,
           body: preview,
           sound: 'default',
           android_channel_id: 'message_channel',
           badge: '1',
+        },
+        android: {
+          priority: 'high',
+          ttl: '86400s', // 24 hours — messages can wait
         },
       };
 
@@ -134,9 +140,17 @@ export class PushNotificationService {
 
       const fcmServerKey = this.configService.get<string>('FCM_SERVER_KEY');
 
+      // CALL push: data-only payload (no 'notification' key).
+      // Reason: Android high-priority data messages wake the app process even in Doze mode.
+      // Adding a 'notification' key would display an OS banner AND suppress the in-app
+      // ringing UI — exactly the wrong behaviour for calls.
+      // The app's foreground/background FCM data handler then triggers the call UI.
       const payload = {
         registration_ids: tokens,
         priority: 'high',
+        // 'content_available: true' wakes iOS in background (equivalent to APNs background push)
+        content_available: true,
+        // data-only — no 'notification' key so OS doesn't render its own banner for calls
         data: {
           type: 'INCOMING_CALL',
           callId: callData.callId,
@@ -146,12 +160,13 @@ export class PushNotificationService {
           callType: callData.callType,
           conversationId: callData.conversationId || '',
           timestamp: Date.now().toString(),
-        },
-        notification: {
-          title: `Incoming ${callData.callType === 'video' ? 'Video' : 'Voice'} Call`,
-          body: `${callData.callerName} is calling you...`,
-          sound: 'default',
+          // Android-specific: tells the system this is a high-priority foreground service trigger
           android_channel_id: 'call_channel',
+        },
+        // android_config at top level for FCM v1 compatibility
+        android: {
+          priority: 'high',
+          ttl: '30s',
         },
       };
 

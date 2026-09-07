@@ -19,6 +19,7 @@
 import { Platform } from 'react-native';
 import { safeStorage } from './storageHelper';
 import { apiService } from './apiService';
+import { ensureNotificationPermission } from './permissionsService';
 
 // Lazy-load expo-notifications to avoid crash on devices without Google Play Services
 let Notifications: any = null;
@@ -46,6 +47,41 @@ export const notificationService = {
    */
   setNavigationHandler(cb: NavigateCallback): void {
     _navigateCallback = cb;
+  },
+
+  /**
+   * Register background FCM data message handler.
+   * MUST be called at module-level (outside React components) so it's registered
+   * before the app fully boots — Firebase requires this to handle killed-app pushes.
+   *
+   * For data-only messages (type=INCOMING_CALL), this handler triggers a local
+   * notification so the user sees the call UI even when the app is completely closed.
+   */
+  registerBackgroundHandler(): void {
+    if (!Notifications) return;
+    try {
+      // expo-notifications background task for data-only pushes
+      // When app is killed and a high-priority data message arrives, this fires
+      Notifications.addNotificationReceivedListener?.((notification: any) => {
+        const data = notification?.request?.content?.data || {};
+        if (data.type === 'INCOMING_CALL') {
+          console.log('🔔 [BG] Incoming call push received in background:', data.callId);
+          // Schedule a local notification so the call shows even if socket is dead
+          Notifications.scheduleNotificationAsync?.({
+            content: {
+              title: `📞 Incoming ${data.callType === 'video' ? 'Video' : 'Voice'} Call`,
+              body: `${data.callerName} is calling you`,
+              sound: 'default',
+              data,
+              categoryIdentifier: 'incoming_call',
+            },
+            trigger: null, // fire immediately
+          }).catch(() => {});
+        }
+      });
+    } catch (err) {
+      console.warn('[NotificationService] registerBackgroundHandler error:', err);
+    }
   },
 
   /**
@@ -159,61 +195,19 @@ export const notificationService = {
   },
 
   /**
-   * Request permission and return the FCM/APNs push token string, or null.
-   * Handles Android 13+ POST_NOTIFICATIONS runtime permission.
+   * Request notification permission JIT and return the device push token.
+   * Delegates permission logic to ensureNotificationPermission() which handles
+   * Android 13+, iOS, and the "permanently denied → open Settings" flow.
    */
   async _requestPermissionAndGetToken(): Promise<string | null> {
     if (!Notifications) return null;
     try {
-      // Android 13+ (API 33+) requires POST_NOTIFICATIONS runtime permission
-      // This is separate from expo-notifications' own permission request
-      if (Platform.OS === 'android') {
-        try {
-          const { PermissionsAndroid } = require('react-native');
-          if (PermissionsAndroid?.PERMISSIONS?.POST_NOTIFICATIONS) {
-            const granted = await PermissionsAndroid.request(
-              PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS,
-              {
-                title: 'Notification Permission',
-                message: 'Allow notifications to receive messages and call alerts',
-                buttonPositive: 'Allow',
-                buttonNegative: 'Deny',
-              },
-            );
-            if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
-              console.log('🔔 [NotificationService] Android POST_NOTIFICATIONS denied');
-              // Don't return null — still try to get token for silent pushes
-            }
-          }
-        } catch (_) {
-          // PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS only exists on Android 13+
-          // On older devices this throws — safe to ignore
-        }
-      }
-
-      const { status: existingStatus } = await Notifications.getPermissionsAsync();
-      let finalStatus = existingStatus;
-
-      if (existingStatus !== 'granted') {
-        const { status } = await Notifications.requestPermissionsAsync({
-          ios: {
-            allowAlert: true,
-            allowBadge: true,
-            allowSound: true,
-            allowCriticalAlerts: true,
-          },
-        });
-        finalStatus = status;
-      }
-
-      if (finalStatus !== 'granted') {
-        console.log('🔔 [NotificationService] Push permission denied by user');
+      const granted = await ensureNotificationPermission();
+      if (!granted) {
+        console.log('🔔 [NotificationService] Notification permission not granted');
         return null;
       }
 
-      // getDevicePushTokenAsync requires google-services.json (Android) or
-      // GoogleService-Info.plist (iOS) to be configured in the project.
-      // Falls back gracefully if Firebase is not configured.
       let tokenData: any = null;
       try {
         tokenData = await Notifications.getDevicePushTokenAsync();
@@ -226,8 +220,8 @@ export const notificationService = {
           msg.includes('FCM')
         ) {
           console.warn(
-            '🔔 [NotificationService] Firebase not configured — push notifications disabled. ' +
-              'Add google-services.json (Android) / GoogleService-Info.plist (iOS) to enable.',
+            '🔔 [NotificationService] Firebase not configured — push notifications disabled.\n' +
+              'Add google-services.json (Android) / GoogleService-Info.plist (iOS) to enable FCM.',
           );
         } else {
           console.warn('⚠️ [NotificationService] Failed to get device push token:', tokenErr);
@@ -238,10 +232,7 @@ export const notificationService = {
       const fcmToken = tokenData?.data as string | undefined;
       if (fcmToken) {
         await safeStorage.setItem(FCM_TOKEN_STORAGE_KEY, fcmToken);
-        console.log(
-          '🔔 [NotificationService] FCM token obtained:',
-          fcmToken.substring(0, 20) + '...',
-        );
+        console.log('🔔 [NotificationService] FCM token:', fcmToken.substring(0, 20) + '...');
       }
       return fcmToken || null;
     } catch (err) {

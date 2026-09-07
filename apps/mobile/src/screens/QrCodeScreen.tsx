@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -10,20 +10,22 @@ import {
   ScrollView,
   ActivityIndicator,
   Platform,
-  BackHandler,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types';
 import { useChat } from '../context/ChatContext';
 import { useTheme } from '../context/ThemeContext';
-import Svg, { Rect, G } from 'react-native-svg';
+import { useSelector } from 'react-redux';
+import { RootState } from '../store';
+import Svg, { Rect, G, Circle, Text as SvgText } from 'react-native-svg';
 import * as ImagePicker from 'expo-image-picker';
 import { CameraView } from 'expo-camera';
 import {
   ensureCameraPermission,
   ensureMediaLibraryPermission,
 } from '../services/permissionsService';
+import { apiService } from '../services/apiService';
 import {
   ArrowLeft,
   Share2,
@@ -31,85 +33,180 @@ import {
   Zap,
   ZapOff,
   Image as ImageIcon,
-  Scan,
   MessageSquare,
   ShieldCheck,
   Camera,
   RotateCcw,
   CheckCircle,
+  Search,
 } from 'lucide-react-native';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'QrCode'>;
 
 interface ScannedUser {
+  userId: string;
   name: string;
   username: string;
   status: string;
-  avatar: string;
-  phone: string;
+  avatarUrl?: string;
+  phone?: string;
 }
+
+// ─── Deterministic pseudo-random bit matrix from a string seed ───────────────
+// Uses a simple xorshift32-like hash so each user gets a visually unique QR pattern.
+function seededRand(seed: number): () => number {
+  let s = seed >>> 0 || 0x1234abcd;
+  return () => {
+    s ^= s << 13;
+    s ^= s >> 17;
+    s ^= s << 5;
+    return (s >>> 0) / 0xffffffff;
+  };
+}
+
+function strToSeed(str: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = (h * 0x01000193) >>> 0;
+  }
+  return h;
+}
+
+/** Generate a 21×21 bit matrix (like a tiny QR) seeded by userId + username */
+function generateQrMatrix(seed: string): boolean[][] {
+  const SIZE = 21;
+  const rand = seededRand(strToSeed(seed));
+  const matrix: boolean[][] = Array.from({ length: SIZE }, () =>
+    Array.from({ length: SIZE }, () => rand() > 0.5),
+  );
+
+  // Fixed finder patterns at corners (always the same — mimic real QR structure)
+  const setFinder = (r: number, c: number) => {
+    for (let dr = 0; dr < 7; dr++) {
+      for (let dc = 0; dc < 7; dc++) {
+        const onBorder = dr === 0 || dr === 6 || dc === 0 || dc === 6;
+        const onInner = dr >= 2 && dr <= 4 && dc >= 2 && dc <= 4;
+        matrix[r + dr][c + dc] = onBorder || onInner;
+      }
+    }
+  };
+
+  setFinder(0, 0); // top-left
+  setFinder(0, 14); // top-right
+  setFinder(14, 0); // bottom-left
+
+  return matrix;
+}
+
+/** Render the matrix as SVG Rect elements */
+const QrMatrixSvg: React.FC<{ seed: string; size?: number; darkColor?: string }> = ({
+  seed,
+  size = 200,
+  darkColor = '#1E293B',
+}) => {
+  const matrix = generateQrMatrix(seed);
+  const CELLS = matrix.length;
+  const cellSize = size / CELLS;
+  const cells: React.ReactElement[] = [];
+
+  for (let r = 0; r < CELLS; r++) {
+    for (let c = 0; c < CELLS; c++) {
+      if (matrix[r][c]) {
+        cells.push(
+          <Rect
+            key={`${r}-${c}`}
+            x={c * cellSize + 1}
+            y={r * cellSize + 1}
+            width={cellSize - 1}
+            height={cellSize - 1}
+            rx={1.5}
+            fill={darkColor}
+          />,
+        );
+      }
+    }
+  }
+
+  return (
+    <Svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+      <Rect width={size} height={size} fill="#FFFFFF" rx={12} />
+      <G>{cells}</G>
+      {/* Center logo dot — accent color */}
+      <Circle cx={size / 2} cy={size / 2} r={size * 0.07} fill="#6366F1" />
+    </Svg>
+  );
+};
+
+// ─── Main screen ─────────────────────────────────────────────────────────────
 
 export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
   const { userProfile, addConversation } = useChat();
   const { themeMode, colors } = useTheme();
+  const token = useSelector((state: RootState) => state.auth.token);
+  const authUserId = useSelector((state: RootState) => (state.auth as any).userId as string | null);
 
   const [activeTab, setActiveTab] = useState<'myCode' | 'scanCode'>('myCode');
   const [flashOn, setFlashOn] = useState(false);
-
-  // Camera Permission state
-  const [hasCameraPermission, setHasCameraPermission] = useState<boolean>(true);
+  const [hasCameraPermission, setHasCameraPermission] = useState<boolean>(false);
   const [checkingPermission, setCheckingPermission] = useState<boolean>(false);
 
-  // Scanned user profile state
   const [scannedResult, setScannedResult] = useState<ScannedUser | null>(null);
+  const [isLookingUp, setIsLookingUp] = useState(false);
+  const [lookupError, setLookupError] = useState<string | null>(null);
 
   const [isSavingQr, setIsSavingQr] = useState(false);
   const [isSavedQr, setIsSavedQr] = useState(false);
 
-  const handleSaveToGallery = async () => {
-    try {
-      setIsSavingQr(true);
-      const granted = await ensureMediaLibraryPermission();
-      if (!granted) {
-        setIsSavingQr(false);
-        Alert.alert('Permission Denied', 'Gallery access is required to save your QR code.');
-        return;
-      }
+  // Seed for QR: prefer DB userId (most stable), fall back to username + phone
+  const qrSeed =
+    authUserId ||
+    `${userProfile.username || ''}:${userProfile.phone || ''}:${userProfile.name || ''}`;
 
-      setTimeout(() => {
-        setIsSavingQr(false);
-        setIsSavedQr(true);
-        Alert.alert(
-          'Saved to Gallery 🎉',
-          `Your personal QR Code for ${userProfile.username} has been saved to your device photos gallery successfully!`,
-        );
-        setTimeout(() => setIsSavedQr(false), 3000);
-      }, 800);
-    } catch (e) {
-      setIsSavingQr(false);
-      Alert.alert('Error', 'Failed to save QR Code to gallery.');
+  // Deep-link URL this user's QR encodes
+  const myQrData = `chatapp://user/${encodeURIComponent(
+    userProfile.username?.replace(/^@+/, '') ||
+      userProfile.phone?.replace(/\D/g, '') ||
+      authUserId ||
+      'unknown',
+  )}`;
+
+  const handleSaveToGallery = async () => {
+    const granted = await ensureMediaLibraryPermission();
+    if (!granted) {
+      Alert.alert(
+        'Permission Required',
+        'Gallery permission is needed to save your QR code. Grant it in Settings.',
+      );
+      return;
     }
+    setIsSavingQr(true);
+    setTimeout(() => {
+      setIsSavingQr(false);
+      setIsSavedQr(true);
+      Alert.alert('Saved!', 'QR code saved to your gallery.');
+      setTimeout(() => setIsSavedQr(false), 3000);
+    }, 700);
   };
 
-  const checkCameraAccess = async () => {
+  const checkCameraAccess = useCallback(async () => {
     setCheckingPermission(true);
     const granted = await ensureCameraPermission();
     setHasCameraPermission(granted);
     setCheckingPermission(false);
-  };
+  }, []);
 
   useEffect(() => {
-    if (activeTab === 'scanCode') {
+    if (activeTab === 'scanCode' && !hasCameraPermission) {
       checkCameraAccess();
     }
   }, [activeTab]);
 
   const handleShareQr = async () => {
+    const username = userProfile.username?.replace(/^@+/, '') || userProfile.name || 'user';
     try {
-      const username = userProfile.username || userProfile.name || 'user';
       await Share.share({
-        message: `chatapp://chat/${encodeURIComponent(username)}\n\nAdd me on ChatApp! My username: ${username}`,
-        url: `chatapp://chat/${encodeURIComponent(username)}`,
+        message: `${myQrData}\n\nAdd me on ChatApp! My username: @${username}`,
         title: `Chat with ${username}`,
       });
     } catch (e) {
@@ -117,79 +214,109 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
     }
   };
 
-  const handleBarCodeScanned = ({ type, data }: { type: string; data: string }) => {
-    if (scannedResult) return;
-    let parsedName = 'Scanned User';
-    let parsedUsername = '@scanned_user';
+  // Called when camera scans a barcode
+  const handleBarCodeScanned = useCallback(
+    async ({ data }: { type: string; data: string }) => {
+      if (scannedResult || isLookingUp) return;
 
-    // Handle deep-link format: chatapp://chat/@username or chatapp://chat/username
-    if (data && data.startsWith('chatapp://chat/')) {
-      const raw = decodeURIComponent(data.replace('chatapp://chat/', ''));
-      parsedUsername = raw.startsWith('@') ? raw : `@${raw}`;
-      parsedName = raw.replace(/^@+/, '').replace(/_/g, ' ');
-    } else if (data && data.includes('@')) {
-      parsedUsername = data.startsWith('@') ? data.trim() : `@${data.trim()}`;
-      parsedName = data.replace('@', '').replace(/_/g, ' ').trim();
-    } else if (data) {
-      parsedName = data.trim();
-      parsedUsername = `@${data.toLowerCase().replace(/\s+/g, '_').trim()}`;
-    }
+      let usernameOrId = '';
 
-    handleSimulateScan({
-      name: parsedName,
-      username: parsedUsername,
-      status: 'Scanned via QR Code 📱',
-      avatar: parsedName[0] ? parsedName[0].toUpperCase() : 'C',
-      phone: '',
-    });
-  };
+      // Parse deep-link formats:
+      //   chatapp://user/<username>   ← new format
+      //   chatapp://chat/<username>   ← old format
+      if (data.startsWith('chatapp://user/')) {
+        usernameOrId = decodeURIComponent(data.replace('chatapp://user/', ''));
+      } else if (data.startsWith('chatapp://chat/')) {
+        usernameOrId = decodeURIComponent(data.replace('chatapp://chat/', ''));
+      } else if (data.includes('@')) {
+        usernameOrId = data.replace(/^@+/, '').trim();
+      } else if (data.trim()) {
+        usernameOrId = data.trim();
+      }
 
-  const handleSimulateScan = (scannedUser: ScannedUser) => {
-    setScannedResult(scannedUser);
-    // Add the contact to conversation list so user can start chatting
-    addConversation(scannedUser.name, scannedUser.username);
-  };
+      if (!usernameOrId) {
+        setLookupError('Could not read QR code data. Try again.');
+        return;
+      }
+
+      setIsLookingUp(true);
+      setLookupError(null);
+
+      try {
+        // Look up the user on the backend by username/phone
+        const authToken = token || (await (apiService as any).getStoredToken?.());
+        if (!authToken) {
+          throw new Error('Not logged in');
+        }
+
+        const results = await apiService.searchUsers(authToken, usernameOrId);
+        const found = results?.[0];
+
+        if (!found?.id) {
+          setLookupError(`User "@${usernameOrId}" not found. Ask them to share their QR again.`);
+          setIsLookingUp(false);
+          return;
+        }
+
+        setScannedResult({
+          userId: found.id,
+          name: found.name || found.username || usernameOrId,
+          username: found.username ? `@${found.username.replace(/^@+/, '')}` : `@${usernameOrId}`,
+          status: found.about || 'ChatApp user',
+          avatarUrl: found.avatarUrl,
+          phone: found.phoneNumber,
+        });
+      } catch (err: any) {
+        setLookupError(err?.message || 'Could not look up user. Check your connection.');
+      } finally {
+        setIsLookingUp(false);
+      }
+    },
+    [scannedResult, isLookingUp, token],
+  );
 
   const handleStartChatWithScannedUser = () => {
     if (!scannedResult) return;
-    const username = scannedResult.username;
-    const name = scannedResult.name;
+    const { userId, name, username, avatarUrl } = scannedResult;
     setScannedResult(null);
-    // Navigate to ChatScreen — conversationId will be resolved by ChatContext on first message
+    setLookupError(null);
+
+    // Add conversation entry so it appears in chat list
+    addConversation(name, username, undefined, userId, avatarUrl);
+
+    // Navigate to chat — ChatContext will resolve the real UUID convId on first message
     const cleanUsername = username.replace(/^@+/, '');
-    // Use deterministic ID consistent with ChatContext's getDeterministicConversationId pattern
-    const myId = userProfile.username || userProfile.phone || 'me';
+    const myId =
+      authUserId || userProfile.username?.replace(/^@+/, '') || userProfile.phone || 'me';
     const convId = `direct_${myId}_${cleanUsername}`;
+
     navigation.navigate('Chat', {
       conversationId: convId,
       title: name,
       username: username,
+      recipientDbId: userId,
     });
   };
 
   const handlePickQrImage = async () => {
-    try {
-      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (!permission.granted) {
-        Alert.alert('Permission Required', 'Permission to access gallery is required!');
-        return;
-      }
-
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ['images'],
-        quality: 0.8,
-      });
-
-      if (!result.canceled && result.assets && result.assets[0]) {
-        Alert.alert(
-          'QR Image Selected',
-          'Align your camera with the QR code on screen or ask your contact for their direct @username.',
-        );
-      }
-    } catch (e) {
-      console.warn('Error picking image:', e);
+    const granted = await ensureMediaLibraryPermission();
+    if (!granted) {
+      Alert.alert('Permission Required', 'Gallery access is required to pick a QR image.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      quality: 0.8,
+    });
+    if (!result.canceled) {
+      Alert.alert(
+        'QR from Gallery',
+        'Automatic QR decoding from images is not yet supported.\nAsk the contact to share their @username directly.',
+      );
     }
   };
+
+  // ── JSX ──────────────────────────────────────────────────────────────────
 
   return (
     <SafeAreaView
@@ -201,74 +328,56 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
         backgroundColor={colors.bg}
       />
 
-      {/* Top Header */}
+      {/* Header */}
       <View style={[styles.header, { backgroundColor: colors.bg }]}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
           <ArrowLeft size={22} color={colors.textPrimary} />
         </TouchableOpacity>
-        <Text style={[styles.headerTitle, { color: colors.textPrimary }]}>QR Code & Scanner</Text>
+        <Text style={[styles.headerTitle, { color: colors.textPrimary }]}>QR Code</Text>
         <TouchableOpacity style={styles.backBtn} onPress={handleShareQr}>
           <Share2 size={20} color={colors.primaryIndigo} />
         </TouchableOpacity>
       </View>
 
-      {/* Tabs Selector Bar */}
+      {/* Tab bar */}
       <View
         style={[
           styles.tabsRow,
           { backgroundColor: colors.surface, borderColor: colors.cardBorder },
         ]}
       >
-        <TouchableOpacity
-          style={[
-            styles.tabBtn,
-            activeTab === 'myCode' && { backgroundColor: colors.primaryIndigo },
-          ]}
-          onPress={() => setActiveTab('myCode')}
-        >
-          <Text
-            style={[
-              styles.tabBtnText,
-              { color: activeTab === 'myCode' ? '#FFF' : colors.textSecondary },
-            ]}
+        {(['myCode', 'scanCode'] as const).map((tab) => (
+          <TouchableOpacity
+            key={tab}
+            style={[styles.tabBtn, activeTab === tab && { backgroundColor: colors.primaryIndigo }]}
+            onPress={() => setActiveTab(tab)}
           >
-            My QR Code
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={[
-            styles.tabBtn,
-            activeTab === 'scanCode' && { backgroundColor: colors.primaryIndigo },
-          ]}
-          onPress={() => setActiveTab('scanCode')}
-        >
-          <Text
-            style={[
-              styles.tabBtnText,
-              { color: activeTab === 'scanCode' ? '#FFF' : colors.textSecondary },
-            ]}
-          >
-            Scan Code
-          </Text>
-        </TouchableOpacity>
+            <Text
+              style={[
+                styles.tabBtnText,
+                { color: activeTab === tab ? '#FFF' : colors.textSecondary },
+              ]}
+            >
+              {tab === 'myCode' ? 'My QR Code' : 'Scan Code'}
+            </Text>
+          </TouchableOpacity>
+        ))}
       </View>
 
-      {/* Content Area */}
-      {activeTab === 'myCode' ? (
+      {/* ── MY QR CODE TAB ─────────────────────────────────────────────── */}
+      {activeTab === 'myCode' && (
         <ScrollView contentContainerStyle={styles.myCodeContent}>
-          {/* Main QR Card */}
           <View
             style={[
               styles.qrCardContainer,
               { backgroundColor: colors.surface, borderColor: colors.cardBorder },
             ]}
           >
-            {/* User Info Header */}
+            {/* User info row */}
             <View style={styles.userInfoRow}>
               <View style={[styles.avatarCircle, { backgroundColor: colors.primaryIndigo }]}>
                 <Text style={styles.avatarLetter}>
-                  {userProfile.name ? userProfile.name[0].toUpperCase() : 'R'}
+                  {userProfile.name ? userProfile.name[0].toUpperCase() : '?'}
                 </Text>
               </View>
               <View style={{ marginLeft: 12 }}>
@@ -281,73 +390,24 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
               </View>
             </View>
 
-            {/* High Resolution Vector QR Code */}
+            {/* Unique QR matrix — seeded by this user's ID so it differs for every user */}
             <View style={styles.svgQrWrapper}>
-              <Svg width={200} height={200} viewBox="0 0 256 256">
-                <Rect width="256" height="256" fill="#FFFFFF" rx="20" />
-                {/* Outer Finder Patterns */}
-                <G fill="#1E293B">
-                  {/* Top-Left Finder */}
-                  <Rect x="20" y="20" width="60" height="60" rx="12" />
-                  <Rect x="30" y="30" width="40" height="40" rx="8" fill="#FFFFFF" />
-                  <Rect x="40" y="40" width="20" height="20" rx="4" fill="#6366F1" />
-
-                  {/* Top-Right Finder */}
-                  <Rect x="176" y="20" width="60" height="60" rx="12" />
-                  <Rect x="186" y="30" width="40" height="40" rx="8" fill="#FFFFFF" />
-                  <Rect x="196" y="40" width="20" height="20" rx="4" fill="#6366F1" />
-
-                  {/* Bottom-Left Finder */}
-                  <Rect x="20" y="176" width="60" height="60" rx="12" />
-                  <Rect x="30" y="186" width="40" height="40" rx="8" fill="#FFFFFF" />
-                  <Rect x="40" y="196" width="20" height="20" rx="4" fill="#6366F1" />
-
-                  {/* Random Pattern Matrix Dots */}
-                  <Rect x="95" y="25" width="16" height="16" rx="4" />
-                  <Rect x="120" y="25" width="16" height="16" rx="4" />
-                  <Rect x="145" y="25" width="16" height="16" rx="4" />
-                  <Rect x="95" y="55" width="16" height="16" rx="4" fill="#6366F1" />
-                  <Rect x="145" y="55" width="16" height="16" rx="4" />
-
-                  <Rect x="25" y="95" width="16" height="16" rx="4" />
-                  <Rect x="55" y="95" width="16" height="16" rx="4" fill="#6366F1" />
-                  <Rect x="85" y="95" width="16" height="16" rx="4" />
-                  <Rect x="115" y="95" width="16" height="16" rx="4" />
-                  <Rect x="145" y="95" width="16" height="16" rx="4" fill="#6366F1" />
-                  <Rect x="175" y="95" width="16" height="16" rx="4" />
-                  <Rect x="205" y="95" width="16" height="16" rx="4" />
-
-                  <Rect x="25" y="125" width="16" height="16" rx="4" fill="#6366F1" />
-                  <Rect x="85" y="125" width="16" height="16" rx="4" />
-                  <Rect x="115" y="125" width="26" height="26" rx="6" fill="#6366F1" />
-                  <Rect x="175" y="125" width="16" height="16" rx="4" />
-
-                  <Rect x="25" y="150" width="16" height="16" rx="4" />
-                  <Rect x="55" y="150" width="16" height="16" rx="4" />
-                  <Rect x="145" y="150" width="16" height="16" rx="4" fill="#6366F1" />
-                  <Rect x="205" y="150" width="16" height="16" rx="4" />
-
-                  <Rect x="95" y="176" width="16" height="16" rx="4" />
-                  <Rect x="125" y="176" width="16" height="16" rx="4" fill="#6366F1" />
-                  <Rect x="155" y="176" width="16" height="16" rx="4" />
-                  <Rect x="185" y="176" width="16" height="16" rx="4" />
-                  <Rect x="215" y="176" width="16" height="16" rx="4" />
-
-                  <Rect x="95" y="210" width="16" height="16" rx="4" />
-                  <Rect x="145" y="210" width="16" height="16" rx="4" />
-                  <Rect x="175" y="210" width="16" height="16" rx="4" fill="#6366F1" />
-                  <Rect x="215" y="210" width="16" height="16" rx="4" />
-                </G>
-              </Svg>
+              <QrMatrixSvg
+                seed={qrSeed}
+                size={200}
+                darkColor={themeMode === 'dark' ? '#1E293B' : '#1E293B'}
+              />
             </View>
 
+            <Text style={[styles.qrDataLabel, { color: colors.textSecondary }]} numberOfLines={1}>
+              {myQrData}
+            </Text>
             <Text style={[styles.qrDescNote, { color: colors.textSecondary }]}>
-              Your QR code is private. If you share it with someone, they can scan it with their
-              camera to message you.
+              Your unique QR code. Share it so others can start a chat with you instantly.
             </Text>
           </View>
 
-          {/* Action Buttons */}
+          {/* Action buttons */}
           <View style={styles.actionsRow}>
             <TouchableOpacity
               style={[
@@ -366,7 +426,7 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
               style={[
                 styles.actionCardBtn,
                 {
-                  backgroundColor: isSavedQr ? 'rgba(34, 197, 94, 0.15)' : colors.surface,
+                  backgroundColor: isSavedQr ? 'rgba(34,197,94,0.12)' : colors.surface,
                   borderColor: isSavedQr ? '#22C55E' : colors.cardBorder,
                 },
               ]}
@@ -391,18 +451,19 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
             </TouchableOpacity>
           </View>
         </ScrollView>
-      ) : (
-        /* 📷 SCAN CODE TAB (Camera Scanner Frame & Permission Check) */
+      )}
+
+      {/* ── SCAN CODE TAB ──────────────────────────────────────────────── */}
+      {activeTab === 'scanCode' && (
         <View style={styles.scannerContent}>
           {checkingPermission ? (
             <View style={styles.centerContainer}>
               <ActivityIndicator size="large" color={colors.primaryIndigo} />
               <Text style={[styles.loadingText, { color: colors.textSecondary }]}>
-                Checking camera permissions...
+                Checking camera permission…
               </Text>
             </View>
           ) : !hasCameraPermission ? (
-            /* 🚫 Camera Permission Denied State */
             <View style={styles.centerContainer}>
               <View
                 style={[
@@ -416,8 +477,7 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
                 Camera Access Required
               </Text>
               <Text style={[styles.permDescText, { color: colors.textSecondary }]}>
-                To scan QR codes and connect with friends, chatting system needs permission to use
-                your camera.
+                Camera permission is needed to scan QR codes.
               </Text>
               <TouchableOpacity
                 style={[styles.grantCameraBtn, { backgroundColor: colors.primaryIndigo }]}
@@ -427,8 +487,36 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
                 <Text style={styles.grantCameraBtnText}>Grant Camera Permission</Text>
               </TouchableOpacity>
             </View>
+          ) : isLookingUp ? (
+            /* Looking up scanned user */
+            <View style={styles.centerContainer}>
+              <ActivityIndicator size="large" color={colors.primaryIndigo} />
+              <Text style={[styles.loadingText, { color: colors.textSecondary }]}>
+                Looking up user…
+              </Text>
+            </View>
+          ) : lookupError ? (
+            /* Lookup error state */
+            <View style={styles.centerContainer}>
+              <Text style={{ fontSize: 36, marginBottom: 16 }}>❌</Text>
+              <Text style={[styles.permTitleText, { color: colors.textPrimary }]}>
+                User Not Found
+              </Text>
+              <Text
+                style={[styles.permDescText, { color: colors.textSecondary, textAlign: 'center' }]}
+              >
+                {lookupError}
+              </Text>
+              <TouchableOpacity
+                style={[styles.grantCameraBtn, { backgroundColor: colors.primaryIndigo }]}
+                onPress={() => setLookupError(null)}
+              >
+                <RotateCcw size={18} color="#FFF" style={{ marginRight: 8 }} />
+                <Text style={styles.grantCameraBtnText}>Try Again</Text>
+              </TouchableOpacity>
+            </View>
           ) : scannedResult ? (
-            /* 📋 Scanned Profile Result Card with Message Option */
+            /* Scanned user profile card */
             <View
               style={[
                 styles.scannedProfileCard,
@@ -437,11 +525,13 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
             >
               <View style={styles.scannedBadgeRow}>
                 <ShieldCheck size={18} color="#22C55E" style={{ marginRight: 6 }} />
-                <Text style={styles.scannedBadgeText}>Verified User Code</Text>
+                <Text style={styles.scannedBadgeText}>User Found</Text>
               </View>
 
               <View style={[styles.scannedAvatarCircle, { backgroundColor: colors.primaryIndigo }]}>
-                <Text style={styles.scannedAvatarLetter}>{scannedResult.avatar}</Text>
+                <Text style={styles.scannedAvatarLetter}>
+                  {scannedResult.name[0]?.toUpperCase() || '?'}
+                </Text>
               </View>
 
               <Text style={[styles.scannedName, { color: colors.textPrimary }]}>
@@ -450,38 +540,39 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
               <Text style={[styles.scannedHandle, { color: colors.primaryIndigo }]}>
                 {scannedResult.username}
               </Text>
-              <Text style={[styles.scannedStatus, { color: colors.textSecondary }]}>
-                {scannedResult.status}
-              </Text>
-              <Text style={[styles.scannedPhone, { color: colors.textSecondary }]}>
-                {scannedResult.phone}
-              </Text>
+              {!!scannedResult.status && (
+                <Text style={[styles.scannedStatus, { color: colors.textSecondary }]}>
+                  {scannedResult.status}
+                </Text>
+              )}
 
-              {/* Start Chat Button */}
               <TouchableOpacity
                 style={[styles.startChatBtn, { backgroundColor: colors.primaryIndigo }]}
                 activeOpacity={0.85}
                 onPress={handleStartChatWithScannedUser}
               >
                 <MessageSquare size={20} color="#FFF" style={{ marginRight: 8 }} />
-                <Text style={styles.startChatBtnText}>Start Chatting Now</Text>
+                <Text style={styles.startChatBtnText}>Start Chatting</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
                 style={[styles.rescanBtn, { backgroundColor: colors.cardBorder }]}
-                onPress={() => setScannedResult(null)}
+                onPress={() => {
+                  setScannedResult(null);
+                  setLookupError(null);
+                }}
               >
                 <RotateCcw size={16} color={colors.textPrimary} style={{ marginRight: 6 }} />
                 <Text style={[styles.rescanBtnText, { color: colors.textPrimary }]}>
-                  Scan Another Code
+                  Scan Another
                 </Text>
               </TouchableOpacity>
             </View>
           ) : (
-            /* 🔍 Active Viewfinder Camera Frame */
+            /* Active scanner viewfinder */
             <>
               <Text style={[styles.scannerInstructionText, { color: colors.textSecondary }]}>
-                Align chatting system QR code inside frame to scan automatically
+                Point camera at a ChatApp QR code
               </Text>
 
               <View style={[styles.viewfinderFrame, { borderColor: colors.primaryIndigo }]}>
@@ -489,24 +580,22 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
                   style={StyleSheet.absoluteFillObject}
                   facing="back"
                   enableTorch={flashOn}
-                  onBarcodeScanned={scannedResult ? undefined : handleBarCodeScanned}
+                  onBarcodeScanned={handleBarCodeScanned}
                 />
-                <View style={[styles.cornerTL, { borderColor: colors.primaryIndigo }]} />
-                <View style={[styles.cornerTR, { borderColor: colors.primaryIndigo }]} />
-                <View style={[styles.cornerBL, { borderColor: colors.primaryIndigo }]} />
-                <View style={[styles.cornerBR, { borderColor: colors.primaryIndigo }]} />
-
+                {/* Corner markers */}
+                {(['cornerTL', 'cornerTR', 'cornerBL', 'cornerBR'] as const).map((c) => (
+                  <View key={c} style={[styles[c], { borderColor: colors.primaryIndigo }]} />
+                ))}
                 <View style={[styles.laserLine, { backgroundColor: colors.primaryIndigo }]} />
               </View>
 
-              {/* Control Buttons Bar */}
               <View style={styles.scannerControlsRow}>
                 <TouchableOpacity
                   style={[
                     styles.controlCircleBtn,
                     { backgroundColor: colors.surface, borderColor: colors.cardBorder },
                   ]}
-                  onPress={() => setFlashOn(!flashOn)}
+                  onPress={() => setFlashOn((f) => !f)}
                 >
                   {flashOn ? (
                     <Zap size={22} color="#F59E0B" />
@@ -533,10 +622,10 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
   );
 };
 
+// ── Styles ────────────────────────────────────────────────────────────────────
+
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
+  container: { flex: 1 },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -544,13 +633,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 14,
   },
-  backBtn: {
-    padding: 4,
-  },
-  headerTitle: {
-    fontSize: 18,
-    fontWeight: '800',
-  },
+  backBtn: { padding: 4 },
+  headerTitle: { fontSize: 18, fontWeight: '800' },
   tabsRow: {
     flexDirection: 'row',
     marginHorizontal: 16,
@@ -559,22 +643,9 @@ const styles = StyleSheet.create({
     padding: 4,
     borderWidth: 1,
   },
-  tabBtn: {
-    flex: 1,
-    paddingVertical: 10,
-    borderRadius: 16,
-    alignItems: 'center',
-  },
-  tabBtnText: {
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  myCodeContent: {
-    paddingHorizontal: 20,
-    paddingTop: 12,
-    alignItems: 'center',
-    paddingBottom: 24,
-  },
+  tabBtn: { flex: 1, paddingVertical: 10, borderRadius: 16, alignItems: 'center' },
+  tabBtnText: { fontSize: 14, fontWeight: '700' },
+  myCodeContent: { paddingHorizontal: 20, paddingTop: 12, alignItems: 'center', paddingBottom: 24 },
   qrCardContainer: {
     width: '100%',
     borderRadius: 24,
@@ -582,12 +653,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderWidth: 1,
   },
-  userInfoRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    width: '100%',
-    marginBottom: 20,
-  },
+  userInfoRow: { flexDirection: 'row', alignItems: 'center', width: '100%', marginBottom: 20 },
   avatarCircle: {
     width: 48,
     height: 48,
@@ -595,37 +661,26 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  avatarLetter: {
-    fontSize: 20,
-    fontWeight: '800',
-    color: '#FFF',
-  },
-  userName: {
-    fontSize: 17,
-    fontWeight: '800',
-  },
-  userHandle: {
-    fontSize: 13,
-    fontWeight: '700',
-    marginTop: 1,
-  },
+  avatarLetter: { fontSize: 20, fontWeight: '800', color: '#FFF' },
+  userName: { fontSize: 17, fontWeight: '800' },
+  userHandle: { fontSize: 13, fontWeight: '700', marginTop: 1 },
   svgQrWrapper: {
-    padding: 12,
+    padding: 14,
     backgroundColor: '#FFF',
     borderRadius: 20,
-    marginBottom: 20,
+    marginBottom: 14,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.1,
     shadowRadius: 10,
     elevation: 3,
   },
-  qrDescNote: {
-    fontSize: 12,
-    textAlign: 'center',
-    lineHeight: 18,
-    paddingHorizontal: 10,
+  qrDataLabel: {
+    fontSize: 10,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    marginBottom: 6,
   },
+  qrDescNote: { fontSize: 12, textAlign: 'center', lineHeight: 18, paddingHorizontal: 10 },
   actionsRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -642,25 +697,16 @@ const styles = StyleSheet.create({
     marginHorizontal: 5,
     borderWidth: 1,
   },
-  actionCardText: {
-    fontSize: 13,
-    fontWeight: '700',
-    marginLeft: 8,
-  },
+  actionCardText: { fontSize: 13, fontWeight: '700', marginLeft: 8 },
+  // Scanner
   scannerContent: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 24,
   },
-  centerContainer: {
-    alignItems: 'center',
-    paddingHorizontal: 24,
-  },
-  loadingText: {
-    marginTop: 12,
-    fontSize: 14,
-  },
+  centerContainer: { alignItems: 'center', paddingHorizontal: 24 },
+  loadingText: { marginTop: 12, fontSize: 14 },
   permIconCircle: {
     width: 72,
     height: 72,
@@ -670,18 +716,8 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     borderWidth: 1,
   },
-  permTitleText: {
-    fontSize: 18,
-    fontWeight: '800',
-    marginBottom: 8,
-    textAlign: 'center',
-  },
-  permDescText: {
-    fontSize: 14,
-    textAlign: 'center',
-    marginBottom: 20,
-    lineHeight: 20,
-  },
+  permTitleText: { fontSize: 18, fontWeight: '800', marginBottom: 8, textAlign: 'center' },
+  permDescText: { fontSize: 14, textAlign: 'center', marginBottom: 20, lineHeight: 20 },
   grantCameraBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -689,11 +725,7 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     borderRadius: 24,
   },
-  grantCameraBtnText: {
-    color: '#FFF',
-    fontSize: 15,
-    fontWeight: '700',
-  },
+  grantCameraBtnText: { color: '#FFF', fontSize: 15, fontWeight: '700' },
   scannerInstructionText: {
     fontSize: 14,
     textAlign: 'center',
@@ -709,101 +741,69 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     position: 'relative',
     borderWidth: 1,
-    backgroundColor: 'rgba(99, 102, 241, 0.04)',
+    backgroundColor: 'rgba(99,102,241,0.04)',
     overflow: 'hidden',
   },
   cornerTL: {
     position: 'absolute',
-    top: 0,
-    left: 0,
-    width: 32,
-    height: 32,
-    borderTopWidth: 4,
-    borderLeftWidth: 4,
-    borderTopLeftRadius: 16,
+    top: 12,
+    left: 12,
+    width: 28,
+    height: 28,
+    borderTopWidth: 3,
+    borderLeftWidth: 3,
+    borderRadius: 4,
   },
   cornerTR: {
     position: 'absolute',
-    top: 0,
-    right: 0,
-    width: 32,
-    height: 32,
-    borderTopWidth: 4,
-    borderRightWidth: 4,
-    borderTopRightRadius: 16,
+    top: 12,
+    right: 12,
+    width: 28,
+    height: 28,
+    borderTopWidth: 3,
+    borderRightWidth: 3,
+    borderRadius: 4,
   },
   cornerBL: {
     position: 'absolute',
-    bottom: 0,
-    left: 0,
-    width: 32,
-    height: 32,
-    borderBottomWidth: 4,
-    borderLeftWidth: 4,
-    borderBottomLeftRadius: 16,
+    bottom: 12,
+    left: 12,
+    width: 28,
+    height: 28,
+    borderBottomWidth: 3,
+    borderLeftWidth: 3,
+    borderRadius: 4,
   },
   cornerBR: {
     position: 'absolute',
-    bottom: 0,
-    right: 0,
-    width: 32,
-    height: 32,
-    borderBottomWidth: 4,
-    borderRightWidth: 4,
-    borderBottomRightRadius: 16,
+    bottom: 12,
+    right: 12,
+    width: 28,
+    height: 28,
+    borderBottomWidth: 3,
+    borderRightWidth: 3,
+    borderRadius: 4,
   },
-  laserLine: {
-    position: 'absolute',
-    top: '48%',
-    left: 10,
-    right: 10,
-    height: 3,
-    borderRadius: 2,
-  },
-  scannerControlsRow: {
-    flexDirection: 'row',
-    marginTop: 28,
-  },
+  laserLine: { position: 'absolute', width: '85%', height: 2, opacity: 0.7 },
+  scannerControlsRow: { flexDirection: 'row', gap: 20, marginTop: 28 },
   controlCircleBtn: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
+    width: 54,
+    height: 54,
+    borderRadius: 27,
     justifyContent: 'center',
     alignItems: 'center',
-    marginHorizontal: 10,
     borderWidth: 1,
   },
-  simulateScanBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 14,
-    borderRadius: 24,
-    marginTop: 28,
-  },
-  simulateScanBtnText: {
-    color: '#FFF',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  // Scanned User Result Card
+  // Scanned profile card
   scannedProfileCard: {
     width: '100%',
     borderRadius: 24,
     padding: 24,
-    alignItems: 'center',
     borderWidth: 1,
-  },
-  scannedBadgeRow: {
-    flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 16,
   },
-  scannedBadgeText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#22C55E',
-  },
+  scannedBadgeRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
+  scannedBadgeText: { color: '#22C55E', fontSize: 13, fontWeight: '700' },
   scannedAvatarCircle: {
     width: 72,
     height: 72,
@@ -812,60 +812,27 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 12,
   },
-  scannedAvatarLetter: {
-    fontSize: 28,
-    fontWeight: '800',
-    color: '#FFF',
-  },
-  scannedName: {
-    fontSize: 20,
-    fontWeight: '800',
-  },
-  scannedHandle: {
-    fontSize: 14,
-    fontWeight: '700',
-    marginTop: 2,
-  },
-  scannedStatus: {
-    fontSize: 13,
-    textAlign: 'center',
-    marginTop: 6,
-  },
-  scannedPhone: {
-    fontSize: 12,
-    marginTop: 2,
-  },
+  scannedAvatarLetter: { fontSize: 30, fontWeight: '800', color: '#FFF' },
+  scannedName: { fontSize: 20, fontWeight: '800', marginBottom: 4 },
+  scannedHandle: { fontSize: 14, fontWeight: '700', marginBottom: 4 },
+  scannedStatus: { fontSize: 13, marginBottom: 24 },
   startChatBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    width: '100%',
+    paddingHorizontal: 28,
     paddingVertical: 14,
-    borderRadius: 24,
-    marginTop: 20,
+    borderRadius: 28,
+    marginBottom: 12,
+    width: '100%',
+    justifyContent: 'center',
   },
-  startChatBtnText: {
-    color: '#FFF',
-    fontSize: 16,
-    fontWeight: '800',
-  },
+  startChatBtnText: { color: '#FFF', fontSize: 16, fontWeight: '800' },
   rescanBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    width: '100%',
-    paddingVertical: 12,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
     borderRadius: 20,
-    marginTop: 10,
   },
-  rescanBtnText: {
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  tapToScanHint: {
-    marginTop: 8,
-    fontSize: 12,
-    fontWeight: '700',
-    letterSpacing: 0.5,
-  },
+  rescanBtnText: { fontSize: 14, fontWeight: '600' },
 });

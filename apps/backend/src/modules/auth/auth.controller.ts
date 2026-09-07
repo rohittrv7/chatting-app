@@ -196,4 +196,31 @@ export class AuthController {
   async deactivateAccount(@CurrentUser() user: AuthenticatedUser) {
     return this.authService.deactivateAccount(user.userId);
   }
+
+  @Get('settings')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get user privacy & notification settings' })
+  async getSettings(@CurrentUser() user: AuthenticatedUser) {
+    return this.authService.getSettings(user.userId);
+  }
+
+  @Post('settings')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Update user privacy & notification settings' })
+  async updateSettings(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body()
+    dto: {
+      readReceipts?: boolean;
+      lastSeenVisibility?: string;
+      profilePhotoVis?: string;
+      about?: string;
+      theme?: string;
+      messageNotifications?: boolean;
+      callNotifications?: boolean;
+      notificationPreview?: boolean;
+    },
+  ) {
+    return this.authService.updateSettings(user.userId, dto);
+  }
 }

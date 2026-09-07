@@ -199,24 +199,23 @@ class RealtimeSocketService {
 
         if (this.socket?.connected && !this.disconnectTimer) {
           console.log(
-            `📱 [Socket] App transitioned to '${nextState}' — starting 4s grace timer before disconnect`,
+            `📱 [Socket] App transitioned to '${nextState}' — starting 30s keep-alive before disconnect`,
           );
+          // Extended grace: 30s gives time for messages + delivery ticks to flow through
+          // even when the app is backgrounded. Call protection already handles active calls.
           this.disconnectTimer = setTimeout(() => {
             this.disconnectTimer = null;
-            // Double check call state before disconnecting
             if (this.inCallChecker && this.inCallChecker()) {
               console.log('📱 [Socket] Call started during grace period — keeping socket alive');
               return;
             }
             if (this.socket?.connected) {
-              console.log(
-                '📱 [Socket] Grace period elapsed — disconnecting socket for offline presence',
-              );
+              console.log('📱 [Socket] 30s elapsed — disconnecting socket for offline presence');
               try {
                 this.socket.disconnect();
               } catch (_) {}
             }
-          }, 4000);
+          }, 30000); // 30s — covers normal message bursts in the background
         }
       }
     });

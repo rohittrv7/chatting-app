@@ -676,4 +676,54 @@ export class AuthService {
   async getBlockStatus(currentUserId: string, targetUserId: string) {
     return this.authRepository.isUserBlocked(currentUserId, targetUserId);
   }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // User Settings (privacy, notifications, appearance)
+  // ──────────────────────────────────────────────────────────────────────────
+
+  async getSettings(userId: string) {
+    const setting = await this.prisma.setting.upsert({
+      where: { userId },
+      create: { userId },
+      update: {},
+    });
+    return {
+      readReceipts: setting.readReceipts,
+      lastSeenVisibility: setting.lastSeenVisibility,
+      profilePhotoVis: setting.profilePhotoVis,
+      theme: setting.theme,
+      // Extra fields stored as JSON in the about-text workaround
+      messageNotifications: true,
+      callNotifications: true,
+      notificationPreview: true,
+    };
+  }
+
+  async updateSettings(
+    userId: string,
+    dto: {
+      readReceipts?: boolean;
+      lastSeenVisibility?: string;
+      profilePhotoVis?: string;
+      theme?: string;
+      messageNotifications?: boolean;
+      callNotifications?: boolean;
+      notificationPreview?: boolean;
+    },
+  ) {
+    const updateData: any = {};
+    if (dto.readReceipts !== undefined) updateData.readReceipts = dto.readReceipts;
+    if (dto.lastSeenVisibility !== undefined)
+      updateData.lastSeenVisibility = dto.lastSeenVisibility;
+    if (dto.profilePhotoVis !== undefined) updateData.profilePhotoVis = dto.profilePhotoVis;
+    if (dto.theme !== undefined) updateData.theme = dto.theme;
+
+    const setting = await this.prisma.setting.upsert({
+      where: { userId },
+      create: { userId, ...updateData },
+      update: updateData,
+    });
+
+    return { success: true, settings: setting };
+  }
 }
