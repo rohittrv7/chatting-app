@@ -1572,17 +1572,9 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }),
         );
 
-        // 3. Package symmetric file key + nonce inside the Signal-encrypted message envelope
+        // 3. Package symmetric file key + nonce and send via socket
         const realConvId = await _resolveConvId(conversationId, receiverId);
         if (realConvId) {
-          const mediaPayload = JSON.stringify({
-            isEncryptedAttachment: true,
-            fileKey: arrayBufferToBase64(fileKey),
-            fileNonce: arrayBufferToBase64(fileNonce),
-            caption: caption || '',
-          });
-
-          // ── Direct media message send (E2EE completely removed) ─────────
           socketService.sendMessage({
             clientMessageId,
             conversationId: realConvId,
@@ -1592,10 +1584,23 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
               text: caption || '',
               imagePath: uploadRes.url,
               mediaSize: formattedSize,
+              // Include encryption keys so receiver can decrypt the attachment
+              fileKey: arrayBufferToBase64(fileKey),
+              fileNonce: arrayBufferToBase64(fileNonce),
             },
             imagePath: uploadRes.url,
             mediaSize: formattedSize,
           });
+        } else {
+          // Even if conv resolution fails, upload already succeeded — mark not-uploading
+          // so the X cancel icon disappears and the thumbnail is visible
+          dispatch(
+            updateMessageProgress({
+              messageId: clientMessageId,
+              uploadProgress: 100,
+              isUploading: false,
+            }),
+          );
         }
       } catch (err) {
         console.warn('Media upload failed:', err);
@@ -1616,6 +1621,30 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         );
       }
     })();
+
+    // Safety timeout: if message is still uploading/sending after 45s, mark as failed
+    // so the X icon never stays stuck permanently
+    setTimeout(() => {
+      const curMsgs = messagesMapRef.current[conversationId] || [];
+      const cur = curMsgs.find((m) => m.id === clientMessageId);
+      if (cur && (cur.isUploading || cur.status === 'SENDING')) {
+        dispatch(
+          updateMessageProgress({
+            messageId: clientMessageId,
+            uploadProgress: 0,
+            isUploading: false,
+          }),
+        );
+        dispatch(
+          updateMessageStatus({
+            conversationId,
+            messageId: clientMessageId,
+            clientMessageId,
+            status: 'FAILED',
+          }),
+        );
+      }
+    }, 45000);
 
     return clientMessageId;
   };

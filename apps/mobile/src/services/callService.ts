@@ -395,6 +395,17 @@ class CallService {
     myAvatar?: string;
     conversationId?: string;
   }): ActiveCallSession {
+    // Collision guard: block new outgoing call if already in an active call
+    if (
+      this.currentSession &&
+      this.currentSession.state !== 'ENDED' &&
+      (this.currentSession.state as string) !== 'IDLE'
+    ) {
+      console.warn('[CallService] Cannot start new call — already in an active call');
+      // Return the existing session so caller can navigate to CallScreen
+      return this.currentSession;
+    }
+
     const callId = `call_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const isVideo = params.callType === 'video';
 

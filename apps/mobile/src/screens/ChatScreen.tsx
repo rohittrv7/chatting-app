@@ -43,6 +43,7 @@ import { socketService } from '../services/socket';
 import { apiService } from '../services/apiService';
 import { callService } from '../services/callService';
 import { SmartAvatar } from '../components/SmartAvatar';
+import { ActiveCallBanner } from '../components/ActiveCallBanner';
 import { ChatInputBar, ChatInputBarRef } from '../components/ChatInputBar';
 import { getResolvedDisplayName, getResolvedContact } from '../services/contactsService';
 import nacl from 'tweetnacl';
@@ -715,16 +716,61 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
     setDownloadingMediaIds((prev) => new Set(prev).add(msg.id));
     try {
       const remoteUrl = apiService.getResolvedMediaUrl(msg.imagePath);
-      const ext = msg.imagePath.includes('.png') ? 'png' : 'jpg';
-      const filename = `photo_${msg.id}_${Date.now()}.${ext}`;
+
+      // Determine if media is encrypted (.bin extension = nacl.secretbox ciphertext)
+      const isEncrypted = msg.imagePath.includes('.bin') || !!msg.attachmentCrypto;
+      const displayExt = isEncrypted ? 'jpg' : msg.imagePath.includes('.png') ? 'png' : 'jpg';
+      const filename = `photo_${msg.id}_${Date.now()}.${displayExt}`;
       const localUri = `${FileSystem.cacheDirectory}${filename}`;
-      const result = await FileSystem.downloadAsync(remoteUrl, localUri);
-      if (result.status === 200) {
-        updateMessageMediaDownloaded(msg.id, result.uri, true);
-        showToast('Photo downloaded', 'success');
-      } else {
-        showToast('Download failed', 'error');
+
+      // Download with auth header for server-hosted files (local /uploads/ paths)
+      const headers: Record<string, string> = {};
+      const isServerHosted =
+        !remoteUrl.includes('backblazeb2.com') && !remoteUrl.startsWith('file://');
+      if (token && isServerHosted) {
+        headers['Authorization'] = `Bearer ${token}`;
       }
+
+      const result = await FileSystem.downloadAsync(remoteUrl, localUri, { headers });
+
+      if (result.status !== 200) {
+        showToast('Download failed', 'error');
+        return;
+      }
+
+      let finalUri = result.uri;
+
+      // E2EE decrypt: if ciphertext blob, decrypt with per-file key+nonce from message
+      if (isEncrypted && msg.attachmentCrypto?.fileKey && msg.attachmentCrypto?.fileNonce) {
+        try {
+          const encBase64 = await FileSystem.readAsStringAsync(result.uri, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          const {
+            base64ToArrayBuffer,
+            arrayBufferToBase64,
+          } = require('../services/signalProtocolStore');
+          const nacl = require('tweetnacl').default || require('tweetnacl');
+          const encBytes = new Uint8Array(base64ToArrayBuffer(encBase64));
+          const fileKey = new Uint8Array(base64ToArrayBuffer(msg.attachmentCrypto.fileKey));
+          const fileNonce = new Uint8Array(base64ToArrayBuffer(msg.attachmentCrypto.fileNonce));
+          const plainBytes = nacl.secretbox.open(encBytes, fileNonce, fileKey);
+          if (plainBytes) {
+            const plainBase64 = arrayBufferToBase64(plainBytes);
+            const decryptedUri = `${FileSystem.cacheDirectory}decrypted_${filename}`;
+            await FileSystem.writeAsStringAsync(decryptedUri, plainBase64, {
+              encoding: FileSystem.EncodingType.Base64,
+            });
+            finalUri = decryptedUri;
+          }
+        } catch (decErr) {
+          console.warn('Media decrypt failed:', decErr);
+          // Fall through: show the raw download path (may appear garbled but won't crash)
+        }
+      }
+
+      updateMessageMediaDownloaded(msg.id, finalUri, true);
+      showToast('Photo downloaded', 'success');
     } catch (e) {
       console.warn('handleDownloadMedia error:', e);
       showToast('Could not download photo', 'error');
@@ -1464,12 +1510,18 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
                             </TouchableOpacity>
                           </View>
                         ) : (
-                          /* Case 3: Succeeded -> tap to view full screen */
+                          /* Case 3: Upload succeeded — tap to view full screen, size shown below */
                           <TouchableOpacity
                             activeOpacity={0.9}
                             onPress={() => setSelectedPhotoMsg(msg)}
                             style={StyleSheet.absoluteFillObject}
                           />
+                        )}
+                        {/* File size badge — shown after upload completes */}
+                        {!msg.isUploading && msg.status !== 'FAILED' && msg.mediaSize && (
+                          <View style={styles.mediaSizeBadge}>
+                            <Text style={styles.mediaSizeText}>{msg.mediaSize}</Text>
+                          </View>
                         )}
                       </View>
                     ) : msg.isDownloaded ? (
@@ -1867,7 +1919,7 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
                   </Text>
                 ) : null}
 
-                {/* Footer: time + ticks */}
+                {/* Footer: time + ticks (ticks not shown for call log entries) */}
                 <View style={styles.bubbleFooter}>
                   {msg.isStarred && (
                     <Star size={11} color="#FBBF24" fill="#FBBF24" style={{ marginRight: 4 }} />
@@ -1880,7 +1932,8 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
                   >
                     {msg.time}
                   </Text>
-                  {statusIcon()}
+                  {/* No read receipt ticks on call log entries — they are not messages */}
+                  {!msg.callLog && statusIcon()}
                 </View>
 
                 {/* 🌟 WhatsApp Style Floating Reaction Badge */}
@@ -1937,6 +1990,9 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
         barStyle={themeMode === 'dark' ? 'light-content' : 'dark-content'}
         backgroundColor={colors.bg}
       />
+
+      {/* Persistent call banner — shows when navigating to chat during an active call */}
+      <ActiveCallBanner navigation={navigation} />
 
       {/* ── Header ─────────────────────────────────────────────────────── */}
       <View
@@ -3422,6 +3478,20 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
     marginLeft: 6,
+  },
+  mediaSizeBadge: {
+    position: 'absolute',
+    bottom: 6,
+    left: 8,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 10,
+  },
+  mediaSizeText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '600',
   },
   // Location
   locationBubble: {

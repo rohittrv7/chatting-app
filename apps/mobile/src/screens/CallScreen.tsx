@@ -31,6 +31,7 @@ import {
   Headphones,
   Smartphone,
   X,
+  MoreVertical,
 } from 'lucide-react-native';
 // Safe dynamic RTCView component
 const SafeRTCView: React.FC<any> = (props) => {
@@ -56,6 +57,7 @@ type MediaStream = any;
 
 import { callService, ActiveCallSession } from '../services/callService';
 import { webrtcService } from '../services/webrtcService';
+import { socketService } from '../services/socket';
 import {
   audioRoutingService,
   AudioRoute,
@@ -97,6 +99,7 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
     audioRoutingService.getStatus(),
   );
   const [isRouteModalVisible, setIsRouteModalVisible] = useState(false);
+  const [isMoreOptionsVisible, setIsMoreOptionsVisible] = useState(false);
 
   // Runtime Noise Cancellation
   const isNoiseCancellationOn = callSession?.isNoiseSuppressionOn ?? false;
@@ -165,13 +168,29 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
       setIceState(state);
     });
 
+    // Incoming emoji reaction from the other party during this call
+    const handleIncomingReaction = (data: { callId: string; emoji: string }) => {
+      if (!data?.emoji) return;
+      setFloatingReaction(data.emoji);
+      reactionAnim.setValue(0);
+      Animated.sequence([
+        Animated.timing(reactionAnim, {
+          toValue: 1,
+          duration: 1200,
+          useNativeDriver: true,
+        }),
+      ]).start(() => setFloatingReaction(null));
+    };
+    socketService.on('call:reaction', handleIncomingReaction);
+
     return () => {
       unsubLocal();
       unsubRemote();
       unsubState();
       unsubIce();
+      socketService.off('call:reaction', handleIncomingReaction);
     };
-  }, []);
+  }, [reactionAnim]);
 
   // Subscribe to live Audio Routing device changes
   useEffect(() => {
@@ -301,6 +320,7 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
   };
 
   const handleReaction = (emoji: string) => {
+    // Show locally
     setFloatingReaction(emoji);
     reactionAnim.setValue(0);
     Animated.sequence([
@@ -310,6 +330,15 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
         useNativeDriver: true,
       }),
     ]).start(() => setFloatingReaction(null));
+
+    // Send to the other party via socket
+    if (callSession?.callId && callSession?.targetUserId) {
+      socketService.emit('call:reaction', {
+        callId: callSession.callId,
+        targetUserId: callSession.targetUserId,
+        emoji,
+      });
+    }
   };
 
   const handleSendMessage = () => {
@@ -347,7 +376,11 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
       ? 'Permission Denied'
       : callSession?.endReason === 'media_error'
         ? 'Media Error'
-        : 'Call Ended'
+        : callSession?.endReason === 'busy'
+          ? 'Contact is busy'
+          : callSession?.endReason === 'no_answer'
+            ? 'No answer'
+            : 'Call Ended'
     : displayConnectedStatus
       ? formatDuration(secondsElapsed)
       : isConnected && !isMediaFlowing
@@ -481,6 +514,7 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
                   style={StyleSheet.absoluteFillObject}
                   objectFit="cover"
                   zOrder={0}
+                  mirror={false}
                 />
                 <View style={styles.remoteOverlayInfo}>
                   <Text style={styles.remoteOverlayName} numberOfLines={1}>
@@ -586,9 +620,8 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
           ))}
         </View>
 
-        {/* WhatsApp-Style Action Card (Send message & Noise cancellation) */}
+        {/* Compact action row: Send message button + three-dot overflow for secondary options */}
         <View style={styles.actionCard}>
-          {/* Row 1: Send message */}
           <TouchableOpacity
             style={styles.actionRow}
             onPress={handleSendMessage}
@@ -598,37 +631,15 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
               <MessageSquare size={18} color="#FFFFFF" />
             </View>
             <Text style={styles.actionText}>Send message</Text>
-          </TouchableOpacity>
 
-          <View style={styles.actionDivider} />
-
-          {/* Row 2: Noise cancellation Toggle Switch */}
-          <TouchableOpacity
-            style={styles.actionRow}
-            onPress={handleToggleNoiseCancellation}
-            activeOpacity={0.8}
-          >
-            <View style={styles.actionIconCircle}>
-              <Mic size={18} color="#FFFFFF" />
-            </View>
-            <Text style={styles.actionText}>Noise cancellation</Text>
-
-            {/* WhatsApp Styled Toggle Switch with Checkmark */}
-            <View
-              style={[
-                styles.switchTrack,
-                isNoiseCancellationOn ? styles.switchTrackOn : styles.switchTrackOff,
-              ]}
+            {/* Three-dot overflow button — opens secondary options (noise cancellation etc.) */}
+            <TouchableOpacity
+              onPress={() => setIsMoreOptionsVisible(true)}
+              hitSlop={{ top: 10, bottom: 10, left: 16, right: 4 }}
+              activeOpacity={0.7}
             >
-              <View
-                style={[
-                  styles.switchThumb,
-                  isNoiseCancellationOn ? styles.switchThumbOn : styles.switchThumbOff,
-                ]}
-              >
-                {isNoiseCancellationOn && <Check size={12} color="#000000" strokeWidth={3} />}
-              </View>
-            </View>
+              <MoreVertical size={20} color="rgba(255,255,255,0.65)" />
+            </TouchableOpacity>
           </TouchableOpacity>
         </View>
 
@@ -703,6 +714,67 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
           </TouchableOpacity>
         </View>
       </View>
+
+      {/* ── More Options Overflow Modal (noise cancellation, etc.) ──── */}
+      <Modal
+        visible={isMoreOptionsVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setIsMoreOptionsVisible(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalBackdrop}
+          activeOpacity={1}
+          onPress={() => setIsMoreOptionsVisible(false)}
+        >
+          <View style={styles.routeSheetContainer}>
+            <View style={styles.routeSheetHeader}>
+              <Text style={styles.routeSheetTitle}>More Options</Text>
+              <TouchableOpacity
+                onPress={() => setIsMoreOptionsVisible(false)}
+                style={styles.closeBtn}
+              >
+                <X size={20} color="#94A3B8" />
+              </TouchableOpacity>
+            </View>
+
+            {/* Noise Cancellation toggle */}
+            <TouchableOpacity
+              style={[styles.routeOption]}
+              onPress={() => {
+                setIsMoreOptionsVisible(false);
+                handleToggleNoiseCancellation();
+              }}
+            >
+              <View style={styles.routeOptionLeft}>
+                <Mic size={22} color="#6366F1" />
+                <View style={styles.routeTextCol}>
+                  <Text style={styles.routeOptionTitle}>Noise Cancellation</Text>
+                  <Text style={styles.routeOptionSub}>
+                    {isNoiseCancellationOn ? 'Currently ON' : 'Currently OFF'}
+                  </Text>
+                </View>
+              </View>
+              {/* Toggle indicator */}
+              <View
+                style={[
+                  styles.switchTrack,
+                  isNoiseCancellationOn ? styles.switchTrackOn : styles.switchTrackOff,
+                ]}
+              >
+                <View
+                  style={[
+                    styles.switchThumb,
+                    isNoiseCancellationOn ? styles.switchThumbOn : styles.switchThumbOff,
+                  ]}
+                >
+                  {isNoiseCancellationOn && <Check size={12} color="#000000" strokeWidth={3} />}
+                </View>
+              </View>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
 
       {/* Audio Route Selection Bottom Sheet Modal */}
       <Modal

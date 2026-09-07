@@ -83,6 +83,7 @@ import {
 import { requestAllAppPermissions } from '../services/permissionsService';
 import { AppLogo } from '../components/AppLogo';
 import { SmartAvatar } from '../components/SmartAvatar';
+import { ActiveCallBanner } from '../components/ActiveCallBanner';
 import { apiService } from '../services/apiService';
 import { devInspector } from '../services/devInspectorService';
 import { LogoutConfirmModal } from '../components/LogoutConfirmModal';
@@ -2267,6 +2268,9 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
         backgroundColor={colors.bg}
       />
 
+      {/* Persistent call banner — visible on all tabs when a call is active */}
+      <ActiveCallBanner navigation={navigation} />
+
       {/* Instant Tab Switching Container (Zero-lag active tab rendering) */}
       <View style={{ flex: 1 }}>
         {selectedBottomNav === 0 && renderChatsTab()}
@@ -2348,6 +2352,66 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                 Mark as Read
               </Text>
             </TouchableOpacity>
+
+            {/* Audio Call — explicitly separate from row tap */}
+            {selectedChatForAction?.recipientDbId && (
+              <TouchableOpacity
+                style={styles.actionRow}
+                onPress={() => {
+                  const item = selectedChatForAction;
+                  setSelectedChatForAction(null);
+                  if (!item?.recipientDbId) return;
+                  const session = callService.startCall({
+                    targetUserId: item.recipientDbId,
+                    targetUserName: item.title,
+                    targetUserAvatar: item.avatarUrl,
+                    callType: 'audio',
+                  });
+                  navigation.navigate('Call', {
+                    callId: session.callId,
+                    targetUserId: item.recipientDbId,
+                    targetUserName: item.title,
+                    isCaller: true,
+                    isVideo: false,
+                  });
+                }}
+              >
+                <Phone size={20} color="#10B981" />
+                <Text style={[styles.actionRowText, { color: colors.textPrimary }]}>
+                  Audio Call
+                </Text>
+              </TouchableOpacity>
+            )}
+
+            {/* Video Call — explicitly separate from row tap */}
+            {selectedChatForAction?.recipientDbId && (
+              <TouchableOpacity
+                style={styles.actionRow}
+                onPress={() => {
+                  const item = selectedChatForAction;
+                  setSelectedChatForAction(null);
+                  if (!item?.recipientDbId) return;
+                  const session = callService.startCall({
+                    targetUserId: item.recipientDbId,
+                    targetUserName: item.title,
+                    targetUserAvatar: item.avatarUrl,
+                    callType: 'video',
+                  });
+                  navigation.navigate('Call', {
+                    callId: session.callId,
+                    targetUserId: item.recipientDbId,
+                    targetUserName: item.title,
+                    isCaller: true,
+                    isVideo: true,
+                  });
+                }}
+              >
+                <Video size={20} color="#3B82F6" />
+                <Text style={[styles.actionRowText, { color: colors.textPrimary }]}>
+                  Video Call
+                </Text>
+              </TouchableOpacity>
+            )}
 
             {/* Clear Messages */}
             <TouchableOpacity

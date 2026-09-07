@@ -263,11 +263,12 @@ class SoundService {
     try {
       if (Audio && !this.isAudioModeConfigured) {
         await Audio.setAudioModeAsync({
-          playsInSilentModeIOS: true,
+          playsInSilentModeIOS: true, // Ring even when iOS silent switch is on
           allowsRecordingIOS: false,
           staysActiveInBackground: true,
-          shouldDuckAndroid: true,
-          playThroughEarpieceAndroid: false,
+          // Android: do NOT duck — calls must be heard at full volume
+          shouldDuckAndroid: false,
+          playThroughEarpieceAndroid: false, // Play through speaker by default
         });
         this.isAudioModeConfigured = true;
       }
@@ -299,7 +300,10 @@ class SoundService {
   private async _writeBase64File(fileUri: string, base64Data: string) {
     try {
       const info = await FileSystem.getInfoAsync(fileUri);
-      if (!info.exists || info.size === 0) {
+      // Write if missing OR if size is 0 (previous write was corrupted/incomplete)
+      // Use a minimum expected size: any valid WAV is > 50 bytes
+      const needsWrite = !info.exists || (info as any).size < 50;
+      if (needsWrite) {
         await FileSystem.writeAsStringAsync(fileUri, base64Data, {
           encoding: FileSystem.EncodingType.Base64,
         });
@@ -442,11 +446,12 @@ class SoundService {
   public async startOutgoingRingbackTone() {
     const gen = ++this.currentSoundGeneration;
     try {
-      // Await pre-warm to guarantee WAV files are written before we try to load them
       if (this._initPromise) await this._initPromise;
+      // stopCallSounds() bumps generation internally — capture gen AFTER stop
       await this.stopCallSounds();
+      const genAfterStop = ++this.currentSoundGeneration;
       await this._initNativeAudio();
-      if (this.currentSoundGeneration !== gen || !Audio) return;
+      if (this.currentSoundGeneration !== genAfterStop || !Audio) return;
 
       const source = this.ringbackFileUri
         ? { uri: this.ringbackFileUri }
@@ -455,9 +460,9 @@ class SoundService {
       const { sound } = await Audio.Sound.createAsync(source, {
         shouldPlay: true,
         isLooping: true,
-        volume: 0.9,
+        volume: 1.0,
       });
-      if (this.currentSoundGeneration !== gen) {
+      if (this.currentSoundGeneration !== genAfterStop) {
         sound.stopAsync().catch(() => {});
         sound.unloadAsync().catch(() => {});
         return;
@@ -470,17 +475,14 @@ class SoundService {
     }
   }
 
-  /**
-   * 5. Incoming Ringtone (Looped melody chime when call is incoming)
-   * Awaits audio init promise before playing — ensures first-call ring is instant.
-   */
   public async startIncomingRingtone() {
     const gen = ++this.currentSoundGeneration;
     try {
       if (this._initPromise) await this._initPromise;
       await this.stopCallSounds();
+      const genAfterStop = ++this.currentSoundGeneration;
       await this._initNativeAudio();
-      if (this.currentSoundGeneration !== gen || !Audio) return;
+      if (this.currentSoundGeneration !== genAfterStop || !Audio) return;
 
       const source = this.incomingRingtoneFileUri
         ? { uri: this.incomingRingtoneFileUri }
@@ -491,7 +493,7 @@ class SoundService {
         isLooping: true,
         volume: 1.0,
       });
-      if (this.currentSoundGeneration !== gen) {
+      if (this.currentSoundGeneration !== genAfterStop) {
         sound.stopAsync().catch(() => {});
         sound.unloadAsync().catch(() => {});
         return;

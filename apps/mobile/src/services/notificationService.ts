@@ -160,10 +160,37 @@ export const notificationService = {
 
   /**
    * Request permission and return the FCM/APNs push token string, or null.
+   * Handles Android 13+ POST_NOTIFICATIONS runtime permission.
    */
   async _requestPermissionAndGetToken(): Promise<string | null> {
     if (!Notifications) return null;
     try {
+      // Android 13+ (API 33+) requires POST_NOTIFICATIONS runtime permission
+      // This is separate from expo-notifications' own permission request
+      if (Platform.OS === 'android') {
+        try {
+          const { PermissionsAndroid } = require('react-native');
+          if (PermissionsAndroid?.PERMISSIONS?.POST_NOTIFICATIONS) {
+            const granted = await PermissionsAndroid.request(
+              PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS,
+              {
+                title: 'Notification Permission',
+                message: 'Allow notifications to receive messages and call alerts',
+                buttonPositive: 'Allow',
+                buttonNegative: 'Deny',
+              },
+            );
+            if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
+              console.log('🔔 [NotificationService] Android POST_NOTIFICATIONS denied');
+              // Don't return null — still try to get token for silent pushes
+            }
+          }
+        } catch (_) {
+          // PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS only exists on Android 13+
+          // On older devices this throws — safe to ignore
+        }
+      }
+
       const { status: existingStatus } = await Notifications.getPermissionsAsync();
       let finalStatus = existingStatus;
 
@@ -184,8 +211,30 @@ export const notificationService = {
         return null;
       }
 
-      // getDevicePushTokenAsync returns the raw FCM token on Android, APNs on iOS
-      const tokenData = await Notifications.getDevicePushTokenAsync();
+      // getDevicePushTokenAsync requires google-services.json (Android) or
+      // GoogleService-Info.plist (iOS) to be configured in the project.
+      // Falls back gracefully if Firebase is not configured.
+      let tokenData: any = null;
+      try {
+        tokenData = await Notifications.getDevicePushTokenAsync();
+      } catch (tokenErr: any) {
+        const msg = tokenErr?.message || String(tokenErr);
+        if (
+          msg.includes('google-services') ||
+          msg.includes('GoogleService') ||
+          msg.includes('Firebase') ||
+          msg.includes('FCM')
+        ) {
+          console.warn(
+            '🔔 [NotificationService] Firebase not configured — push notifications disabled. ' +
+              'Add google-services.json (Android) / GoogleService-Info.plist (iOS) to enable.',
+          );
+        } else {
+          console.warn('⚠️ [NotificationService] Failed to get device push token:', tokenErr);
+        }
+        return null;
+      }
+
       const fcmToken = tokenData?.data as string | undefined;
       if (fcmToken) {
         await safeStorage.setItem(FCM_TOKEN_STORAGE_KEY, fcmToken);

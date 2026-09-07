@@ -106,8 +106,11 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
 
   const handleShareQr = async () => {
     try {
+      const username = userProfile.username || userProfile.name || 'user';
       await Share.share({
-        message: `Scan my chatting system QR Code or add me via username ${userProfile.username}!`,
+        message: `chatapp://chat/${encodeURIComponent(username)}\n\nAdd me on ChatApp! My username: ${username}`,
+        url: `chatapp://chat/${encodeURIComponent(username)}`,
+        title: `Chat with ${username}`,
       });
     } catch (e) {
       console.warn('Share error:', e);
@@ -118,7 +121,13 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
     if (scannedResult) return;
     let parsedName = 'Scanned User';
     let parsedUsername = '@scanned_user';
-    if (data && data.includes('@')) {
+
+    // Handle deep-link format: chatapp://chat/@username or chatapp://chat/username
+    if (data && data.startsWith('chatapp://chat/')) {
+      const raw = decodeURIComponent(data.replace('chatapp://chat/', ''));
+      parsedUsername = raw.startsWith('@') ? raw : `@${raw}`;
+      parsedName = raw.replace(/^@+/, '').replace(/_/g, ' ');
+    } else if (data && data.includes('@')) {
       parsedUsername = data.startsWith('@') ? data.trim() : `@${data.trim()}`;
       parsedName = data.replace('@', '').replace(/_/g, ' ').trim();
     } else if (data) {
@@ -129,24 +138,32 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
     handleSimulateScan({
       name: parsedName,
       username: parsedUsername,
-      status: 'Connected via Live Camera QR Code 🚀',
+      status: 'Scanned via QR Code 📱',
       avatar: parsedName[0] ? parsedName[0].toUpperCase() : 'C',
-      phone: '+1 (555) 902-1849',
+      phone: '',
     });
   };
 
   const handleSimulateScan = (scannedUser: ScannedUser) => {
     setScannedResult(scannedUser);
+    // Add the contact to conversation list so user can start chatting
     addConversation(scannedUser.name, scannedUser.username);
   };
 
   const handleStartChatWithScannedUser = () => {
     if (!scannedResult) return;
+    const username = scannedResult.username;
     const name = scannedResult.name;
     setScannedResult(null);
+    // Navigate to ChatScreen — conversationId will be resolved by ChatContext on first message
+    const cleanUsername = username.replace(/^@+/, '');
+    // Use deterministic ID consistent with ChatContext's getDeterministicConversationId pattern
+    const myId = userProfile.username || userProfile.phone || 'me';
+    const convId = `direct_${myId}_${cleanUsername}`;
     navigation.navigate('Chat', {
-      conversationId: `conv_${Date.now()}`,
+      conversationId: convId,
       title: name,
+      username: username,
     });
   };
 

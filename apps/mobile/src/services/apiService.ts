@@ -1206,7 +1206,6 @@ export const apiService = {
           signedPrePublicKey: publicKey,
           signedPreKeySignature:
             'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
-          registrationId: 1,
           oneTimePreKeys: [],
         }),
       });

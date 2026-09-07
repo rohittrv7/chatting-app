@@ -1227,6 +1227,23 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     }
   }
 
+  // Relay call emoji reactions between call participants
+  @SubscribeMessage('call:reaction')
+  async handleCallReaction(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { callId: string; targetUserId: string; emoji: string },
+  ) {
+    const senderId = (client as any)._userId || client.data?.userId;
+    if (!senderId || !payload?.targetUserId || !payload?.emoji) return;
+
+    const targetUserId = (await this._resolveUserId(payload.targetUserId)) || payload.targetUserId;
+    this.server.to(`user:${targetUserId}`).emit('call:reaction', {
+      callId: payload.callId,
+      emoji: payload.emoji,
+      senderId,
+    });
+  }
+
   @SubscribeMessage('call:audio-chunk')
   async handleCallAudioChunk(
     @ConnectedSocket() client: Socket,
