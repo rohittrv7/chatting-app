@@ -17,7 +17,8 @@ import { useSelector } from 'react-redux';
 import { RootState } from '../store';
 import { apiService } from '../services/apiService';
 import { safeStorage } from '../services/storageHelper';
-import { ArrowLeft, Check, Moon, Sun, Type } from 'lucide-react-native';
+import { useBackup } from '../context/BackupContext';
+import { ArrowLeft, Check, Moon, Sun, Type, CloudUpload, ChevronRight } from 'lucide-react-native';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'ChatSettings'>;
 
@@ -32,6 +33,7 @@ const FONT_SIZES: { label: string; value: FontSizeOption; size: number }[] = [
 
 export const ChatSettingsScreen: React.FC<Props> = ({ navigation }) => {
   const { themeMode, colors, setThemeMode } = useTheme();
+  const { lastBackup } = useBackup();
   const token = useSelector((state: RootState) => state.auth.token);
   const [fontSize, setFontSizeState] = useState<FontSizeOption>('normal');
 
@@ -206,6 +208,33 @@ export const ChatSettingsScreen: React.FC<Props> = ({ navigation }) => {
             ))}
           </View>
         </View>
+
+        {/* ── Chat Backup ─────────────────────────────────────────── */}
+        <Text style={[styles.sectionHeader, { color: colors.textSecondary, marginTop: 24 }]}>
+          BACKUP & RESTORE
+        </Text>
+
+        <TouchableOpacity
+          style={[
+            styles.backupCard,
+            { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+          ]}
+          activeOpacity={0.7}
+          onPress={() => navigation.navigate('ChatBackup')}
+        >
+          <View style={[styles.backupIconBox, { backgroundColor: 'rgba(99,102,241,0.12)' }]}>
+            <CloudUpload size={22} color={colors.primaryIndigo} />
+          </View>
+          <View style={{ marginLeft: 12, flex: 1 }}>
+            <Text style={[styles.cardTitle, { color: colors.textPrimary }]}>Chat backup</Text>
+            <Text style={[styles.cardDesc, { color: colors.textSecondary }]}>
+              {lastBackup
+                ? `Last backup: ${lastBackup.formattedDate} (${lastBackup.sizeFormatted})`
+                : 'Back up messages and media to Google Drive'}
+            </Text>
+          </View>
+          <ChevronRight size={18} color={colors.textSecondary} />
+        </TouchableOpacity>
       </ScrollView>
     </SafeAreaView>
   );
@@ -269,6 +298,20 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   fontChipText: { fontSize: 14, fontWeight: '700' },
+  backupCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 18,
+    borderWidth: 1,
+    padding: 16,
+  },
+  backupIconBox: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   cardTitle: { fontSize: 16, fontWeight: '700' },
   cardDesc: { fontSize: 12, marginTop: 2 },
 });

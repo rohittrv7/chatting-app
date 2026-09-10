@@ -109,6 +109,7 @@ model User {
   reportsReceived Report[]           @relation("ReportReportedUser")
   settings      Setting?
   messageDeletions MessageDeletion[]
+  attachmentDownloads AttachmentDownload[]
 
   @@index([phoneNumber])
   @@index([isActive])
@@ -255,12 +256,17 @@ model Message {
   senderId          String
   senderDeviceId    String
   type              MessageType    @default(TEXT)
-  ciphertexts       Json
+  /// Encrypted message payload. Nullable: cleared to null once all intended recipients
+  /// have confirmed DELIVERED status (WhatsApp-style relay-only model — server is not
+  /// the source of truth; each device's local DB holds the permanent copy).
+  ciphertexts       Json?
+  /// Timestamp when the server cleared ciphertexts after confirmed delivery.
+  /// Null = content still present. Set = content has been wiped from server.
+  contentClearedAt  DateTime?
   status            DeliveryStatus @default(SERVER_RECEIVED)
   replyToId         String?
   isEdited          Boolean        @default(false)
   deletedAt         DateTime?
-  // FIX 2: deletedForUserIds removed — replaced by MessageDeletion table above.
   createdAt         DateTime       @default(now())
   updatedAt         DateTime       @updatedAt
 
@@ -279,6 +285,7 @@ model Message {
   @@index([conversationId, createdAt])
   @@index([senderId])
   @@index([deletedAt])
+  @@index([contentClearedAt])
 }
 
 model Attachment {
@@ -298,8 +305,27 @@ model Attachment {
   createdAt       DateTime  @default(now())
 
   message         Message   @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  downloads       AttachmentDownload[]
 
   @@index([deletedAt])
+}
+
+/// Tracks which conversation members have downloaded each attachment.
+/// Used by the media-cleanup cron to know when it is safe to delete
+/// the file from object storage (once ALL members have downloaded it,
+/// or the 14-day retention window has elapsed).
+model AttachmentDownload {
+  id           String    @id @default(uuid())
+  attachmentId String
+  userId       String
+  downloadedAt DateTime  @default(now())
+
+  attachment   Attachment @relation(fields: [attachmentId], references: [id], onDelete: Cascade)
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([attachmentId, userId])
+  @@index([attachmentId])
+  @@index([downloadedAt])
 }
 
 model Receipt {

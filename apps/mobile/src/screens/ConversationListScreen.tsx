@@ -27,6 +27,7 @@ import { useSelector, useDispatch } from 'react-redux';
 import { RootState } from '../store';
 import { useToast } from '../context/ToastContext';
 import { logout } from '../store/authSlice';
+import { useLocalConversations } from '../db/useLocalDb';
 import {
   Search,
   Plus,
@@ -127,7 +128,6 @@ type Props = NativeStackScreenProps<RootStackParamList, 'MainTabs'>;
 export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
   const dispatch = useDispatch();
   const {
-    conversations,
     addConversation,
     deleteConversation,
     clearMessages,
@@ -143,7 +143,12 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
   const { themeMode, colors, setThemeMode } = useTheme();
   const { showToast } = useToast();
   const token = useSelector((state: RootState) => state.auth.token);
-  const messagesMap = useSelector((state: RootState) => state.chat.messagesMap);
+
+  // ── Local-first: conversations from SQLite, not Redux ────────────────────
+  // useLocalConversations() subscribes to addDatabaseChangeListener and
+  // re-queries the DB on every INSERT/UPDATE/DELETE — so the list stays in
+  // sync with ChatContext writes without any additional wiring.
+  const { conversations, refresh: refreshLocalConversations } = useLocalConversations();
   const [showLogoutModal, setShowLogoutModal] = useState<boolean>(false);
   const [selectedChatForAction, setSelectedChatForAction] = useState<ConversationItem | null>(null);
   const [showDeleteConfirmModal, setShowDeleteConfirmModal] = useState<boolean>(false);
@@ -190,6 +195,8 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
 
   const handleRefreshChats = () => {
     setIsRefreshingChats(true);
+    // Sync from server → ChatContext writes to Redux + SQLite via upsertConversation
+    // → addDatabaseChangeListener fires → useLocalConversations re-queries automatically
     syncServerConversations().catch(() => {});
     Animated.timing(slideAnim, {
       toValue: 1,
@@ -531,21 +538,15 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
   >([]);
   const [isSearchingChatsServer, setIsSearchingChatsServer] = useState<boolean>(false);
 
-  // Helper to render sent/delivered/read status ticks on outside chat cards
+  // Helper to render sent/delivered/read status ticks on outside chat cards.
+  // Reads lastMessageIsMe and lastMessageStatus directly from the ConversationItem
+  // row — both fields are persisted to SQLite by upsertConversation() on every
+  // message event, so no messagesMap Redux lookup is needed.
   const renderMessageStatusIcon = (item: ConversationItem) => {
-    const msgs = messagesMap[item.id] || [];
-    const lastMsg = msgs.length > 0 ? msgs[msgs.length - 1] : undefined;
-    const isMe =
-      lastMsg !== undefined
-        ? lastMsg.isMe
-        : item.lastMessageIsMe !== undefined
-          ? item.lastMessageIsMe
-          : false;
-
-    // Only show delivery/read checkmarks if the last message was sent by ME
+    const isMe = item.lastMessageIsMe ?? false;
     if (!isMe) return null;
 
-    const status = item.lastMessageStatus || lastMsg?.status || 'SENT';
+    const status = item.lastMessageStatus || 'SENT';
 
     if (status === 'SENDING') {
       return <Clock size={13} color={colors.textSecondary} style={{ marginRight: 4 }} />;
@@ -556,7 +557,6 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
     if (status === 'DELIVERED') {
       return <CheckCheck size={15} color={colors.textSecondary} style={{ marginRight: 4 }} />;
     }
-    // SENT or SERVER_RECEIVED
     return <Check size={15} color={colors.textSecondary} style={{ marginRight: 4 }} />;
   };
 
@@ -598,7 +598,7 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
   }, [searchQuery, token, conversations]);
 
   const filteredConversations = useMemo(() => {
-    const list = conversations.filter((item) => {
+    return conversations.filter((item) => {
       if (selectedFilter === 'Unread' && item.unread === '0') return false;
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase().trim().replace(/^@+/, '');
@@ -611,23 +611,9 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
       }
       return true;
     });
-
-    // Ensure the most recently active chat is always at the very top
-    return list.slice().sort((a, b) => {
-      const msgsA = messagesMap[a.id] || [];
-      const msgsB = messagesMap[b.id] || [];
-      const lastMsgA = msgsA[msgsA.length - 1];
-      const lastMsgB = msgsB[msgsB.length - 1];
-      const timeA =
-        lastMsgA?.createdAtMs || (lastMsgA?.createdAt ? new Date(lastMsgA.createdAt).getTime() : 0);
-      const timeB =
-        lastMsgB?.createdAtMs || (lastMsgB?.createdAt ? new Date(lastMsgB.createdAt).getTime() : 0);
-      if (timeA && timeB && timeA !== timeB) {
-        return timeB - timeA;
-      }
-      return 0;
-    });
-  }, [conversations, messagesMap, selectedFilter, searchQuery]);
+    // Sort is already handled in the SQLite query (ORDER BY last_message_at DESC)
+    // so no client-side sort needed — avoids a full-array sort on every render.
+  }, [conversations, selectedFilter, searchQuery]);
 
   const handleInviteContact = async (contact: DeviceContact) => {
     showToast(`Sending invite to ${contact.name}...`, 'info');

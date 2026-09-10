@@ -104,6 +104,8 @@ export type RootStackParamList = {
   AccountSettings: undefined;
   PrivacySettings: undefined;
   ChatSettings: undefined;
+  ChatBackup: undefined;
+  RestoreBackup: { phoneNumber: string; isNewUser?: boolean };
   CallSettings: undefined;
   NotificationSettings: undefined;
   StorageSettings: undefined;

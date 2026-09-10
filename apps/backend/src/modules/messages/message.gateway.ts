@@ -18,6 +18,7 @@ import { PrismaService } from '../../database/prisma.service';
 import { ConversationService } from '../conversations/conversation.service';
 import { OtelService } from '../observability/otel.service';
 import { PushNotificationService } from './push-notification.service';
+import { MessageCleanupService } from './message-cleanup.service';
 
 // ─── Event name constants (single source of truth) ───────────────────────────
 // Client → Server
@@ -92,6 +93,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     private readonly prisma: PrismaService,
     private readonly conversationService: ConversationService,
     private readonly pushNotificationService: PushNotificationService,
+    private readonly messageCleanupService: MessageCleanupService,
     @Optional() private readonly otelService?: OtelService,
   ) {}
 
@@ -515,6 +517,13 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     }
 
     this.logger.log(`👁  RECEIPT  uid=${userId}  msg=${serverMessageId}  status=${status}`);
+
+    // Relay-only architecture: after a DELIVERED receipt, check whether all
+    // conversation members have confirmed delivery. If yes — clear the
+    // server-side ciphertexts (fire-and-forget, never blocks socket response).
+    if (status === 'DELIVERED' || status === 'READ') {
+      this.messageCleanupService.clearCiphertextsAfterDelivery(serverMessageId).catch(() => {});
+    }
   }
 
   // ─────────────────────────────────────────────────────────────────────────

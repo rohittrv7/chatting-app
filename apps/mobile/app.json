@@ -2,6 +2,7 @@
   "expo": {
     "name": "WhatsApp Connect",
     "slug": "whatsapp-connect",
+    "scheme": "whatsappconnect",
     "version": "1.0.7",
     "orientation": "portrait",
     "icon": "./assets/icon.png",

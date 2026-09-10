@@ -19,6 +19,7 @@ import { useTheme } from '../context/ThemeContext';
 import { useToast } from '../context/ToastContext';
 import { otpVerifiedSuccess } from '../store/authSlice';
 import { apiService } from '../services/apiService';
+import { mockBackupService } from '../services/mockBackupService';
 import { ArrowLeft, CheckCircle, RefreshCw, KeyRound } from 'lucide-react-native';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'OtpVerification'>;
@@ -152,6 +153,21 @@ export const OtpVerificationScreen: React.FC<Props> = ({ route, navigation }) =>
         if (verifyRes.user) {
           updateUserProfile(verifyRes.user);
         }
+
+        // 🛡️ WhatsApp Restore Flow: Check if cloud backup exists
+        // Screen 2: If backup exists, prompt user to restore
+        // Screen 3: If no backup exists, skip restore and go straight to chats
+        try {
+          const backupCheck = await mockBackupService.checkBackupExists(phoneNumber);
+          if (backupCheck.exists) {
+            navigation.reset({
+              index: 0,
+              routes: [{ name: 'RestoreBackup', params: { phoneNumber } }],
+            });
+            return;
+          }
+        } catch {}
+
         navigation.reset({
           index: 0,
           routes: [{ name: 'MainTabs' }],

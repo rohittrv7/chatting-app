@@ -1,7 +1,9 @@
 import { Controller, Post, Get, Body, Param, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { MediaService } from './media.service';
+import { MessageCleanupService } from '../messages/message-cleanup.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { CurrentUser, AuthenticatedUser } from '../../common/decorators/user.decorator';
 import { IsString, IsNotEmpty, IsNumber, IsOptional, Min, Max, IsIn } from 'class-validator';
 import { MAX_MEDIA_FILE_SIZE_BYTES } from '@chat/shared-contracts';
 
@@ -53,7 +55,10 @@ export class RequestUploadUrlDto {
 @ApiTags('Media')
 @Controller('media')
 export class MediaController {
-  constructor(private readonly mediaService: MediaService) {}
+  constructor(
+    private readonly mediaService: MediaService,
+    private readonly messageCleanupService: MessageCleanupService,
+  ) {}
 
   @Post('upload')
   @UseGuards(JwtAuthGuard)
@@ -82,5 +87,23 @@ export class MediaController {
   })
   async getDownloadUrl(@Param('objectKey') objectKey: string) {
     return this.mediaService.getPresignedDownloadUrl(objectKey);
+  }
+
+  /**
+   * Record that the calling user has successfully downloaded an attachment.
+   * Called by the mobile app immediately after a successful media download.
+   * Used by the relay-only cleanup cron to know when all recipients have
+   * received a file — after that the server copy can be safely deleted.
+   */
+  @Post('attachment/:attachmentId/downloaded')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Record that the authenticated user has downloaded an attachment' })
+  async recordDownload(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('attachmentId') attachmentId: string,
+  ) {
+    await this.messageCleanupService.recordAttachmentDownload(attachmentId, user.userId);
+    return { success: true };
   }
 }

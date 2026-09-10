@@ -25,6 +25,7 @@ import { RootStackParamList, ChatMessage } from '../types';
 import { useChat, usePresence, useTyping } from '../context/ChatContext';
 import { useTheme } from '../context/ThemeContext';
 import { useToast } from '../context/ToastContext';
+import { useLocalMessages } from '../db/useLocalDb';
 import { useSelector } from 'react-redux';
 import { RootState } from '../store';
 import * as ImagePicker from 'expo-image-picker';
@@ -290,7 +291,6 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
 
   const {
     conversations,
-    messagesMap,
     addMessage,
     sendMediaMessage,
     updateMessageUploadProgress,
@@ -565,28 +565,38 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
 
   const resolvedConvId = matchedExistingConv?.id || conversationId;
 
-  const roomMessages = useMemo(() => {
-    const msgsPrimary = messagesMap[conversationId] || [];
-    const msgsResolved = resolvedConvId !== conversationId ? messagesMap[resolvedConvId] || [] : [];
-    const msgsRecipient =
-      effectiveRecipientId &&
-      effectiveRecipientId !== conversationId &&
-      effectiveRecipientId !== resolvedConvId
-        ? messagesMap[effectiveRecipientId] || []
-        : [];
+  // ── Local-first: messages from SQLite ─────────────────────────────────────
+  // useLocalMessages() subscribes to addDatabaseChangeListener — every time
+  // ChatContext writes a message to SQLite (send, receive, status update),
+  // this hook fires and the FlatList re-renders automatically.
+  // The hook queries by conversation_server_id which handles the
+  // convId/resolvedConvId aliasing at the SQL level (server_id is canonical).
+  const { messages: localMessages } = useLocalMessages(resolvedConvId);
 
-    const combined = [...msgsPrimary, ...msgsResolved, ...msgsRecipient];
-    // Dedup by id
-    const seen = new Map<string, ChatMessage>();
-    for (const m of combined) {
-      if (m?.id) seen.set(m.id, m);
+  // Merge local DB messages with any in-flight optimistic messages that
+  // ChatContext has appended to Redux but haven't been persisted to SQLite yet
+  // (e.g. a message in SENDING state before the socket ack arrives).
+  // We keep Redux's messagesMap ONLY as a transient overlay — if a message
+  // already exists in localMessages by id, the local DB version wins.
+  const { messagesMap } = useSelector((state: RootState) => state.chat);
+  const roomMessages = useMemo(() => {
+    const reduxMsgs = [
+      ...(messagesMap[conversationId] || []),
+      ...(resolvedConvId !== conversationId ? messagesMap[resolvedConvId] || [] : []),
+    ].filter((m) => m.status === 'SENDING' || m.status === 'FAILED');
+
+    // Merge: SQLite is source of truth; Redux SENDING/FAILED overlay for optimistic UI
+    const merged = new Map<string, ChatMessage>();
+    for (const m of localMessages) merged.set(m.id, m);
+    for (const m of reduxMsgs) {
+      if (!merged.has(m.id)) merged.set(m.id, m); // only add if not yet in DB
     }
-    return Array.from(seen.values()).sort((a, b) => {
+    return Array.from(merged.values()).sort((a, b) => {
       const tA = a.createdAtMs || (a.createdAt ? new Date(a.createdAt).getTime() : 0);
       const tB = b.createdAtMs || (b.createdAt ? new Date(b.createdAt).getTime() : 0);
       return tA - tB;
     });
-  }, [messagesMap, conversationId, resolvedConvId, effectiveRecipientId]);
+  }, [localMessages, messagesMap, conversationId, resolvedConvId]);
 
   // ── Scroll to bottom on new messages ──────────────────────────────────────
   useEffect(() => {
@@ -713,6 +723,17 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
 
   const handleDownloadMedia = async (msg: ChatMessage) => {
     if (!msg.imagePath || downloadingMediaIds.has(msg.id)) return;
+
+    // ── Phase 2c: Skip re-download if already cached locally ──────────────
+    // After first download, localMediaPath is stored in SQLite and
+    // restored into the Redux message on app launch via loadHistoricalMessages.
+    // The field is also populated on msg via updateMessageMediaDownloaded() which
+    // sets isDownloaded=true. Checking here prevents redundant downloads.
+    if (msg.isDownloaded && msg.imagePath?.startsWith('file://')) {
+      // Already pointing to local file — nothing to do
+      return;
+    }
+
     setDownloadingMediaIds((prev) => new Set(prev).add(msg.id));
 
     const step = { current: 'init' }; // track which step failed for accurate error messages
@@ -1101,7 +1122,7 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
     }
     setIsSubmittingReport(true);
     try {
-      const allMsgs = messagesMap[conversationId] || [];
+      const allMsgs = roomMessages;
       const msgIndex = allMsgs.findIndex((m) => m.id === reportingMsg.id);
       const startIdx = Math.max(0, msgIndex >= 0 ? msgIndex - 5 : allMsgs.length - 6);
       const endIdx = msgIndex >= 0 ? Math.min(allMsgs.length, msgIndex + 4) : allMsgs.length;

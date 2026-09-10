@@ -12,6 +12,7 @@ import { createRedisClient } from '../../common/utils/redis-factory';
 import { ConversationModule } from '../conversations/conversation.module';
 
 import { PushNotificationService } from './push-notification.service';
+import { MessageCleanupService } from './message-cleanup.service';
 
 const REDIS_CLIENT_PROVIDER = {
   provide: 'REDIS_CLIENT',
@@ -42,6 +43,7 @@ const REDIS_CLIENT_PROVIDER = {
     MessageRepository,
     MessageRedisService,
     PushNotificationService,
+    MessageCleanupService,
     PrismaService,
   ],
   exports: [
@@ -50,6 +52,7 @@ const REDIS_CLIENT_PROVIDER = {
     MessageRepository,
     MessageRedisService,
     PushNotificationService,
+    MessageCleanupService,
   ],
 })
 export class MessageModule {}

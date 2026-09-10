@@ -68,6 +68,12 @@ import { e2eCryptoService } from '../services/e2eCryptoService';
 import { notificationService } from '../services/notificationService';
 import nacl from 'tweetnacl';
 import { arrayBufferToBase64, base64ToArrayBuffer } from '../services/signalProtocolStore';
+import {
+  upsertMessage as dbUpsertMessage,
+  updateMessageStatus as dbUpdateMessageStatus,
+  upsertConversation as dbUpsertConversation,
+  setMessageLocalMediaPath,
+} from '../db/localDb';
 
 const globalLoadedHistoricalConvs = new Set<string>();
 const globalLoadingHistoricalConvs = new Set<string>();
@@ -685,12 +691,77 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       isStarred: false,
     };
 
+    const previewSnippet =
+      finalDecryptedText ||
+      (payload.imagePath
+        ? '📷 Photo'
+        : payload.document
+          ? `📄 ${payload.document.name || 'Document'}`
+          : payload.contact
+            ? `👤 Contact: ${payload.contact.name}`
+            : payload.location
+              ? '📍 Location'
+              : 'Message');
+
     // 1. Dispatch to canonical server conversationId ONLY.
     // PERF FIX: Previously dispatched appendMessage 3 times for same message —
     // once to convId, once to existingConv.id (if different), once to payload.senderId.
     // Each dispatch triggers a reducer run + scheduled AsyncStorage write.
     // Now: single dispatch. UI de-duplication handles display across alias IDs.
     dispatch(appendMessage({ conversationId: convId, message: incomingMsg }));
+
+    // ── WatermelonDB: persist message + conversation locally (fire-and-forget) ──
+    // This is the local-first write — server relay has already cleared ciphertexts,
+    // so this device's local DB becomes the permanent record of this message.
+    (async () => {
+      try {
+        // Ensure conversation row exists before writing message (FK reference)
+        await dbUpsertConversation({
+          serverId: convId,
+          type: 'DIRECT',
+          title: resolvedTitle,
+          avatarUrl: resolvedAvatar,
+          recipientDbId: payload.senderId,
+          recipientUsername: senderUsernameClean,
+          recipientPhone: payload.senderPhone,
+          lastMessageText: previewSnippet,
+          lastMessageAt: incomingMsg.createdAtMs,
+          lastMessageIsMe: false,
+          lastMessageStatus: 'DELIVERED',
+        });
+
+        await dbUpsertMessage({
+          serverId: incomingMsg.id,
+          clientMessageId: incomingMsg.id, // incoming messages use serverId as clientMessageId
+          conversationServerId: convId,
+          senderId: payload.senderId,
+          senderName: payload.senderName || undefined,
+          senderAvatar: resolvedAvatar,
+          isMe: false,
+          text: finalDecryptedText || undefined,
+          type: payload.imagePath
+            ? 'IMAGE'
+            : payload.location
+              ? 'LOCATION'
+              : payload.document
+                ? 'DOCUMENT'
+                : payload.contact
+                  ? 'CONTACT'
+                  : 'TEXT',
+          status: 'DELIVERED',
+          imagePath: payload.imagePath || undefined,
+          attachmentFileKey: attachmentCrypto?.fileKey,
+          attachmentFileNonce: attachmentCrypto?.fileNonce,
+          locationJson: payload.location ? JSON.stringify(payload.location) : undefined,
+          documentJson: payload.document ? JSON.stringify(payload.document) : undefined,
+          contactJson: payload.contact ? JSON.stringify(payload.contact) : undefined,
+          createdAtMs: incomingMsg.createdAtMs,
+        });
+      } catch (dbErr) {
+        // Never let a DB write failure affect the real-time message flow
+        console.warn('[WatermelonDB] Failed to persist incoming message:', dbErr);
+      }
+    })();
 
     // 2. Find any matching existing conversation by ID or recipientDbId
     const existingConv = conversationsRef.current.find(
@@ -709,18 +780,6 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } else {
       soundService.playNotificationTone();
     }
-
-    const previewSnippet =
-      finalDecryptedText ||
-      (payload.imagePath
-        ? '📷 Photo'
-        : payload.document
-          ? `📄 ${payload.document.name || 'Document'}`
-          : payload.contact
-            ? `👤 Contact: ${payload.contact.name}`
-            : payload.location
-              ? '📍 Location'
-              : 'Message');
 
     // Update or create conversation list entry
     if (existingConv) {
@@ -777,6 +836,8 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
           status: 'FAILED',
         }),
       );
+      // WatermelonDB: mark as FAILED
+      dbUpdateMessageStatus(ack.clientMessageId, 'FAILED').catch(() => {});
       return;
     }
     // Reconcile optimistic bubble: clientMessageId → confirmed serverMessageId + SENT status
@@ -787,17 +848,27 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         status: 'SENT',
       }),
     );
+    // WatermelonDB: promote clientMessageId → serverId, mark SENT
+    dbUpdateMessageStatus(ack.clientMessageId, 'SENT', ack.serverMessageId).catch(() => {});
   }, []);
 
   const _handleReceiptUpdate = useCallback((receipt: ReceiptUpdate) => {
+    const newStatus = receipt.status === 'READ' ? 'READ' : 'DELIVERED';
     dispatch(
       updateMessageStatus({
         conversationId: receipt.conversationId,
         messageId: receipt.serverMessageId,
         clientMessageId: receipt.clientMessageId,
-        status: receipt.status === 'READ' ? 'READ' : 'DELIVERED',
+        status: newStatus,
       }),
     );
+    // WatermelonDB: update delivery/read status
+    if (receipt.serverMessageId) {
+      dbUpdateMessageStatus(receipt.serverMessageId, newStatus).catch(() => {});
+    }
+    if (receipt.clientMessageId && receipt.clientMessageId !== receipt.serverMessageId) {
+      dbUpdateMessageStatus(receipt.clientMessageId, newStatus).catch(() => {});
+    }
   }, []);
 
   const _handlePresenceUpdate = useCallback((presence: PresenceUpdate) => {
@@ -1318,12 +1389,6 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       isStarred: false,
     };
 
-    dispatch(appendMessage({ conversationId, message: newMsg }));
-
-    if (isMe) {
-      soundService.playMessageSentSound();
-    }
-
     const snippet =
       text ||
       (imagePath
@@ -1337,6 +1402,43 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 ? '📡 Live Location'
                 : '📍 Location'
               : '');
+
+    dispatch(appendMessage({ conversationId, message: newMsg }));
+
+    // ── WatermelonDB: persist optimistic outgoing message ──────────────────
+    (async () => {
+      try {
+        await dbUpsertConversation({
+          serverId: conversationId,
+          type: 'DIRECT',
+          recipientDbId: receiverId,
+          recipientUsername: contactUsername,
+          lastMessageText: snippet || text,
+          lastMessageAt: newMsg.createdAtMs,
+          lastMessageIsMe: true,
+          lastMessageStatus: 'SENDING',
+        });
+        await dbUpsertMessage({
+          clientMessageId,
+          conversationServerId: conversationId,
+          senderId: authUserIdRef.current || 'me',
+          isMe: true,
+          text: text || undefined,
+          type: document ? 'DOCUMENT' : contactPayload ? 'CONTACT' : location ? 'LOCATION' : 'TEXT',
+          status: 'SENDING',
+          locationJson: location ? JSON.stringify(location) : undefined,
+          documentJson: document ? JSON.stringify(document) : undefined,
+          contactJson: contactPayload ? JSON.stringify(contactPayload) : undefined,
+          createdAtMs: newMsg.createdAtMs!,
+        });
+      } catch (dbErr) {
+        console.warn('[WatermelonDB] Failed to persist outgoing message:', dbErr);
+      }
+    })();
+
+    if (isMe) {
+      soundService.playMessageSentSound();
+    }
 
     // Update or create conversation entry
     const existingConv = conversationsRef.current.find((c) => c.id === conversationId);
@@ -1517,6 +1619,37 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     _updateLastMessageInternal(conversationId, caption || '📷 Photo', false, true, 'SENDING');
 
+    // ── WatermelonDB: persist optimistic media message ─────────────────────
+    (async () => {
+      try {
+        await dbUpsertConversation({
+          serverId: conversationId,
+          type: 'DIRECT',
+          recipientDbId: receiverId,
+          lastMessageText: caption || '📷 Photo',
+          lastMessageAt: newMsg.createdAtMs,
+          lastMessageIsMe: true,
+          lastMessageStatus: 'SENDING',
+        });
+        await dbUpsertMessage({
+          clientMessageId,
+          conversationServerId: conversationId,
+          senderId: authUserIdRef.current || 'me',
+          isMe: true,
+          text: caption || undefined,
+          type: 'IMAGE',
+          status: 'SENDING',
+          imagePath: mediaUri, // local preview URI until upload completes
+          mediaSize: formattedSize,
+          isUploading: true,
+          uploadProgress: 20,
+          createdAtMs: newMsg.createdAtMs!,
+        });
+      } catch (dbErr) {
+        console.warn('[WatermelonDB] Failed to persist media message:', dbErr);
+      }
+    })();
+
     // 2. Perform background upload
     (async () => {
       try {
@@ -1580,6 +1713,16 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
             imagePath: uploadRes.url,
           }),
         );
+
+        // WatermelonDB: update with remote URL + encryption keys
+        dbUpdateMessageStatus(
+          clientMessageId,
+          'SENDING',
+          undefined,
+          uploadRes.url,
+          false,
+          100,
+        ).catch(() => {});
 
         // 3. Package symmetric file key + nonce and send via socket
         const realConvId = await _resolveConvId(conversationId, receiverId);
@@ -1673,6 +1816,10 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     isDownloaded = true,
   ) => {
     dispatch(updateMessageMediaDownloadedRedux({ messageId, imagePath, isDownloaded }));
+    // WatermelonDB: store the local file:// path so re-downloads are skipped on next launch
+    if (imagePath && isDownloaded) {
+      setMessageLocalMediaPath(messageId, imagePath).catch(() => {});
+    }
   };
 
   const toggleStarMessage = (conversationId: string, messageId: string): boolean => {

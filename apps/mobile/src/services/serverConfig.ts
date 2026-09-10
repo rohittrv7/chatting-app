@@ -7,7 +7,7 @@ const SERVER_ENV_STORAGE_KEY = '@app_server_environment_v3';
 const SERVER_CUSTOM_IP_KEY = '@app_custom_local_ip_v3';
 
 // Active Host Wi-Fi IP from ipconfig
-export const DEFAULT_LOCAL_IP = '10.248.132.14';
+export const DEFAULT_LOCAL_IP = '10.117.104.14';
 
 export const LIVE_API_URL = 'https://chatting-app-rme6.onrender.com/api/v1';
 export const LIVE_SOCKET_URL = 'https://chatting-app-rme6.onrender.com';
@@ -28,7 +28,7 @@ class ServerConfigService {
       if (storedEnv === 'live' || storedEnv === 'local') {
         this.currentEnv = storedEnv;
       } else {
-        this.currentEnv = 'live'; // default to live backend
+        this.currentEnv = 'local'; // default to local backend
       }
 
       const storedIp = await safeStorage.getItem(SERVER_CUSTOM_IP_KEY);
@@ -38,7 +38,7 @@ class ServerConfigService {
         this.localIp = DEFAULT_LOCAL_IP;
       }
     } catch (e) {
-      this.currentEnv = 'live';
+      this.currentEnv = 'local';
       this.localIp = DEFAULT_LOCAL_IP;
     }
     this.isLoaded = true;
@@ -64,7 +64,6 @@ class ServerConfigService {
   }
 
   public getApiBaseUrl(): string {
-    if (process.env.EXPO_PUBLIC_API_URL) return process.env.EXPO_PUBLIC_API_URL;
     if (this.currentEnv === 'live') {
       return LIVE_API_URL;
     }
@@ -73,7 +72,6 @@ class ServerConfigService {
   }
 
   public getSocketUrl(): string {
-    if (process.env.EXPO_PUBLIC_SOCKET_URL) return process.env.EXPO_PUBLIC_SOCKET_URL;
     if (this.currentEnv === 'live') {
       return LIVE_SOCKET_URL;
     }

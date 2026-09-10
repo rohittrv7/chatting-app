@@ -35,6 +35,8 @@ import { EditProfileScreen } from './src/screens/EditProfileScreen';
 import { AccountSettingsScreen } from './src/screens/AccountSettingsScreen';
 import { PrivacySettingsScreen } from './src/screens/PrivacySettingsScreen';
 import { ChatSettingsScreen } from './src/screens/ChatSettingsScreen';
+import { ChatBackupScreen } from './src/screens/ChatBackupScreen';
+import { RestoreBackupScreen } from './src/screens/RestoreBackupScreen';
 import { CallSettingsScreen } from './src/screens/CallSettingsScreen';
 import { NotificationSettingsScreen } from './src/screens/NotificationSettingsScreen';
 import { StorageSettingsScreen } from './src/screens/StorageSettingsScreen';
@@ -42,12 +44,25 @@ import { HelpSettingsScreen } from './src/screens/HelpSettingsScreen';
 import { QrCodeScreen } from './src/screens/QrCodeScreen';
 import { IncomingCallModal } from './src/components/IncomingCallModal';
 import { notificationService } from './src/services/notificationService';
+import { BackupProvider } from './src/context/BackupContext';
 
 // ─── Register FCM background message handler at module level ─────────────────
 // This MUST run before the React tree mounts. Firebase requires the background
 // handler to be registered synchronously at app boot, not inside a useEffect.
 // Handles data-only INCOMING_CALL pushes when the app is killed or backgrounded.
 notificationService.registerBackgroundHandler();
+
+// ─── Import backupScheduler at module level ───────────────────────────────────
+// TaskManager.defineTask() inside backupScheduler.ts runs at IMPORT TIME (module level).
+// This static import ensures the task definition runs before any background execution.
+// initBackupScheduler() (async registration) is called from AppNavigator useEffect.
+import { initBackupScheduler } from './src/services/backupScheduler';
+
+// ─── Pre-warm the SQLite database ────────────────────────────────────────────
+// Kicks off openDatabaseAsync + schema migration before the first screen renders.
+// Subsequent getDatabase() calls resolve instantly from the cached singleton.
+import { getDatabase } from './src/db/database';
+getDatabase().catch((e) => console.warn('[App] SQLite pre-warm failed:', e));
 
 export const navigationRef = createNavigationContainerRef<RootStackParamList>();
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -71,6 +86,13 @@ function AppNavigator() {
       }
     });
   }, [dispatch, showToast]);
+
+  // Register the background backup task once at startup.
+  // The task definition (TaskManager.defineTask) already ran at module load time
+  // via the static import of backupScheduler.ts above.
+  useEffect(() => {
+    initBackupScheduler().catch(() => {});
+  }, []);
 
   useEffect(() => {
     async function checkAuthSession() {
@@ -182,6 +204,8 @@ function AppNavigator() {
           <Stack.Screen name="AccountSettings" component={AccountSettingsScreen} />
           <Stack.Screen name="PrivacySettings" component={PrivacySettingsScreen} />
           <Stack.Screen name="ChatSettings" component={ChatSettingsScreen} />
+          <Stack.Screen name="ChatBackup" component={ChatBackupScreen} />
+          <Stack.Screen name="RestoreBackup" component={RestoreBackupScreen} />
           <Stack.Screen name="CallSettings" component={CallSettingsScreen} />
           <Stack.Screen name="NotificationSettings" component={NotificationSettingsScreen} />
           <Stack.Screen name="StorageSettings" component={StorageSettingsScreen} />
@@ -266,11 +290,13 @@ export default function App() {
       <SafeAreaProvider>
         <Provider store={store}>
           <ThemeProvider>
-            <ChatProvider>
-              <ToastProvider>
-                <AppNavigator />
-              </ToastProvider>
-            </ChatProvider>
+            <BackupProvider>
+              <ChatProvider>
+                <ToastProvider>
+                  <AppNavigator />
+                </ToastProvider>
+              </ChatProvider>
+            </BackupProvider>
           </ThemeProvider>
         </Provider>
       </SafeAreaProvider>
