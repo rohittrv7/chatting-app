@@ -550,6 +550,7 @@ export const apiService = {
       readReceipts?: boolean;
       lastSeenVisibility?: string;
       profilePhotoVis?: string;
+      aboutVisibility?: string;
       theme?: string;
       messageNotifications?: boolean;
       callNotifications?: boolean;
@@ -785,6 +786,56 @@ export const apiService = {
       });
     }
     return [];
+  },
+
+  /**
+   * Fetch a registered user's profile by userId (used for QR code scanning & profile view)
+   */
+  async getUserById(
+    token: string,
+    userId: string,
+  ): Promise<{
+    id: string;
+    name: string;
+    username?: string;
+    phoneNumber?: string;
+    about?: string;
+    avatarUrl?: string;
+    isRegistered: boolean;
+  } | null> {
+    const cleanId = (userId || '').trim();
+    if (!cleanId) return null;
+
+    const startTime = Date.now();
+    const url = `${getApiBaseUrl()}/auth/users/${encodeURIComponent(cleanId)}`;
+
+    try {
+      const response = await this.fetchWithAuth(url, { method: 'GET' }, token);
+      const durationMs = Date.now() - startTime;
+
+      if (response.ok) {
+        const json = await response.json();
+        const u = json.data || json;
+        if (!u?.id) return null;
+
+        return {
+          id: u.id,
+          name: u.displayName || u.name || u.username || u.phoneNumber || 'User',
+          username: u.username
+            ? u.username.startsWith('@')
+              ? u.username
+              : `@${u.username.replace(/^@+/, '')}`
+            : undefined,
+          phoneNumber: u.phoneNumber,
+          avatarUrl: u.avatarUrl ? this.getResolvedMediaUrl(u.avatarUrl) : undefined,
+          about: u.about || 'Available on WhatsApp',
+          isRegistered: true,
+        };
+      }
+    } catch (e: any) {
+      console.warn('getUserById network error:', e);
+    }
+    return null;
   },
 
   /**
@@ -1391,6 +1442,30 @@ export const apiService = {
       console.warn('submitReport error:', e);
     }
     return { success: false };
+  },
+
+  /**
+   * Record that the user downloaded an attachment (for relay-only cleanup tracking)
+   */
+  async recordAttachmentDownloaded(
+    token: string,
+    messageIdOrAttachmentId: string,
+  ): Promise<boolean> {
+    try {
+      const response = await fetch(
+        `${getApiBaseUrl()}/media/attachment/${encodeURIComponent(messageIdOrAttachmentId)}/downloaded`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+      return response.ok;
+    } catch {
+      return false;
+    }
   },
 };
 

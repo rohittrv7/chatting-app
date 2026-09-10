@@ -5,6 +5,7 @@ import {
   HttpException,
   HttpStatus,
   Optional,
+  Logger,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
@@ -78,6 +79,8 @@ import { PrismaService } from '../../database/prisma.service';
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly authRepository: AuthRepository,
     private readonly otpRedis: OtpRedisService,
@@ -410,6 +413,7 @@ export class AuthService {
     // Emit force-logout socket event to the user's room (Task 4.3c)
     if (this.authGateway?.server) {
       this.authGateway.server
+        .to(`user:${userId}`)
         .to(`user_${userId}`)
         .emit(SocketEvent.DEVICE_FORCE_LOGOUT, { deviceId: deviceIdToDelete });
     }
@@ -434,17 +438,26 @@ export class AuthService {
       devices.map((d) => this.authRepository.deleteAllRefreshTokensByDeviceId(d.id)),
     );
 
-    // Force-disconnect all active sockets immediately.
+    // Force-disconnect all active sockets immediately across both room naming conventions.
     // This guarantees the deactivated account stops receiving messages/calls in real-time.
     if (this.authGateway?.server) {
       this.authGateway.server
+        .to(`user:${userId}`)
         .to(`user_${userId}`)
         .emit(SocketEvent.DEVICE_FORCE_LOGOUT, { reason: 'account_deactivated' });
 
-      // Disconnect every socket in the user's room
-      const sockets = await this.authGateway.server.in(`user_${userId}`).fetchSockets();
-      for (const socket of sockets) {
-        socket.disconnect(true);
+      // Disconnect every socket in the user's rooms
+      try {
+        const [socketsColon, socketsUnderscore] = await Promise.all([
+          this.authGateway.server.in(`user:${userId}`).fetchSockets(),
+          this.authGateway.server.in(`user_${userId}`).fetchSockets(),
+        ]);
+        const allSockets = [...(socketsColon || []), ...(socketsUnderscore || [])];
+        for (const socket of allSockets) {
+          socket.disconnect(true);
+        }
+      } catch (discErr) {
+        this.logger.warn(`Failed to disconnect sockets for user ${userId}: ${discErr}`);
       }
     }
 
@@ -599,13 +612,15 @@ export class AuthService {
         registered10DigitSet.add(u10);
       }
 
+      const hidePhoto = (u as any).settings?.profilePhotoVis === 'NOBODY';
+      const hideAbout = (u as any).settings?.aboutVisibility === 'NOBODY';
       registered.push({
         id: u.id,
         phoneNumber: u10 || u.phoneNumber,
         displayName: u.displayName,
         username: u.username ? `@${u.username.replace(/^@+/, '')}` : null,
-        avatarUrl: u.avatarUrl,
-        about: u.about,
+        avatarUrl: hidePhoto ? null : u.avatarUrl || null,
+        about: hideAbout ? null : u.about || null,
         isRegistered: true,
       });
     }
@@ -635,16 +650,132 @@ export class AuthService {
 
   async searchUsers(currentUserId: string, query: string) {
     const results = await this.authRepository.searchUsers(currentUserId, query);
-    return results.map((u) => ({
-      id: u.id,
-      displayName: u.displayName || u.username || u.phoneNumber || 'User',
-      name: u.displayName || u.username || u.phoneNumber || 'User',
-      username: u.username ? `@${u.username.replace(/^@+/, '')}` : undefined,
-      phoneNumber: u.phoneNumber,
-      about: u.about || 'Available',
-      avatarUrl: u.avatarUrl || undefined,
+
+    const blockedRecords = currentUserId
+      ? await this.prisma.blockedUser.findMany({
+          where: {
+            OR: [{ blockerId: currentUserId }, { blockedId: currentUserId }],
+          },
+          select: { blockerId: true, blockedId: true },
+        })
+      : [];
+
+    const blockedSet = new Set<string>();
+    for (const b of blockedRecords) {
+      if (b.blockerId === currentUserId) blockedSet.add(b.blockedId);
+      if (b.blockedId === currentUserId) blockedSet.add(b.blockerId);
+    }
+
+    return results.map((u: any) => {
+      const isBlocked = blockedSet.has(u.id);
+      const hidePhoto =
+        isBlocked ||
+        (currentUserId && u.id !== currentUserId && u.settings?.profilePhotoVis === 'NOBODY');
+      const hideAbout =
+        isBlocked ||
+        (currentUserId && u.id !== currentUserId && u.settings?.aboutVisibility === 'NOBODY');
+      return {
+        id: u.id,
+        displayName: u.displayName || u.username || u.phoneNumber || 'User',
+        name: u.displayName || u.username || u.phoneNumber || 'User',
+        username: u.username ? `@${u.username.replace(/^@+/, '')}` : undefined,
+        phoneNumber: u.phoneNumber,
+        about: hideAbout ? null : u.about || null,
+        avatarUrl: hidePhoto ? undefined : u.avatarUrl || undefined,
+        isRegistered: true,
+      };
+    });
+  }
+
+  async getUserProfileById(currentUserId: string, targetUserId: string) {
+    if (!targetUserId) {
+      throw new BadRequestException('Target user ID is required');
+    }
+    const user = await this.prisma.user.findFirst({
+      where: { id: targetUserId, isActive: true },
+      select: {
+        id: true,
+        displayName: true,
+        username: true,
+        phoneNumber: true,
+        avatarUrl: true,
+        about: true,
+        settings: {
+          select: {
+            profilePhotoVis: true,
+            lastSeenVisibility: true,
+            aboutVisibility: true,
+          },
+        },
+      },
+    });
+    if (!user) {
+      throw new HttpException('User not found', HttpStatus.NOT_FOUND);
+    }
+
+    let isBlocked = false;
+    if (currentUserId && currentUserId !== targetUserId) {
+      const blockRecord = await this.prisma.blockedUser.findFirst({
+        where: {
+          OR: [
+            { blockerId: currentUserId, blockedId: targetUserId },
+            { blockerId: targetUserId, blockedId: currentUserId },
+          ],
+        },
+      });
+      isBlocked = !!blockRecord;
+    }
+
+    const requesterSetting = currentUserId
+      ? await this.prisma.setting
+          .findUnique({
+            where: { userId: currentUserId },
+            select: { lastSeenVisibility: true },
+          })
+          .catch(() => null)
+      : null;
+
+    const requesterHidesLastSeen = requesterSetting?.lastSeenVisibility === 'NOBODY';
+    const targetHidesLastSeen = user.settings?.lastSeenVisibility === 'NOBODY';
+    const allowLastSeen =
+      currentUserId === targetUserId ||
+      (!requesterHidesLastSeen && !targetHidesLastSeen && !isBlocked);
+
+    let lastSeen: string | null = null;
+    if (allowLastSeen) {
+      try {
+        const cached = await this.otpRedis.getCache(`presence:lastseen:${targetUserId}`);
+        if (cached) {
+          lastSeen = cached;
+        } else {
+          const dev = await this.prisma.device.findFirst({
+            where: { userId: targetUserId },
+            orderBy: { lastActiveAt: 'desc' },
+            select: { lastActiveAt: true },
+          });
+          if (dev?.lastActiveAt) {
+            lastSeen = dev.lastActiveAt.toISOString();
+          }
+        }
+      } catch {}
+    }
+
+    const hidePhoto =
+      isBlocked || (currentUserId !== targetUserId && user.settings?.profilePhotoVis === 'NOBODY');
+    const hideAbout =
+      isBlocked || (currentUserId !== targetUserId && user.settings?.aboutVisibility === 'NOBODY');
+
+    return {
+      id: user.id,
+      name: user.displayName || user.username || user.phoneNumber || 'User',
+      displayName: user.displayName || user.username || user.phoneNumber || 'User',
+      username: user.username ? `@${user.username.replace(/^@+/, '')}` : undefined,
+      phoneNumber: user.phoneNumber,
+      about: hideAbout ? null : user.about || null,
+      avatarUrl: hidePhoto ? undefined : user.avatarUrl || undefined,
+      lastSeen,
       isRegistered: true,
-    }));
+    };
   }
 
   async blockUser(currentUserId: string, targetUserId: string) {
@@ -691,6 +822,7 @@ export class AuthService {
       readReceipts: setting.readReceipts,
       lastSeenVisibility: setting.lastSeenVisibility,
       profilePhotoVis: setting.profilePhotoVis,
+      aboutVisibility: (setting as any).aboutVisibility || 'EVERYONE',
       theme: setting.theme,
       // Extra fields stored as JSON in the about-text workaround
       messageNotifications: true,
@@ -705,6 +837,8 @@ export class AuthService {
       readReceipts?: boolean;
       lastSeenVisibility?: string;
       profilePhotoVis?: string;
+      aboutVisibility?: string;
+      about?: string;
       theme?: string;
       messageNotifications?: boolean;
       callNotifications?: boolean;
@@ -716,7 +850,17 @@ export class AuthService {
     if (dto.lastSeenVisibility !== undefined)
       updateData.lastSeenVisibility = dto.lastSeenVisibility;
     if (dto.profilePhotoVis !== undefined) updateData.profilePhotoVis = dto.profilePhotoVis;
+    if (dto.aboutVisibility !== undefined) updateData.aboutVisibility = dto.aboutVisibility;
     if (dto.theme !== undefined) updateData.theme = dto.theme;
+
+    if (dto.about !== undefined) {
+      await this.prisma.user
+        .update({
+          where: { id: userId },
+          data: { about: dto.about },
+        })
+        .catch(() => {});
+    }
 
     const setting = await this.prisma.setting.upsert({
       where: { userId },

@@ -287,6 +287,13 @@ export class AuthRepository {
         about: true,
         createdAt: true,
         updatedAt: true,
+        settings: {
+          select: {
+            profilePhotoVis: true,
+            lastSeenVisibility: true,
+            aboutVisibility: true,
+          },
+        },
       },
     }) as unknown as Promise<User[]>;
   }
@@ -318,6 +325,13 @@ export class AuthRepository {
         phoneNumber: true,
         avatarUrl: true,
         about: true,
+        settings: {
+          select: {
+            profilePhotoVis: true,
+            lastSeenVisibility: true,
+            aboutVisibility: true,
+          },
+        },
       },
       take: 30,
     });

@@ -126,6 +126,14 @@ interface ChatContextType {
     contactTitle?: string;
     contactUsername?: string;
   }) => Promise<string>;
+  sendAudioMessage: (params: {
+    conversationId: string;
+    audioUri: string;
+    durationSeconds: number;
+    receiverId: string;
+    contactTitle?: string;
+    contactUsername?: string;
+  }) => Promise<string>;
   updateMessageUploadProgress: (
     messageId: string,
     uploadProgress: number,
@@ -199,6 +207,7 @@ const ChatContext = createContext<ChatContextType>({
   loadHistoricalMessagesForConversation: async () => {},
   addMessage: () => {},
   sendMediaMessage: async () => '',
+  sendAudioMessage: async () => '',
   updateMessageUploadProgress: () => {},
   updateMessageMediaDownloaded: () => {},
   addConversation: () => {},
@@ -671,6 +680,36 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     } catch (_) {}
 
+    // Detect Voice/Audio message
+    const isAudioMsg =
+      payload.type === 'AUDIO' ||
+      (payload.ciphertexts &&
+        typeof payload.ciphertexts === 'object' &&
+        (payload.ciphertexts as any).type === 'AUDIO');
+
+    const audioUrl = isAudioMsg
+      ? (payload.ciphertexts as any)?.audioPath || payload.imagePath
+      : undefined;
+    const audioDuration = isAudioMsg
+      ? (payload.ciphertexts as any)?.durationSeconds ||
+        ((payload as any).mediaSize ? parseFloat((payload as any).mediaSize) : 0)
+      : undefined;
+
+    if (
+      isAudioMsg &&
+      (payload.ciphertexts as any)?.fileKey &&
+      (payload.ciphertexts as any)?.fileNonce
+    ) {
+      attachmentCrypto = {
+        fileKey: (payload.ciphertexts as any).fileKey,
+        fileNonce: (payload.ciphertexts as any).fileNonce,
+      };
+    }
+
+    const durationStr = audioDuration
+      ? `${Math.floor(audioDuration / 60)}:${(Math.floor(audioDuration) % 60).toString().padStart(2, '0')}`
+      : '0:00';
+
     const incomingMsg: ChatMessage = {
       id: payload.serverMessageId,
       conversationId: convId,
@@ -682,8 +721,21 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       status: 'DELIVERED',
       createdAtMs: payload.createdAt ? new Date(payload.createdAt).getTime() : Date.now(),
       createdAt: payload.createdAt || now.toISOString(),
-      imagePath: payload.imagePath,
-      mediaSize: (payload as any).mediaSize || (payload as any).fileSize,
+      type: isAudioMsg
+        ? 'AUDIO'
+        : payload.imagePath
+          ? 'IMAGE'
+          : payload.location
+            ? 'LOCATION'
+            : payload.document
+              ? 'DOCUMENT'
+              : payload.contact
+                ? 'CONTACT'
+                : 'TEXT',
+      imagePath: isAudioMsg ? undefined : payload.imagePath,
+      audioPath: audioUrl,
+      audioDurationSeconds: audioDuration,
+      mediaSize: isAudioMsg ? durationStr : (payload as any).mediaSize || (payload as any).fileSize,
       isDownloaded: false,
       location: payload.location,
       document: payload.document,
@@ -693,15 +745,17 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const previewSnippet =
       finalDecryptedText ||
-      (payload.imagePath
-        ? '📷 Photo'
-        : payload.document
-          ? `📄 ${payload.document.name || 'Document'}`
-          : payload.contact
-            ? `👤 Contact: ${payload.contact.name}`
-            : payload.location
-              ? '📍 Location'
-              : 'Message');
+      (isAudioMsg
+        ? '🎤 Voice message'
+        : payload.imagePath
+          ? '📷 Photo'
+          : payload.document
+            ? `📄 ${payload.document.name || 'Document'}`
+            : payload.contact
+              ? `👤 Contact: ${payload.contact.name}`
+              : payload.location
+                ? '📍 Location'
+                : 'Message');
 
     // 1. Dispatch to canonical server conversationId ONLY.
     // PERF FIX: Previously dispatched appendMessage 3 times for same message —
@@ -739,17 +793,14 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
           senderAvatar: resolvedAvatar,
           isMe: false,
           text: finalDecryptedText || undefined,
-          type: payload.imagePath
-            ? 'IMAGE'
-            : payload.location
-              ? 'LOCATION'
-              : payload.document
-                ? 'DOCUMENT'
-                : payload.contact
-                  ? 'CONTACT'
-                  : 'TEXT',
+          type: incomingMsg.type || 'TEXT',
           status: 'DELIVERED',
-          imagePath: payload.imagePath || undefined,
+          imagePath: isAudioMsg ? audioUrl : payload.imagePath || undefined,
+          mediaSize: isAudioMsg
+            ? audioDuration
+              ? String(audioDuration)
+              : undefined
+            : incomingMsg.mediaSize || undefined,
           attachmentFileKey: attachmentCrypto?.fileKey,
           attachmentFileNonce: attachmentCrypto?.fileNonce,
           locationJson: payload.location ? JSON.stringify(payload.location) : undefined,
@@ -1801,6 +1852,187 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return clientMessageId;
   };
 
+  const sendAudioMessage = async (params: {
+    conversationId: string;
+    audioUri: string;
+    durationSeconds: number;
+    receiverId: string;
+    contactTitle?: string;
+    contactUsername?: string;
+  }): Promise<string> => {
+    const { conversationId, audioUri, durationSeconds, receiverId, contactTitle, contactUsername } =
+      params;
+
+    const now = new Date();
+    const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+    const clientMessageId = `cmid_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+
+    const durationMins = Math.floor(durationSeconds / 60);
+    const durationSecs = Math.floor(durationSeconds % 60);
+    const durationFormatted = `${durationMins}:${durationSecs.toString().padStart(2, '0')}`;
+
+    // 1. Optimistic message displayed INSTANTLY with local audioUri
+    const newMsg: ChatMessage = {
+      id: clientMessageId,
+      conversationId,
+      text: '',
+      type: 'AUDIO',
+      audioPath: audioUri,
+      audioDurationSeconds: durationSeconds,
+      mediaSize: durationFormatted,
+      isMe: true,
+      time: timeStr,
+      status: 'SENDING',
+      createdAtMs: Date.now(),
+      createdAt: now.toISOString(),
+      isUploading: true,
+      uploadProgress: 20,
+      isStarred: false,
+    };
+
+    dispatch(appendMessage({ conversationId, message: newMsg }));
+    soundService.playMessageSentSound();
+
+    _updateLastMessageInternal(conversationId, '🎤 Voice message', false, true, 'SENDING');
+
+    // Persist to local SQLite
+    (async () => {
+      try {
+        await dbUpsertConversation({
+          serverId: conversationId,
+          type: 'DIRECT',
+          recipientDbId: receiverId,
+          lastMessageText: '🎤 Voice message',
+          lastMessageAt: newMsg.createdAtMs,
+          lastMessageIsMe: true,
+          lastMessageStatus: 'SENDING',
+        });
+        await dbUpsertMessage({
+          clientMessageId,
+          conversationServerId: conversationId,
+          senderId: authUserIdRef.current || 'me',
+          isMe: true,
+          type: 'AUDIO',
+          status: 'SENDING',
+          imagePath: audioUri,
+          localMediaPath: audioUri,
+          mediaSize: String(durationSeconds),
+          isUploading: true,
+          uploadProgress: 20,
+          createdAtMs: newMsg.createdAtMs!,
+        });
+      } catch (dbErr) {
+        console.warn('[SQLite] Failed to persist optimistic audio message:', dbErr);
+      }
+    })();
+
+    // 2. Perform background upload & encryption
+    (async () => {
+      try {
+        const base64 = await FileSystem.readAsStringAsync(audioUri, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+
+        const token = await safeStorage.getItem('@chat_token');
+        if (!token || !base64) {
+          throw new Error('No auth token or base64 data available');
+        }
+
+        // 🔐 Symmetric Audio Encryption (XSalsa20-Poly1305 AEAD):
+        const fileKey = nacl.randomBytes(32);
+        const fileNonce = nacl.randomBytes(24);
+        const rawFileBytes = new Uint8Array(base64ToArrayBuffer(base64));
+        const encryptedFileBytes = nacl.secretbox(rawFileBytes, fileNonce, fileKey);
+        const encryptedBase64 = arrayBufferToBase64(encryptedFileBytes);
+
+        dispatch(
+          updateMessageProgress({
+            messageId: clientMessageId,
+            uploadProgress: 50,
+            isUploading: true,
+          }),
+        );
+
+        // Upload encrypted audio file
+        const uploadRes = await apiService.uploadMediaFile(
+          token,
+          encryptedBase64,
+          `voice_${Date.now()}.bin`,
+          'application/octet-stream',
+        );
+
+        if (!uploadRes.success || !uploadRes.url) {
+          throw new Error('Audio upload failed on server');
+        }
+
+        dispatch(
+          updateMessageStatus({
+            conversationId,
+            messageId: clientMessageId,
+            clientMessageId,
+            status: 'SENDING',
+          }),
+        );
+        dispatch(
+          updateMessageProgress({
+            messageId: clientMessageId,
+            uploadProgress: 100,
+            isUploading: false,
+          }),
+        );
+
+        // Update local DB
+        dbUpdateMessageStatus(
+          clientMessageId,
+          'SENDING',
+          undefined,
+          uploadRes.url,
+          false,
+          100,
+        ).catch(() => {});
+
+        // Send via socket
+        const realConvId = await _resolveConvId(conversationId, receiverId);
+        if (realConvId) {
+          socketService.sendMessage({
+            clientMessageId,
+            conversationId: realConvId,
+            receiverId,
+            type: 'AUDIO',
+            mediaSize: String(durationSeconds),
+            ciphertexts: {
+              type: 'AUDIO',
+              audioPath: uploadRes.url,
+              durationSeconds,
+              fileKey: arrayBufferToBase64(fileKey),
+              fileNonce: arrayBufferToBase64(fileNonce),
+            },
+            imagePath: uploadRes.url,
+          });
+        }
+      } catch (err) {
+        console.warn('Voice message upload failed:', err);
+        dispatch(
+          updateMessageProgress({
+            messageId: clientMessageId,
+            uploadProgress: 0,
+            isUploading: false,
+          }),
+        );
+        dispatch(
+          updateMessageStatus({
+            conversationId,
+            messageId: clientMessageId,
+            clientMessageId,
+            status: 'FAILED',
+          }),
+        );
+      }
+    })();
+
+    return clientMessageId;
+  };
+
   const updateMessageUploadProgress = (
     messageId: string,
     uploadProgress: number,
@@ -2330,6 +2562,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       loadHistoricalMessagesForConversation,
       addMessage,
       sendMediaMessage,
+      sendAudioMessage,
       updateMessageUploadProgress,
       updateMessageMediaDownloaded,
       addConversation,

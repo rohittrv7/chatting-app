@@ -183,7 +183,41 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     if (wentOffline) {
       const lastSeen = new Date().toISOString();
       await this.redis.setLastSeen(userId, lastSeen);
-      this.server.emit(EVT_PRESENCE_UPDATE, { userId, isOnline: false, lastSeen });
+      // Check user's lastSeenVisibility setting before broadcasting
+      const userSetting = await this.prisma.setting
+        .findUnique({
+          where: { userId },
+          select: { lastSeenVisibility: true },
+        })
+        .catch(() => null);
+      const broadcastLastSeen = userSetting?.lastSeenVisibility === 'NOBODY' ? null : lastSeen;
+
+      const connectedSockets = Array.from(this.server.sockets.sockets.values());
+      const recipientUserIds = Array.from(
+        new Set(connectedSockets.map((s: any) => s._userId).filter(Boolean)),
+      );
+
+      if (broadcastLastSeen && recipientUserIds.length > 0) {
+        const recipientSettings = await this.prisma.setting
+          .findMany({
+            where: { userId: { in: recipientUserIds } },
+            select: { userId: true, lastSeenVisibility: true },
+          })
+          .catch(() => []);
+        const recipientPrivacyMap = new Map(
+          recipientSettings.map((s) => [s.userId, s.lastSeenVisibility]),
+        );
+
+        for (const sock of connectedSockets) {
+          const rUid = (sock as any)._userId;
+          if (!rUid) continue;
+          const rHides = recipientPrivacyMap.get(rUid) === 'NOBODY';
+          const payloadLastSeen = rHides ? null : broadcastLastSeen;
+          sock.emit(EVT_PRESENCE_UPDATE, { userId, isOnline: false, lastSeen: payloadLastSeen });
+        }
+      } else {
+        this.server.emit(EVT_PRESENCE_UPDATE, { userId, isOnline: false, lastSeen: null });
+      }
     }
 
     this.logger.log(`🔴 DISCONNECTED  uid=${userId}  socket=${client.id}`);
@@ -222,7 +256,9 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     }
 
     const { clientMessageId, text, imagePath, location, document, contact } = payload;
-    const msgType = imagePath ? 'IMAGE' : location ? 'LOCATION' : document ? 'DOCUMENT' : 'TEXT';
+    const msgType =
+      payload.type ||
+      (imagePath ? 'IMAGE' : location ? 'LOCATION' : document ? 'DOCUMENT' : 'TEXT');
 
     // ── Resolve receiverId: must be a DB UUID ─────────────────────────────
     const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -332,6 +368,23 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     const serverMessageId = savedMessage.id;
     const createdAt = savedMessage.createdAt?.toISOString() ?? new Date().toISOString();
 
+    // If message contains a media attachment, persist an Attachment row for download tracking & cleanup
+    if (imagePath || document?.uri) {
+      const mediaUrl = imagePath || document?.uri || '';
+      const fileName = document?.name || (msgType === 'AUDIO' ? 'voice_note.m4a' : 'media.jpg');
+      this.prisma.attachment
+        .create({
+          data: {
+            messageId: serverMessageId,
+            fileUrl: mediaUrl,
+            fileName,
+            fileSize: typeof mediaSize === 'number' ? mediaSize : parseInt(mediaSize, 10) || 0,
+            mimeType: document?.mimeType || (msgType === 'AUDIO' ? 'audio/m4a' : 'image/jpeg'),
+          },
+        })
+        .catch((attErr) => this.logger.warn(`Failed to create Attachment row: ${attErr?.message}`));
+    }
+
     let senderProfile: {
       displayName?: string | null;
       username?: string | null;
@@ -348,6 +401,19 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     }
 
     // ── STEP 2: Build the canonical message payload ───────────────────────
+    let effectiveSenderAvatar = senderProfile?.avatarUrl ?? undefined;
+    if (effectiveSenderAvatar) {
+      const senderSetting = await this.prisma.setting
+        .findUnique({
+          where: { userId: senderId },
+          select: { profilePhotoVis: true },
+        })
+        .catch(() => null);
+      if (senderSetting?.profilePhotoVis === 'NOBODY') {
+        effectiveSenderAvatar = undefined;
+      }
+    }
+
     const messagePayload = {
       serverMessageId,
       clientMessageId,
@@ -356,7 +422,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       receiverId,
       senderName: senderProfile?.displayName ?? undefined,
       senderUsername: senderProfile?.username ?? undefined,
-      senderAvatarUrl: senderProfile?.avatarUrl ?? undefined,
+      senderAvatarUrl: effectiveSenderAvatar,
       senderPhone: senderProfile?.phoneNumber ?? undefined,
       ciphertexts,
       text: extractedText,
@@ -406,6 +472,33 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
             where: { id: serverMessageId },
             data: { status: 'DELIVERED' as any },
           });
+
+          // Record DELIVERED receipt for receiver in Receipt table
+          await this.prisma.receipt
+            .upsert({
+              where: {
+                messageId_userId_deviceId: {
+                  messageId: serverMessageId,
+                  userId: receiverId,
+                  deviceId: '1',
+                },
+              },
+              create: {
+                messageId: serverMessageId,
+                userId: receiverId,
+                deviceId: '1',
+                status: 'DELIVERED',
+              },
+              update: {
+                status: 'DELIVERED',
+                updatedAt: new Date(),
+              },
+            })
+            .catch(() => {});
+
+          // Trigger ciphertext wipe check since message was delivered
+          this.messageCleanupService.clearCiphertextsAfterDelivery(serverMessageId).catch(() => {});
+
           client.emit(EVT_RECEIPT_UPDATE, {
             serverMessageId,
             clientMessageId,
@@ -416,15 +509,53 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
           // Check if receiver currently has this conversation open (auto-READ)
           const activeConv = await this.redis.getUserActiveConversation(receiverId);
           if (activeConv === conversationId) {
-            await this.prisma.message.update({
-              where: { id: serverMessageId },
-              data: { status: 'READ' as any },
-            });
+            const [senderSetting, receiverSetting] = await Promise.all([
+              this.prisma.setting
+                .findUnique({ where: { userId: senderId }, select: { readReceipts: true } })
+                .catch(() => null),
+              this.prisma.setting
+                .findUnique({ where: { userId: receiverId }, select: { readReceipts: true } })
+                .catch(() => null),
+            ]);
+            const allowReadReceipt =
+              senderSetting?.readReceipts !== false && receiverSetting?.readReceipts !== false;
+            const finalStatus = allowReadReceipt ? 'READ' : 'DELIVERED';
+
+            if (allowReadReceipt) {
+              await this.prisma.message
+                .update({
+                  where: { id: serverMessageId },
+                  data: { status: 'READ' as any },
+                })
+                .catch(() => {});
+              await this.prisma.receipt
+                .upsert({
+                  where: {
+                    messageId_userId_deviceId: {
+                      messageId: serverMessageId,
+                      userId: receiverId,
+                      deviceId: '1',
+                    },
+                  },
+                  create: {
+                    messageId: serverMessageId,
+                    userId: receiverId,
+                    deviceId: '1',
+                    status: 'READ',
+                  },
+                  update: {
+                    status: 'READ',
+                    updatedAt: new Date(),
+                  },
+                })
+                .catch(() => {});
+            }
+
             client.emit(EVT_RECEIPT_UPDATE, {
               serverMessageId,
               clientMessageId,
               conversationId,
-              status: 'READ',
+              status: finalStatus,
             });
           }
         } else {
@@ -488,40 +619,85 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     if (!userId || !payload?.serverMessageId) return;
 
     const { serverMessageId, conversationId, status } = payload;
+    const deviceId: string = (client as any)._deviceId ?? '1';
 
-    // Persist receipt & update message status
-    try {
-      await this.prisma.message.update({
-        where: { id: serverMessageId },
-        data: { status: status as any },
-      });
-    } catch {
-      /* message may not exist yet — safe to ignore */
-    }
-    // Fan-out receipt to the sender of this message
+    let effectiveStatus = status;
+    let senderId: string | null = null;
     try {
       const msg = await this.prisma.message.findUnique({
         where: { id: serverMessageId },
         select: { senderId: true },
       });
-      if (msg?.senderId) {
-        this.server.to(`user:${msg.senderId}`).emit(EVT_RECEIPT_UPDATE, {
-          serverMessageId,
-          conversationId,
-          status,
-          byUserId: userId,
-        });
+      senderId = msg?.senderId ?? null;
+      if (status === 'READ' && senderId) {
+        const [senderSetting, receiverSetting] = await Promise.all([
+          this.prisma.setting
+            .findUnique({ where: { userId: senderId }, select: { readReceipts: true } })
+            .catch(() => null),
+          this.prisma.setting
+            .findUnique({ where: { userId }, select: { readReceipts: true } })
+            .catch(() => null),
+        ]);
+        if (senderSetting?.readReceipts === false || receiverSetting?.readReceipts === false) {
+          effectiveStatus = 'DELIVERED';
+        }
       }
     } catch {
       /* non-critical */
     }
 
-    this.logger.log(`👁  RECEIPT  uid=${userId}  msg=${serverMessageId}  status=${status}`);
+    // Persist receipt & update message status using effectiveStatus (enforcing mutual read receipt in DB)
+    try {
+      await this.prisma.message.update({
+        where: { id: serverMessageId },
+        data: { status: effectiveStatus as any },
+      });
+    } catch {
+      /* message may not exist yet — safe to ignore */
+    }
 
-    // Relay-only architecture: after a DELIVERED receipt, check whether all
+    try {
+      await this.prisma.receipt.upsert({
+        where: {
+          messageId_userId_deviceId: {
+            messageId: serverMessageId,
+            userId,
+            deviceId,
+          },
+        },
+        create: {
+          messageId: serverMessageId,
+          userId,
+          deviceId,
+          status: effectiveStatus as any,
+        },
+        update: {
+          status: effectiveStatus as any,
+          updatedAt: new Date(),
+        },
+      });
+    } catch (rErr: any) {
+      this.logger.warn(`Failed to upsert Receipt: ${rErr?.message}`);
+    }
+
+    // Fan-out receipt to the sender of this message
+    if (senderId) {
+      this.server.to(`user:${senderId}`).emit(EVT_RECEIPT_UPDATE, {
+        serverMessageId,
+        conversationId,
+        status: effectiveStatus,
+        byUserId: userId,
+      });
+    }
+
+    this.logger.log(
+      `👁  RECEIPT  uid=${userId}  msg=${serverMessageId}  status=${effectiveStatus} (raw=${status})`,
+    );
+
+    // Relay-only architecture: after a DELIVERED/READ receipt, check whether all
     // conversation members have confirmed delivery. If yes — clear the
     // server-side ciphertexts (fire-and-forget, never blocks socket response).
-    if (status === 'DELIVERED' || status === 'READ') {
+    if (effectiveStatus === 'DELIVERED' || effectiveStatus === 'READ') {
       this.messageCleanupService.clearCiphertextsAfterDelivery(serverMessageId).catch(() => {});
     }
   }
@@ -593,16 +769,65 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     @MessageBody() payload: { userIds: string[] },
   ) {
     if (!Array.isArray(payload?.userIds) || payload.userIds.length === 0) return;
+    const requesterId: string | undefined = (client as any)._userId;
 
-    const lastSeenMap = await this.redis.getLastSeenBatch(payload.userIds);
+    const [requesterSetting, blockedUsers, targetSettings, lastSeenMap] = await Promise.all([
+      requesterId
+        ? this.prisma.setting
+            .findUnique({
+              where: { userId: requesterId },
+              select: { lastSeenVisibility: true },
+            })
+            .catch(() => null)
+        : null,
+      requesterId
+        ? this.prisma.blockedUser
+            .findMany({
+              where: {
+                OR: [
+                  { blockerId: requesterId, blockedId: { in: payload.userIds } },
+                  { blockerId: { in: payload.userIds }, blockedId: requesterId },
+                ],
+              },
+              select: { blockerId: true, blockedId: true },
+            })
+            .catch(() => [])
+        : [],
+      this.prisma.setting
+        .findMany({
+          where: { userId: { in: payload.userIds } },
+          select: { userId: true, lastSeenVisibility: true },
+        })
+        .catch(() => []),
+      this.redis.getLastSeenBatch(payload.userIds),
+    ]);
+
+    const blockedSet = new Set<string>();
+    for (const b of blockedUsers || []) {
+      if (b.blockerId === requesterId) blockedSet.add(b.blockedId);
+      if (b.blockedId === requesterId) blockedSet.add(b.blockerId);
+    }
+    const targetPrivacyMap = new Map<string, string>();
+    for (const s of targetSettings || []) {
+      targetPrivacyMap.set(s.userId, s.lastSeenVisibility);
+    }
+
+    const requesterHidesLastSeen = requesterSetting?.lastSeenVisibility === 'NOBODY';
+
     const presences: Record<string, { isOnline: boolean; lastSeen: string | null }> = {};
     const offlineMissingIds: string[] = [];
 
     for (const uid of payload.userIds) {
+      if (blockedSet.has(uid)) {
+        presences[uid] = { isOnline: false, lastSeen: null };
+        continue;
+      }
       const isOnline = this._isOnline(uid);
-      const redisLastSeen = isOnline ? null : (lastSeenMap[uid] ?? null);
+      const targetHidesLastSeen = targetPrivacyMap.get(uid) === 'NOBODY';
+      const allowLastSeen = !requesterHidesLastSeen && !targetHidesLastSeen;
+      const redisLastSeen = isOnline ? null : allowLastSeen ? (lastSeenMap[uid] ?? null) : null;
       presences[uid] = { isOnline, lastSeen: redisLastSeen };
-      if (!isOnline && !redisLastSeen) {
+      if (!isOnline && allowLastSeen && !redisLastSeen) {
         offlineMissingIds.push(uid);
       }
     }
@@ -732,7 +957,13 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
           status: true,
           createdAt: true,
           sender: {
-            select: { displayName: true, username: true, avatarUrl: true, phoneNumber: true },
+            select: {
+              displayName: true,
+              username: true,
+              avatarUrl: true,
+              phoneNumber: true,
+              settings: { select: { profilePhotoVis: true } },
+            },
           },
         },
       });
@@ -748,6 +979,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
               ? (ct[0]?.ciphertext ?? '')
               : (ct?.text ?? '')
             : '';
+        const hideAvatar = (msg as any).sender?.settings?.profilePhotoVis === 'NOBODY';
         client.emit(EVT_MESSAGE_NEW, {
           serverMessageId: msg.id,
           clientMessageId: msg.clientMessageId,
@@ -756,7 +988,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
           receiverId: userId,
           senderName: (msg as any).sender?.displayName,
           senderUsername: (msg as any).sender?.username,
-          senderAvatarUrl: (msg as any).sender?.avatarUrl,
+          senderAvatarUrl: hideAvatar ? undefined : (msg as any).sender?.avatarUrl,
           senderPhone: (msg as any).sender?.phoneNumber,
           ciphertexts: msg.ciphertexts,
           text: msgText,

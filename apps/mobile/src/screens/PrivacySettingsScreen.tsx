@@ -33,6 +33,7 @@ type Visibility = 'EVERYONE' | 'CONTACTS' | 'NOBODY';
 interface PrivacySettings {
   lastSeenVisibility: Visibility;
   profilePhotoVis: Visibility;
+  aboutVisibility: Visibility;
   readReceipts: boolean;
 }
 
@@ -108,6 +109,7 @@ export const PrivacySettingsScreen: React.FC<Props> = ({ navigation }) => {
   const [settings, setSettings] = useState<PrivacySettings>({
     lastSeenVisibility: 'EVERYONE',
     profilePhotoVis: 'EVERYONE',
+    aboutVisibility: 'EVERYONE',
     readReceipts: true,
   });
   const [loading, setLoading] = useState(true);
@@ -124,6 +126,7 @@ export const PrivacySettingsScreen: React.FC<Props> = ({ navigation }) => {
           setSettings({
             lastSeenVisibility: (data.lastSeenVisibility as Visibility) ?? 'EVERYONE',
             profilePhotoVis: (data.profilePhotoVis as Visibility) ?? 'EVERYONE',
+            aboutVisibility: (data.aboutVisibility as Visibility) ?? 'EVERYONE',
             readReceipts: data.readReceipts ?? true,
           });
         }
@@ -142,6 +145,7 @@ export const PrivacySettingsScreen: React.FC<Props> = ({ navigation }) => {
           readReceipts: updated.readReceipts,
           lastSeenVisibility: updated.lastSeenVisibility,
           profilePhotoVis: updated.profilePhotoVis,
+          aboutVisibility: updated.aboutVisibility,
         });
         setSavedAt(Date.now());
       } catch (_) {}
@@ -303,8 +307,8 @@ export const PrivacySettingsScreen: React.FC<Props> = ({ navigation }) => {
               </View>
             </View>
             <VisibilityPicker
-              value={settings.lastSeenVisibility as Visibility}
-              onChange={(v) => update({ lastSeenVisibility: v })}
+              value={settings.aboutVisibility}
+              onChange={(v) => update({ aboutVisibility: v })}
               colors={colors}
             />
           </View>

@@ -69,6 +69,10 @@ export interface ChatMessage {
   /** Media metadata for receiver download cards */
   mediaSize?: string;
   isDownloaded?: boolean;
+  /** Audio voice message properties */
+  type?: 'TEXT' | 'IMAGE' | 'VIDEO' | 'AUDIO' | 'DOCUMENT' | 'LOCATION' | 'CONTACT' | 'CALL';
+  audioPath?: string;
+  audioDurationSeconds?: number;
 }
 
 export interface UserProfile {
@@ -96,6 +100,7 @@ export type RootStackParamList = {
     callId: string;
     targetUserId: string;
     targetUserName?: string;
+    targetUserAvatar?: string;
     isCaller: boolean;
     isVideo: boolean;
   };

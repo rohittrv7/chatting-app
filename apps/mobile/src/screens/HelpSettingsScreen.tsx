@@ -45,12 +45,16 @@ export const HelpSettingsScreen: React.FC<Props> = ({ navigation }) => {
         contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 10, paddingBottom: 30 }}
       >
         {[
-          {
-            label: 'Developer Live Inspector',
-            desc: 'View real-time API latency, Redis cache & WebSockets',
-            icon: Activity,
-            onPress: () => devInspector.setVisible(true),
-          },
+          ...(__DEV__
+            ? [
+                {
+                  label: 'Developer Live Inspector',
+                  desc: 'View real-time API latency, Redis cache & WebSockets',
+                  icon: Activity,
+                  onPress: () => devInspector.setVisible(true),
+                },
+              ]
+            : []),
           { label: 'Help Center', desc: 'FAQs & troubleshooting guide', icon: HelpCircle },
           { label: 'Contact Us', desc: 'Questions? Talk to support team', icon: Mail },
           {

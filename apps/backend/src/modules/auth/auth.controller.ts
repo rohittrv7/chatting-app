@@ -188,6 +188,13 @@ export class AuthController {
     return this.authService.getBlockStatus(user.userId, targetUserId);
   }
 
+  @Get('users/:userId')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get user public profile by userId' })
+  async getUserById(@CurrentUser() user: AuthenticatedUser, @Param('userId') targetUserId: string) {
+    return this.authService.getUserProfileById(user.userId, targetUserId);
+  }
+
   @Post('account/deactivate')
   @ApiBearerAuth()
   @ApiOperation({
@@ -214,6 +221,7 @@ export class AuthController {
       readReceipts?: boolean;
       lastSeenVisibility?: string;
       profilePhotoVis?: string;
+      aboutVisibility?: string;
       about?: string;
       theme?: string;
       messageNotifications?: boolean;

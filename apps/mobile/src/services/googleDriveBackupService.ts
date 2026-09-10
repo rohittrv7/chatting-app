@@ -440,7 +440,10 @@ async function fetchGoogleProfile(accessToken: string): Promise<GoogleAccount> {
  * Export all local SQLite data to a JSON string.
  * Uses raw DB row helpers so every field is preserved exactly as stored.
  */
-async function exportLocalDatabase(): Promise<{
+async function exportLocalDatabase(options?: {
+  includeImages?: boolean;
+  includeVideos?: boolean;
+}): Promise<{
   json: string;
   stats: { conversations: number; messages: number };
 }> {
@@ -453,6 +456,8 @@ async function exportLocalDatabase(): Promise<{
   };
 
   let totalMessages = 0;
+  const includeImages = options?.includeImages ?? true;
+  const includeVideos = options?.includeVideos ?? false;
 
   for (const conv of convRows) {
     const msgRows = await getMsgRowsForConv(conv.server_id, 10000);
@@ -472,28 +477,34 @@ async function exportLocalDatabase(): Promise<{
       lastMessageStatus: conv.last_message_status,
       unreadCount: conv.unread_count,
       isMuted: conv.is_muted === 1,
-      messages: msgRows.map((m) => ({
-        serverId: m.server_id,
-        clientMessageId: m.client_message_id,
-        senderId: m.sender_id,
-        senderName: m.sender_name,
-        isMe: m.is_me === 1,
-        text: m.text,
-        type: m.type,
-        status: m.status,
-        imagePath: m.image_path,
-        // localMediaPath intentionally excluded — local paths won't work on another device
-        mediaSize: m.media_size,
-        isStarred: m.is_starred === 1,
-        replyToId: m.reply_to_id,
-        replyToText: m.reply_to_text,
-        replyToIsMe: m.reply_to_is_me === 1,
-        locationJson: m.location_json,
-        documentJson: m.document_json,
-        contactJson: m.contact_json,
-        callLogJson: m.call_log_json,
-        createdAtMs: m.created_at_ms,
-      })),
+      messages: msgRows.map((m) => {
+        const isVideo = m.type === 'VIDEO';
+        const isImage = m.type === 'IMAGE';
+        const skipMedia = (isVideo && !includeVideos) || (isImage && !includeImages);
+
+        return {
+          serverId: m.server_id,
+          clientMessageId: m.client_message_id,
+          senderId: m.sender_id,
+          senderName: m.sender_name,
+          isMe: m.is_me === 1,
+          text: m.text,
+          type: m.type,
+          status: m.status,
+          imagePath: skipMedia ? undefined : m.image_path,
+          // localMediaPath intentionally excluded — local paths won't work on another device
+          mediaSize: m.media_size,
+          isStarred: m.is_starred === 1,
+          replyToId: m.reply_to_id,
+          replyToText: m.reply_to_text,
+          replyToIsMe: m.reply_to_is_me === 1,
+          locationJson: m.location_json,
+          documentJson: m.document_json,
+          contactJson: m.contact_json,
+          callLogJson: m.call_log_json,
+          createdAtMs: m.created_at_ms,
+        };
+      }),
     });
   }
 
@@ -819,7 +830,10 @@ class GoogleDriveBackupService {
 
     if (this.activeBackupCancellation) throw new Error('Backup cancelled');
 
-    const { json: exportJson, stats } = await exportLocalDatabase();
+    const { json: exportJson, stats } = await exportLocalDatabase({
+      includeImages: settings.includeImages,
+      includeVideos: settings.includeVideos,
+    });
     const exportBytes = new TextEncoder().encode(exportJson).length;
 
     if (this.activeBackupCancellation) throw new Error('Backup cancelled');

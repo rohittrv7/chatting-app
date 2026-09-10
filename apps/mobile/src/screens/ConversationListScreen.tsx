@@ -713,6 +713,53 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
     }),
     [],
   );
+  const handleStartCallFromChat = useCallback(
+    (item: any) => {
+      const targetUserId = item.recipientDbId || item.id;
+      const targetUserName = item.title;
+      const targetUserAvatar = item.avatarUrl;
+      const session = callService.startCall({
+        targetUserId,
+        targetUserName,
+        targetUserAvatar,
+        callType: 'audio',
+        myUserId: (userProfile as any)?.userId || userProfile?.phone || 'me',
+        myName: userProfile?.name,
+      });
+      navigation.navigate('Call', {
+        callId: session.callId,
+        targetUserId,
+        targetUserName,
+        targetUserAvatar,
+        isCaller: true,
+        isVideo: false,
+      });
+    },
+    [navigation, userProfile],
+  );
+
+  const handleStartCallFromLog = useCallback(
+    (log: CallLogItem) => {
+      const isVideo = log.callType === 'video';
+      const session = callService.startCall({
+        targetUserId: log.targetUserId,
+        targetUserName: log.targetUserName,
+        targetUserAvatar: log.targetUserAvatar,
+        callType: log.callType,
+        myUserId: (userProfile as any)?.userId || userProfile?.phone || 'me',
+        myName: userProfile?.name,
+      });
+      navigation.navigate('Call', {
+        callId: session.callId,
+        targetUserId: log.targetUserId,
+        targetUserName: log.targetUserName,
+        targetUserAvatar: log.targetUserAvatar,
+        isCaller: true,
+        isVideo,
+      });
+    },
+    [navigation, userProfile],
+  );
 
   const renderConversationItem = useCallback(
     ({ item }: { item: any }) => {
@@ -795,9 +842,19 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                 )}
               </View>
               <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                <Text style={[styles.cardTime, { color: colors.textSecondary, marginRight: 4 }]}>
+                <Text style={[styles.cardTime, { color: colors.textSecondary, marginRight: 6 }]}>
                   {formatChatTime(item.time)}
                 </Text>
+                <TouchableOpacity
+                  style={[styles.cardMenuBtn, { marginRight: 2 }]}
+                  hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}
+                  onPress={(e) => {
+                    e.stopPropagation();
+                    handleStartCallFromChat(item);
+                  }}
+                >
+                  <Phone size={15} color={colors.primaryIndigo} />
+                </TouchableOpacity>
                 <TouchableOpacity
                   style={styles.cardMenuBtn}
                   hitSlop={{ top: 12, bottom: 12, left: 10, right: 10 }}
@@ -1551,7 +1608,18 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                       borderRadius: 18,
                     },
                   ]}
-                  onPress={() => handleStartCallFromLog(log)}
+                  onPress={() => {
+                    isNavigatedToChatRef.current = true;
+                    const existingConv = conversations.find(
+                      (c) => c.recipientDbId === log.targetUserId || c.id === log.targetUserId,
+                    );
+                    navigation.navigate('Chat', {
+                      conversationId: existingConv ? existingConv.id : log.targetUserId,
+                      title: log.targetUserName,
+                      avatarUrl: log.targetUserAvatar,
+                      recipientDbId: log.targetUserId,
+                    });
+                  }}
                 >
                   {/* Left Avatar */}
                   <View style={{ marginRight: 12 }}>

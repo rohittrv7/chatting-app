@@ -46,6 +46,7 @@ import { callService } from '../services/callService';
 import { SmartAvatar } from '../components/SmartAvatar';
 import { ActiveCallBanner } from '../components/ActiveCallBanner';
 import { ChatInputBar, ChatInputBarRef } from '../components/ChatInputBar';
+import { AudioMessageBubble } from '../components/AudioMessageBubble';
 import { getResolvedDisplayName, getResolvedContact } from '../services/contactsService';
 import nacl from 'tweetnacl';
 import { arrayBufferToBase64, base64ToArrayBuffer } from '../services/signalProtocolStore';
@@ -293,6 +294,7 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
     conversations,
     addMessage,
     sendMediaMessage,
+    sendAudioMessage,
     updateMessageUploadProgress,
     updateMessageMediaDownloaded,
     toggleStarMessage,
@@ -830,6 +832,9 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
 
       step.current = 'complete';
       updateMessageMediaDownloaded(msg.id, finalUri, true);
+      if (token) {
+        apiService.recordAttachmentDownloaded(token, msg.id).catch(() => {});
+      }
       showToast('Photo downloaded ✓', 'success');
     } catch (e: any) {
       const errorMsg = e?.message || String(e);
@@ -890,6 +895,28 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
       });
     });
   };
+
+  const handleSendAudio = useCallback(
+    async (uri: string, durationSeconds: number) => {
+      if (!recipientDbId) {
+        showToast('Recipient info missing', 'error');
+        return;
+      }
+      try {
+        await sendAudioMessage({
+          conversationId,
+          audioUri: uri,
+          durationSeconds,
+          receiverId: recipientDbId,
+          contactTitle: resolvedDisplayName,
+        });
+      } catch (err) {
+        console.warn('Failed to send voice message:', err);
+        showToast('Could not send voice message', 'error');
+      }
+    },
+    [conversationId, recipientDbId, resolvedDisplayName, sendAudioMessage, showToast],
+  );
 
   const handlePickDocument = async () => {
     setShowAttachMenu(false);
@@ -1541,8 +1568,10 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
                   </View>
                 ) : null}
 
-                {/* Image */}
-                {msg.imagePath ? (
+                {/* Voice / Audio Message */}
+                {msg.type === 'AUDIO' || msg.audioPath ? (
+                  <AudioMessageBubble message={msg} isMe={isMe} colors={colors} />
+                ) : msg.imagePath ? (
                   <View style={styles.imageBubbleWrapper}>
                     {isMe ? (
                       /* ── SENDER SIDE ── */
@@ -2344,6 +2373,7 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
             conversationId={conversationId}
             effectiveTargetId={effectiveRecipientId}
             onSendMessage={handleSendMessage}
+            onSendAudio={handleSendAudio}
             showAttachMenu={showAttachMenu}
             setShowAttachMenu={setShowAttachMenu}
             showEmojiPicker={showEmojiPicker}

@@ -33,6 +33,7 @@ import {
   Eye,
   Image as ImageIcon,
   X,
+  ChevronRight,
 } from 'lucide-react-native';
 import { Modal } from 'react-native';
 
@@ -193,9 +194,18 @@ export const EditProfileScreen: React.FC<Props> = ({ navigation }) => {
           <ArrowLeft size={22} color={colors.textPrimary} />
         </TouchableOpacity>
         <Text style={[styles.title, { color: colors.textPrimary }]}>Profile Information</Text>
-        <TouchableOpacity onPress={handleSave} style={styles.saveHeaderBtn}>
-          <Text style={[styles.saveHeaderText, { color: colors.primaryIndigo }]}>Save</Text>
-        </TouchableOpacity>
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <TouchableOpacity
+            onPress={() => navigation.navigate('QrCode')}
+            style={styles.qrHeaderBtn}
+            activeOpacity={0.7}
+          >
+            <QrCode size={20} color={colors.primaryIndigo} />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={handleSave} style={styles.saveHeaderBtn}>
+            <Text style={[styles.saveHeaderText, { color: colors.primaryIndigo }]}>Save</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       <KeyboardAvoidingView
@@ -238,6 +248,27 @@ export const EditProfileScreen: React.FC<Props> = ({ navigation }) => {
               </Text>
             </TouchableOpacity>
           </View>
+
+          {/* Quick QR Code Card */}
+          <TouchableOpacity
+            style={[
+              styles.qrQuickCard,
+              { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+            ]}
+            activeOpacity={0.75}
+            onPress={() => navigation.navigate('QrCode')}
+          >
+            <View style={[styles.qrIconCircle, { backgroundColor: colors.cardBorder }]}>
+              <QrCode size={20} color={colors.primaryIndigo} />
+            </View>
+            <View style={{ flex: 1, marginLeft: 12 }}>
+              <Text style={[styles.qrCardTitle, { color: colors.textPrimary }]}>My QR Code</Text>
+              <Text style={[styles.qrCardSubtitle, { color: colors.textSecondary }]}>
+                Scan or share code to connect instantly
+              </Text>
+            </View>
+            <ChevronRight size={18} color={colors.textSecondary} />
+          </TouchableOpacity>
 
           {/* Input Card 1: Name */}
           <View
@@ -499,6 +530,33 @@ const styles = StyleSheet.create({
   saveHeaderText: {
     fontSize: 16,
     fontWeight: '800',
+  },
+  qrHeaderBtn: {
+    padding: 6,
+    marginRight: 6,
+  },
+  qrQuickCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 18,
+    padding: 14,
+    marginBottom: 16,
+    borderWidth: 1,
+  },
+  qrIconCircle: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  qrCardTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    marginBottom: 2,
+  },
+  qrCardSubtitle: {
+    fontSize: 12,
   },
   avatarSection: {
     alignItems: 'center',

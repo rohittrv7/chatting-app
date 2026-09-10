@@ -10,6 +10,7 @@ import {
   ScrollView,
   ActivityIndicator,
   Platform,
+  Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -18,7 +19,7 @@ import { useChat } from '../context/ChatContext';
 import { useTheme } from '../context/ThemeContext';
 import { useSelector } from 'react-redux';
 import { RootState } from '../store';
-import Svg, { Rect, G, Circle, Text as SvgText } from 'react-native-svg';
+import QRCode from 'react-native-qrcode-svg';
 import * as ImagePicker from 'expo-image-picker';
 import { CameraView } from 'expo-camera';
 import {
@@ -38,7 +39,6 @@ import {
   Camera,
   RotateCcw,
   CheckCircle,
-  Search,
 } from 'lucide-react-native';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'QrCode'>;
@@ -52,96 +52,8 @@ interface ScannedUser {
   phone?: string;
 }
 
-// ─── Deterministic pseudo-random bit matrix from a string seed ───────────────
-// Uses a simple xorshift32-like hash so each user gets a visually unique QR pattern.
-function seededRand(seed: number): () => number {
-  let s = seed >>> 0 || 0x1234abcd;
-  return () => {
-    s ^= s << 13;
-    s ^= s >> 17;
-    s ^= s << 5;
-    return (s >>> 0) / 0xffffffff;
-  };
-}
-
-function strToSeed(str: string): number {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < str.length; i++) {
-    h ^= str.charCodeAt(i);
-    h = (h * 0x01000193) >>> 0;
-  }
-  return h;
-}
-
-/** Generate a 21×21 bit matrix (like a tiny QR) seeded by userId + username */
-function generateQrMatrix(seed: string): boolean[][] {
-  const SIZE = 21;
-  const rand = seededRand(strToSeed(seed));
-  const matrix: boolean[][] = Array.from({ length: SIZE }, () =>
-    Array.from({ length: SIZE }, () => rand() > 0.5),
-  );
-
-  // Fixed finder patterns at corners (always the same — mimic real QR structure)
-  const setFinder = (r: number, c: number) => {
-    for (let dr = 0; dr < 7; dr++) {
-      for (let dc = 0; dc < 7; dc++) {
-        const onBorder = dr === 0 || dr === 6 || dc === 0 || dc === 6;
-        const onInner = dr >= 2 && dr <= 4 && dc >= 2 && dc <= 4;
-        matrix[r + dr][c + dc] = onBorder || onInner;
-      }
-    }
-  };
-
-  setFinder(0, 0); // top-left
-  setFinder(0, 14); // top-right
-  setFinder(14, 0); // bottom-left
-
-  return matrix;
-}
-
-/** Render the matrix as SVG Rect elements */
-const QrMatrixSvg: React.FC<{ seed: string; size?: number; darkColor?: string }> = ({
-  seed,
-  size = 200,
-  darkColor = '#1E293B',
-}) => {
-  const matrix = generateQrMatrix(seed);
-  const CELLS = matrix.length;
-  const cellSize = size / CELLS;
-  const cells: React.ReactElement[] = [];
-
-  for (let r = 0; r < CELLS; r++) {
-    for (let c = 0; c < CELLS; c++) {
-      if (matrix[r][c]) {
-        cells.push(
-          <Rect
-            key={`${r}-${c}`}
-            x={c * cellSize + 1}
-            y={r * cellSize + 1}
-            width={cellSize - 1}
-            height={cellSize - 1}
-            rx={1.5}
-            fill={darkColor}
-          />,
-        );
-      }
-    }
-  }
-
-  return (
-    <Svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
-      <Rect width={size} height={size} fill="#FFFFFF" rx={12} />
-      <G>{cells}</G>
-      {/* Center logo dot — accent color */}
-      <Circle cx={size / 2} cy={size / 2} r={size * 0.07} fill="#6366F1" />
-    </Svg>
-  );
-};
-
-// ─── Main screen ─────────────────────────────────────────────────────────────
-
 export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
-  const { userProfile, addConversation } = useChat();
+  const { userProfile, addConversation, conversations } = useChat();
   const { themeMode, colors } = useTheme();
   const token = useSelector((state: RootState) => state.auth.token);
   const authUserId = useSelector((state: RootState) => (state.auth as any).userId as string | null);
@@ -158,18 +70,18 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
   const [isSavingQr, setIsSavingQr] = useState(false);
   const [isSavedQr, setIsSavedQr] = useState(false);
 
-  // Seed for QR: prefer DB userId (most stable), fall back to username + phone
-  const qrSeed =
-    authUserId ||
-    `${userProfile.username || ''}:${userProfile.phone || ''}:${userProfile.name || ''}`;
+  // 1. Dynamic User ID — always comes from auth state or userProfile (never hardcoded)
+  const resolvedUserId = authUserId || (userProfile as any).userId || (userProfile as any).id || '';
 
-  // Deep-link URL this user's QR encodes
-  const myQrData = `chatapp://user/${encodeURIComponent(
-    userProfile.username?.replace(/^@+/, '') ||
-      userProfile.phone?.replace(/\D/g, '') ||
-      authUserId ||
-      'unknown',
-  )}`;
+  // 2. Structured QR Payload — encodes user identity dynamically
+  const myQrData = JSON.stringify({
+    app: 'whatsappconnect',
+    v: 1,
+    userId: resolvedUserId,
+    username: userProfile.username?.replace(/^@+/, '') || '',
+    name: userProfile.name || '',
+    phone: userProfile.phone || '',
+  });
 
   const handleSaveToGallery = async () => {
     const granted = await ensureMediaLibraryPermission();
@@ -206,8 +118,8 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
     const username = userProfile.username?.replace(/^@+/, '') || userProfile.name || 'user';
     try {
       await Share.share({
-        message: `${myQrData}\n\nAdd me on ChatApp! My username: @${username}`,
-        title: `Chat with ${username}`,
+        message: `Connect with me on WhatsApp Connect!\nUsername: @${username}\nUser ID: ${resolvedUserId}`,
+        title: `Chat with ${userProfile.name || username}`,
       });
     } catch (e) {
       console.warn('Share error:', e);
@@ -219,23 +131,60 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
     async ({ data }: { type: string; data: string }) => {
       if (scannedResult || isLookingUp) return;
 
-      let usernameOrId = '';
+      let targetUserId = '';
+      let targetUsername = '';
 
-      // Parse deep-link formats:
-      //   chatapp://user/<username>   ← new format
-      //   chatapp://chat/<username>   ← old format
-      if (data.startsWith('chatapp://user/')) {
-        usernameOrId = decodeURIComponent(data.replace('chatapp://user/', ''));
-      } else if (data.startsWith('chatapp://chat/')) {
-        usernameOrId = decodeURIComponent(data.replace('chatapp://chat/', ''));
-      } else if (data.includes('@')) {
-        usernameOrId = data.replace(/^@+/, '').trim();
-      } else if (data.trim()) {
-        usernameOrId = data.trim();
+      // 1. Parse JSON format (our dynamic standard)
+      try {
+        const parsed = JSON.parse(data);
+        if (parsed && typeof parsed === 'object') {
+          targetUserId = parsed.userId || '';
+          targetUsername = parsed.username || '';
+        }
+      } catch {
+        // Not JSON — fallback to URI or plain text
       }
 
-      if (!usernameOrId) {
-        setLookupError('Could not read QR code data. Try again.');
+      // 2. Parse Deep-link or plain text formats
+      if (!targetUserId) {
+        if (data.startsWith('whatsappconnect://user/')) {
+          targetUserId = decodeURIComponent(data.replace('whatsappconnect://user/', ''));
+        } else if (data.startsWith('chatapp://user/')) {
+          targetUsername = decodeURIComponent(data.replace('chatapp://user/', ''));
+        } else if (data.startsWith('chatapp://chat/')) {
+          targetUsername = decodeURIComponent(data.replace('chatapp://chat/', ''));
+        } else if (
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(data.trim())
+        ) {
+          targetUserId = data.trim();
+        } else if (data.includes('@')) {
+          targetUsername = data.replace(/^@+/, '').trim();
+        } else if (data.trim()) {
+          targetUsername = data.trim();
+        }
+      }
+
+      if (!targetUserId && !targetUsername) {
+        setLookupError('Invalid QR code format. Please scan a valid WhatsApp Connect QR code.');
+        return;
+      }
+
+      // 3. Self-scan check
+      const myId = authUserId || (userProfile as any).userId || (userProfile as any).id;
+      if (targetUserId && myId && targetUserId === myId) {
+        setLookupError(
+          'This is your own QR code! Share it with a contact so they can chat with you.',
+        );
+        return;
+      }
+      if (
+        targetUsername &&
+        userProfile.username &&
+        targetUsername === userProfile.username.replace(/^@+/, '')
+      ) {
+        setLookupError(
+          'This is your own QR code! Share it with a contact so they can chat with you.',
+        );
         return;
       }
 
@@ -243,36 +192,51 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
       setLookupError(null);
 
       try {
-        // Look up the user on the backend by username/phone
         const authToken = token || (await (apiService as any).getStoredToken?.());
         if (!authToken) {
-          throw new Error('Not logged in');
+          throw new Error('Please log in to scan and connect with users.');
         }
 
-        const results = await apiService.searchUsers(authToken, usernameOrId);
-        const found = results?.[0];
+        let found: any = null;
+
+        // Try direct userId lookup first if UUID available
+        if (targetUserId) {
+          found = await apiService.getUserById(authToken, targetUserId);
+        }
+
+        // Fallback to username / phone search query
+        if (!found && (targetUsername || targetUserId)) {
+          const results = await apiService.searchUsers(authToken, targetUsername || targetUserId);
+          found = results?.[0];
+        }
 
         if (!found?.id) {
-          setLookupError(`User "@${usernameOrId}" not found. Ask them to share their QR again.`);
+          setLookupError(
+            `User "${targetUsername || targetUserId}" not found on WhatsApp Connect. They may need to create an account first.`,
+          );
           setIsLookingUp(false);
           return;
         }
 
         setScannedResult({
           userId: found.id,
-          name: found.name || found.username || usernameOrId,
-          username: found.username ? `@${found.username.replace(/^@+/, '')}` : `@${usernameOrId}`,
-          status: found.about || 'ChatApp user',
+          name: found.name || found.displayName || found.username || targetUsername || 'User',
+          username: found.username
+            ? `@${found.username.replace(/^@+/, '')}`
+            : `@${targetUsername || 'user'}`,
+          status: found.about || 'Hey there! I am using WhatsApp.',
           avatarUrl: found.avatarUrl,
           phone: found.phoneNumber,
         });
       } catch (err: any) {
-        setLookupError(err?.message || 'Could not look up user. Check your connection.');
+        setLookupError(
+          err?.message || 'Could not connect to server. Please check your internet connection.',
+        );
       } finally {
         setIsLookingUp(false);
       }
     },
-    [scannedResult, isLookingUp, token],
+    [scannedResult, isLookingUp, token, authUserId, userProfile],
   );
 
   const handleStartChatWithScannedUser = () => {
@@ -281,10 +245,26 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
     setScannedResult(null);
     setLookupError(null);
 
-    // Add conversation entry so it appears in chat list
+    // Check if conversation with this user already exists
+    const existingConv = conversations.find(
+      (c) =>
+        c.recipientDbId === userId ||
+        (c.username && c.username.replace(/^@+/, '') === username.replace(/^@+/, '')),
+    );
+
+    if (existingConv) {
+      navigation.navigate('Chat', {
+        conversationId: existingConv.id,
+        title: existingConv.title || name,
+        username: existingConv.username || username,
+        recipientDbId: existingConv.recipientDbId || userId,
+      });
+      return;
+    }
+
+    // Otherwise add new conversation entry and navigate
     addConversation(name, username, undefined, userId, avatarUrl);
 
-    // Navigate to chat — ChatContext will resolve the real UUID convId on first message
     const cleanUsername = username.replace(/^@+/, '');
     const myId =
       authUserId || userProfile.username?.replace(/^@+/, '') || userProfile.phone || 'me';
@@ -311,12 +291,10 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
     if (!result.canceled) {
       Alert.alert(
         'QR from Gallery',
-        'Automatic QR decoding from images is not yet supported.\nAsk the contact to share their @username directly.',
+        'Direct scanning from image files is under development.\nPlease point your camera directly at the QR code to connect.',
       );
     }
   };
-
-  // ── JSX ──────────────────────────────────────────────────────────────────
 
   return (
     <SafeAreaView
@@ -375,35 +353,45 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
           >
             {/* User info row */}
             <View style={styles.userInfoRow}>
-              <View style={[styles.avatarCircle, { backgroundColor: colors.primaryIndigo }]}>
-                <Text style={styles.avatarLetter}>
-                  {userProfile.name ? userProfile.name[0].toUpperCase() : '?'}
-                </Text>
-              </View>
-              <View style={{ marginLeft: 12 }}>
-                <Text style={[styles.userName, { color: colors.textPrimary }]}>
-                  {userProfile.name}
+              {userProfile.avatarUrl ? (
+                <Image
+                  source={{ uri: apiService.getResolvedMediaUrl(userProfile.avatarUrl) }}
+                  style={styles.avatarImage}
+                />
+              ) : (
+                <View style={[styles.avatarCircle, { backgroundColor: colors.primaryIndigo }]}>
+                  <Text style={styles.avatarLetter}>
+                    {userProfile.name ? userProfile.name[0].toUpperCase() : '?'}
+                  </Text>
+                </View>
+              )}
+              <View style={{ marginLeft: 12, flex: 1 }}>
+                <Text style={[styles.userName, { color: colors.textPrimary }]} numberOfLines={1}>
+                  {userProfile.name || 'WhatsApp User'}
                 </Text>
                 <Text style={[styles.userHandle, { color: colors.primaryIndigo }]}>
-                  {userProfile.username}
+                  {userProfile.username || `@${userProfile.phone || 'user'}`}
                 </Text>
               </View>
             </View>
 
-            {/* Unique QR matrix — seeded by this user's ID so it differs for every user */}
+            {/* Real, Scannable Dynamic QR Code */}
             <View style={styles.svgQrWrapper}>
-              <QrMatrixSvg
-                seed={qrSeed}
-                size={200}
-                darkColor={themeMode === 'dark' ? '#1E293B' : '#1E293B'}
+              <QRCode
+                value={myQrData}
+                size={210}
+                color="#0F172A"
+                backgroundColor="#FFFFFF"
+                logo={require('../../assets/icon.png')}
+                logoSize={40}
+                logoBackgroundColor="#FFFFFF"
+                logoBorderRadius={8}
               />
             </View>
 
-            <Text style={[styles.qrDataLabel, { color: colors.textSecondary }]} numberOfLines={1}>
-              {myQrData}
-            </Text>
             <Text style={[styles.qrDescNote, { color: colors.textSecondary }]}>
-              Your unique QR code. Share it so others can start a chat with you instantly.
+              Your unique WhatsApp Connect QR code. Anyone who scans this code can message you
+              directly.
             </Text>
           </View>
 
@@ -477,7 +465,7 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
                 Camera Access Required
               </Text>
               <Text style={[styles.permDescText, { color: colors.textSecondary }]}>
-                Camera permission is needed to scan QR codes.
+                Camera permission is needed to scan QR codes and start chats instantly.
               </Text>
               <TouchableOpacity
                 style={[styles.grantCameraBtn, { backgroundColor: colors.primaryIndigo }]}
@@ -492,16 +480,14 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
             <View style={styles.centerContainer}>
               <ActivityIndicator size="large" color={colors.primaryIndigo} />
               <Text style={[styles.loadingText, { color: colors.textSecondary }]}>
-                Looking up user…
+                Looking up user on WhatsApp Connect…
               </Text>
             </View>
           ) : lookupError ? (
             /* Lookup error state */
             <View style={styles.centerContainer}>
-              <Text style={{ fontSize: 36, marginBottom: 16 }}>❌</Text>
-              <Text style={[styles.permTitleText, { color: colors.textPrimary }]}>
-                User Not Found
-              </Text>
+              <Text style={{ fontSize: 40, marginBottom: 16 }}>⚠️</Text>
+              <Text style={[styles.permTitleText, { color: colors.textPrimary }]}>Scan Failed</Text>
               <Text
                 style={[styles.permDescText, { color: colors.textSecondary, textAlign: 'center' }]}
               >
@@ -512,11 +498,11 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
                 onPress={() => setLookupError(null)}
               >
                 <RotateCcw size={18} color="#FFF" style={{ marginRight: 8 }} />
-                <Text style={styles.grantCameraBtnText}>Try Again</Text>
+                <Text style={styles.grantCameraBtnText}>Scan Again</Text>
               </TouchableOpacity>
             </View>
           ) : scannedResult ? (
-            /* Scanned user profile card */
+            /* Scanned user confirmation card */
             <View
               style={[
                 styles.scannedProfileCard,
@@ -525,14 +511,27 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
             >
               <View style={styles.scannedBadgeRow}>
                 <ShieldCheck size={18} color="#22C55E" style={{ marginRight: 6 }} />
-                <Text style={styles.scannedBadgeText}>User Found</Text>
+                <Text style={styles.scannedBadgeText}>Verified User Found</Text>
               </View>
 
-              <View style={[styles.scannedAvatarCircle, { backgroundColor: colors.primaryIndigo }]}>
-                <Text style={styles.scannedAvatarLetter}>
-                  {scannedResult.name[0]?.toUpperCase() || '?'}
-                </Text>
-              </View>
+              <Text style={[styles.confirmationPrompt, { color: colors.textSecondary }]}>
+                Start chat with {scannedResult.name}?
+              </Text>
+
+              {scannedResult.avatarUrl ? (
+                <Image
+                  source={{ uri: apiService.getResolvedMediaUrl(scannedResult.avatarUrl) }}
+                  style={styles.scannedAvatarImage}
+                />
+              ) : (
+                <View
+                  style={[styles.scannedAvatarCircle, { backgroundColor: colors.primaryIndigo }]}
+                >
+                  <Text style={styles.scannedAvatarLetter}>
+                    {scannedResult.name[0]?.toUpperCase() || '?'}
+                  </Text>
+                </View>
+              )}
 
               <Text style={[styles.scannedName, { color: colors.textPrimary }]}>
                 {scannedResult.name}
@@ -572,7 +571,7 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
             /* Active scanner viewfinder */
             <>
               <Text style={[styles.scannerInstructionText, { color: colors.textSecondary }]}>
-                Point camera at a ChatApp QR code
+                Align the QR code within the frame to scan
               </Text>
 
               <View style={[styles.viewfinderFrame, { borderColor: colors.primaryIndigo }]}>
@@ -580,6 +579,9 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
                   style={StyleSheet.absoluteFillObject}
                   facing="back"
                   enableTorch={flashOn}
+                  barcodeScannerSettings={{
+                    barcodeTypes: ['qr'],
+                  }}
                   onBarcodeScanned={handleBarCodeScanned}
                 />
                 {/* Corner markers */}
@@ -622,8 +624,6 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
   );
 };
 
-// ── Styles ────────────────────────────────────────────────────────────────────
-
 const styles = StyleSheet.create({
   container: { flex: 1 },
   header: {
@@ -631,10 +631,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 16,
-    paddingVertical: 14,
+    paddingVertical: 12,
   },
-  backBtn: { padding: 4 },
-  headerTitle: { fontSize: 18, fontWeight: '800' },
+  backBtn: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
+  headerTitle: { fontSize: 20, fontWeight: '700' },
   tabsRow: {
     flexDirection: 'row',
     marginHorizontal: 16,
@@ -645,7 +645,12 @@ const styles = StyleSheet.create({
   },
   tabBtn: { flex: 1, paddingVertical: 10, borderRadius: 16, alignItems: 'center' },
   tabBtnText: { fontSize: 14, fontWeight: '700' },
-  myCodeContent: { paddingHorizontal: 20, paddingTop: 12, alignItems: 'center', paddingBottom: 24 },
+  myCodeContent: {
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    alignItems: 'center',
+    paddingBottom: 24,
+  },
   qrCardContainer: {
     width: '100%',
     borderRadius: 24,
@@ -661,26 +666,26 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  avatarImage: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+  },
   avatarLetter: { fontSize: 20, fontWeight: '800', color: '#FFF' },
   userName: { fontSize: 17, fontWeight: '800' },
   userHandle: { fontSize: 13, fontWeight: '700', marginTop: 1 },
   svgQrWrapper: {
-    padding: 14,
+    padding: 16,
     backgroundColor: '#FFF',
-    borderRadius: 20,
-    marginBottom: 14,
+    borderRadius: 24,
+    marginBottom: 16,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.1,
     shadowRadius: 10,
-    elevation: 3,
+    elevation: 4,
   },
-  qrDataLabel: {
-    fontSize: 10,
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
-    marginBottom: 6,
-  },
-  qrDescNote: { fontSize: 12, textAlign: 'center', lineHeight: 18, paddingHorizontal: 10 },
+  qrDescNote: { fontSize: 13, textAlign: 'center', lineHeight: 19, paddingHorizontal: 10 },
   actionsRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -734,8 +739,8 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
   viewfinderFrame: {
-    width: 240,
-    height: 240,
+    width: 250,
+    height: 250,
     borderRadius: 24,
     justifyContent: 'center',
     alignItems: 'center',
@@ -802,20 +807,27 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     alignItems: 'center',
   },
-  scannedBadgeRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
+  scannedBadgeRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
   scannedBadgeText: { color: '#22C55E', fontSize: 13, fontWeight: '700' },
+  confirmationPrompt: { fontSize: 14, fontWeight: '600', marginBottom: 16 },
   scannedAvatarCircle: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
+    width: 76,
+    height: 76,
+    borderRadius: 38,
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 12,
   },
-  scannedAvatarLetter: { fontSize: 30, fontWeight: '800', color: '#FFF' },
+  scannedAvatarImage: {
+    width: 76,
+    height: 76,
+    borderRadius: 38,
+    marginBottom: 12,
+  },
+  scannedAvatarLetter: { fontSize: 32, fontWeight: '800', color: '#FFF' },
   scannedName: { fontSize: 20, fontWeight: '800', marginBottom: 4 },
   scannedHandle: { fontSize: 14, fontWeight: '700', marginBottom: 4 },
-  scannedStatus: { fontSize: 13, marginBottom: 24 },
+  scannedStatus: { fontSize: 13, marginBottom: 20, textAlign: 'center', paddingHorizontal: 12 },
   startChatBtn: {
     flexDirection: 'row',
     alignItems: 'center',

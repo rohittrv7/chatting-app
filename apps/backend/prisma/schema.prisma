@@ -405,6 +405,7 @@ model Setting {
   readReceipts      Boolean  @default(true)
   lastSeenVisibility String  @default("EVERYONE")
   profilePhotoVis   String   @default("EVERYONE")
+  aboutVisibility   String   @default("EVERYONE")
   theme             String   @default("DARK")
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt

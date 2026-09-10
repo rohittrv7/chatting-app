@@ -63,6 +63,7 @@ export class MessageCleanupService {
         where: { id: messageId },
         select: {
           id: true,
+          status: true,
           contentClearedAt: true,
           ciphertexts: true,
           conversationId: true,
@@ -99,8 +100,12 @@ export class MessageCleanupService {
         },
       });
 
-      // 4. If all recipients confirmed — clear the content
-      if (confirmedCount >= recipientIds.length) {
+      // 4. If all recipients confirmed or message status is already DELIVERED/READ — clear content
+      if (
+        confirmedCount >= recipientIds.length ||
+        (message.status as any) === 'DELIVERED' ||
+        (message.status as any) === 'READ'
+      ) {
         await this._wipeCiphertexts(messageId);
         this.logger.debug(
           `[MsgCleanup] Cleared ciphertexts for msg=${messageId} after ${confirmedCount}/${recipientIds.length} deliveries`,
@@ -115,19 +120,49 @@ export class MessageCleanupService {
 
   /**
    * Record that a user has downloaded an attachment.
-   * After ALL conversation members have downloaded, the attachment file is
-   * eligible for server-side deletion by the cleanup cron.
+   * Accepts either an attachmentId or a messageId.
    */
-  async recordAttachmentDownload(attachmentId: string, userId: string): Promise<void> {
+  async recordAttachmentDownload(attachmentIdOrMessageId: string, userId: string): Promise<void> {
     try {
-      await this.prisma.attachmentDownload.upsert({
-        where: { attachmentId_userId: { attachmentId, userId } },
-        create: { attachmentId, userId },
-        update: {}, // idempotent — already recorded
+      let attachment = await this.prisma.attachment.findFirst({
+        where: {
+          OR: [{ id: attachmentIdOrMessageId }, { messageId: attachmentIdOrMessageId }],
+        },
+        select: { id: true },
       });
+
+      if (!attachment) {
+        const msg = await this.prisma.message.findUnique({
+          where: { id: attachmentIdOrMessageId },
+          select: { id: true, type: true },
+        });
+        if (msg) {
+          attachment = await this.prisma.attachment.create({
+            data: {
+              messageId: msg.id,
+              fileUrl: '',
+              fileName: 'media',
+              fileSize: 0,
+              mimeType: (msg.type as any) === 'AUDIO' ? 'audio/m4a' : 'image/jpeg',
+            },
+            select: { id: true },
+          });
+        }
+      }
+
+      if (attachment) {
+        await this.prisma.attachmentDownload.upsert({
+          where: { attachmentId_userId: { attachmentId: attachment.id, userId } },
+          create: { attachmentId: attachment.id, userId },
+          update: {}, // idempotent — already recorded
+        });
+        this.logger.debug(
+          `[MsgCleanup] Recorded attachment download for att=${attachment.id} user=${userId}`,
+        );
+      }
     } catch (err: any) {
       this.logger.warn(
-        `[MsgCleanup] recordAttachmentDownload error att=${attachmentId} user=${userId}: ${err?.message}`,
+        `[MsgCleanup] recordAttachmentDownload error att=${attachmentIdOrMessageId} user=${userId}: ${err?.message}`,
       );
     }
   }

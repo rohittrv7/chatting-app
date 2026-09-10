@@ -115,6 +115,22 @@ export function msgRowToChat(m: MsgRow): ChatMessage {
     document: tryParse(m.document_json),
     contact: tryParse(m.contact_json),
     callLog: tryParse(m.call_log_json),
+    type:
+      (m.type as any) ||
+      (m.location_json
+        ? 'LOCATION'
+        : m.document_json
+          ? 'DOCUMENT'
+          : m.contact_json
+            ? 'CONTACT'
+            : m.image_path
+              ? 'IMAGE'
+              : 'TEXT'),
+    audioPath: m.type === 'AUDIO' ? m.local_media_path || m.image_path || undefined : undefined,
+    audioDurationSeconds:
+      m.type === 'AUDIO' && m.media_size && !isNaN(Number(m.media_size))
+        ? Number(m.media_size)
+        : undefined,
   };
 }
 

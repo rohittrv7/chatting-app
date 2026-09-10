@@ -22,7 +22,7 @@ const mediaDevices =
         enumerateDevices: () => Promise.resolve([]),
       };
 
-const RTCView = ({ streamURL, objectFit = 'cover', style, ...props }) => {
+const RTCView = ({ streamURL, objectFit = 'cover', mirror = false, style, ...props }) => {
   const videoRef = React.useRef(null);
 
   React.useEffect(() => {
@@ -40,6 +40,7 @@ const RTCView = ({ streamURL, objectFit = 'cover', style, ...props }) => {
       width: '100%',
       height: '100%',
       objectFit,
+      transform: mirror ? 'scaleX(-1)' : undefined,
       ...style,
     },
     ...props,
