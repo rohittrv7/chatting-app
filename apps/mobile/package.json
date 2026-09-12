@@ -8,12 +8,11 @@
     "android": "npx expo start --android",
     "ios": "npx expo start --ios",
     "web": "npx expo start --web",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "postinstall": "node scripts/patch-hermes-textdecoder.js"
   },
   "dependencies": {
     "@config-plugins/react-native-webrtc": "^15.0.2",
-    "@nozbe/watermelondb": "0.27.1",
-    "@nozbe/with-observables": "^1.6.0",
     "@privacyresearch/libsignal-protocol-typescript": "^0.0.16",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@react-native-community/netinfo": "12.0.1",
@@ -23,7 +22,6 @@
     "@reduxjs/toolkit": "^2.12.0",
     "expo": "~57.0.21",
     "expo-auth-session": "~57.0.11",
-    "expo-av": "^16.0.8",
     "expo-background-fetch": "~57.0.16",
     "expo-build-properties": "~57.0.17",
     "expo-camera": "~57.0.4",
@@ -33,6 +31,7 @@
     "expo-haptics": "~57.0.2",
     "expo-image-manipulator": "~57.0.16",
     "expo-image-picker": "~57.0.16",
+    "expo-linear-gradient": "^57.0.2",
     "expo-location": "~57.0.16",
     "expo-media-library": "~57.0.4",
     "expo-notifications": "~57.0.17",

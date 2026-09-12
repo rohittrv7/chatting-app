@@ -17,7 +17,7 @@ import {
   PanResponder,
 } from 'react-native';
 import { Plus, X, Smile, Send, Mic, ChevronLeft } from 'lucide-react-native';
-import { Audio } from 'expo-av';
+import { Audio } from '../utils/audioModule';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Haptics from 'expo-haptics';
 import { socketService } from '../services/socket';

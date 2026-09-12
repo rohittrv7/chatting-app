@@ -12,7 +12,11 @@
  * (allowsRecordingIOS, playsInSilentModeIOS).
  */
 import { Platform, DeviceEventEmitter } from 'react-native';
-import { Audio } from 'expo-av';
+
+let Audio: any = null;
+try {
+  Audio = require('expo-av')?.Audio;
+} catch (_) {}
 
 // Safe dynamic import — InCallManager is a native module.
 // metro.config.js maps this to inCallManagerShim.js in Expo Go / metro bundles.

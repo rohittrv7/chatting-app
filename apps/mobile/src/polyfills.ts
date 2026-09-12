@@ -118,8 +118,30 @@ if (typeof global !== 'undefined') {
     }
   }
 
-  // Assign to global
-  (global as any).TextDecoder = SafeTextDecoder;
+  // Assign to global & globalThis safely (Hermes global properties may be non-writable without defineProperty)
+  try {
+    Object.defineProperty(global, 'TextDecoder', {
+      value: SafeTextDecoder,
+      writable: true,
+      configurable: true,
+      enumerable: true,
+    });
+  } catch (_) {
+    (global as any).TextDecoder = SafeTextDecoder;
+  }
+
+  if (typeof globalThis !== 'undefined') {
+    try {
+      Object.defineProperty(globalThis, 'TextDecoder', {
+        value: SafeTextDecoder,
+        writable: true,
+        configurable: true,
+        enumerable: true,
+      });
+    } catch (_) {
+      (globalThis as any).TextDecoder = SafeTextDecoder;
+    }
+  }
 }
 
 // MediaStream toURL polyfill for web/React Native environments

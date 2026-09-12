@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
 import { Play, Pause, Mic } from 'lucide-react-native';
-import { Audio, AVPlaybackStatus } from 'expo-av';
+import { Audio, AVPlaybackStatus } from '../utils/audioModule';
 import * as FileSystem from 'expo-file-system/legacy';
 import nacl from 'tweetnacl';
 import type { ChatMessage } from '../types';

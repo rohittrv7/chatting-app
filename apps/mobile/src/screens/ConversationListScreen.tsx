@@ -18,11 +18,12 @@ import {
   Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { LinearGradient } from 'expo-linear-gradient';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useFocusEffect } from '@react-navigation/native';
 import { RootStackParamList, ConversationItem } from '../types';
 import { useChat, usePresence, useTyping } from '../context/ChatContext';
-import { useTheme } from '../context/ThemeContext';
+import { useTheme, typography } from '../context/ThemeContext';
 import { useSelector, useDispatch } from 'react-redux';
 import { RootState } from '../store';
 import { useToast } from '../context/ToastContext';
@@ -653,6 +654,8 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
   const filteredConversations = useMemo(() => {
     const list = conversations.filter((item) => {
       if (selectedFilter === 'Unread' && item.unread === '0') return false;
+      if (selectedFilter === 'Groups' && !item.isSplitGroup && !item.title?.endsWith(' - Split'))
+        return false;
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase().trim().replace(/^@+/, '');
         const cleanPhone = q.replace(/\D/g, '');
@@ -840,23 +843,43 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
 
   const renderConversationItem = useCallback(
     ({ item }: { item: any }) => {
-      const isUnread = item.unread !== '0';
+      const isUnread = item.unread && item.unread !== '0';
       const isMuted = item.isMuted === true;
       const isTyping = Boolean(
         isUserTyping(item.id, item.recipientDbId) ||
         (item.username && isUserTyping(undefined, item.username.replace(/^@+/, ''))),
       );
 
+      const cardBg = isUnread ? (themeMode === 'dark' ? '#131122' : '#FAF8FF') : colors.surface;
+      const cardBorder = isUnread ? (themeMode === 'dark' ? '#2E2554' : '#DED6FA') : colors.border;
+
       return (
         <TouchableOpacity
           style={[
             styles.chatCard,
             {
-              backgroundColor: isUnread ? colors.accentDim : colors.surface,
-              borderColor: colors.border,
+              backgroundColor: cardBg,
+              borderColor: cardBorder,
+              ...(Platform.OS === 'web'
+                ? {
+                    boxShadow: isUnread
+                      ? themeMode === 'dark'
+                        ? '0 12px 28px rgba(0, 0, 0, 0.6), 0 2px 8px rgba(121, 102, 242, 0.25)'
+                        : '0 12px 28px rgba(94, 74, 227, 0.12), 0 2px 6px rgba(0, 0, 0, 0.04)'
+                      : themeMode === 'dark'
+                        ? '0 4px 16px rgba(0, 0, 0, 0.35), 0 1px 3px rgba(0, 0, 0, 0.2)'
+                        : '0 4px 16px rgba(94, 74, 227, 0.05), 0 1px 3px rgba(0, 0, 0, 0.03)',
+                  }
+                : {
+                    shadowColor: colors.accent,
+                    shadowOffset: isUnread ? { width: 0, height: 6 } : { width: 0, height: 2 },
+                    shadowOpacity: isUnread ? 0.14 : 0.05,
+                    shadowRadius: isUnread ? 14 : 6,
+                    elevation: isUnread ? 5 : 2,
+                  }),
             },
           ]}
-          activeOpacity={0.75}
+          activeOpacity={0.82}
           onPress={() => {
             isNavigatedToChatRef.current = true;
             navigation.navigate('Chat', {
@@ -885,7 +908,8 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
               avatarUrl={item.avatarUrl}
               name={item.title}
               username={item.username}
-              size={48}
+              size={52}
+              borderRadius={16}
               groupBg={item.groupBg || colors.cardBorder}
             />
             {isUserOnline(item.recipientDbId) ||
@@ -895,14 +919,14 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
               <View
                 style={[
                   styles.onlineBadgeCard,
-                  { backgroundColor: '#10B981', borderColor: colors.surface },
+                  { backgroundColor: '#10B981', borderColor: cardBg },
                 ]}
               />
             ) : (
               <View
                 style={[
                   styles.offlineBadgeCard,
-                  { backgroundColor: '#374151', borderColor: colors.surface },
+                  { backgroundColor: '#475569', borderColor: cardBg },
                 ]}
               />
             )}
@@ -933,17 +957,21 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                     </View>
                   ) : (
                     <View style={styles.splitGroupCardBadge}>
-                      <Text style={styles.splitGroupCardBadgeText}>Split Group</Text>
+                      <Text style={styles.splitGroupCardBadgeText}>Split</Text>
                     </View>
                   ))}
-                {item.username && (
-                  <Text style={[styles.cardUsername, { color: colors.primaryIndigo }]}>
-                    {item.username}
-                  </Text>
-                )}
               </View>
               <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                <Text style={[styles.cardTime, { color: colors.textSecondary, marginRight: 6 }]}>
+                <Text
+                  style={[
+                    styles.cardTime,
+                    {
+                      color: isUnread ? colors.accent : colors.textSecondary,
+                      fontWeight: isUnread ? '700' : '500',
+                      marginRight: 6,
+                    },
+                  ]}
+                >
                   {formatChatTime(item.time)}
                 </Text>
                 <TouchableOpacity
@@ -954,7 +982,7 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                     handleStartCallFromChat(item);
                   }}
                 >
-                  <Phone size={15} color={colors.primaryIndigo} />
+                  <Phone size={15} color={colors.accent} />
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={styles.cardMenuBtn}
@@ -1001,7 +1029,12 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                   <Text
                     style={[
                       styles.cardSubtitle,
-                      { color: colors.textSecondary, flex: 1, marginRight: 0 },
+                      {
+                        color: isUnread ? colors.textPrimary : colors.textSecondary,
+                        fontWeight: isUnread ? '600' : '400',
+                        flex: 1,
+                        marginRight: 0,
+                      },
                     ]}
                     numberOfLines={1}
                   >
@@ -1012,7 +1045,7 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
               {isMuted ? (
                 <BellOff size={16} color={colors.textSecondary} />
               ) : isUnread ? (
-                <View style={[styles.unreadBadge, { minWidth: 20 }]}>
+                <View style={[styles.unreadBadge, { backgroundColor: colors.accent }]}>
                   <Text style={styles.unreadText}>
                     {parseInt(item.unread, 10) > 99 ? '99+' : item.unread}
                   </Text>
@@ -1023,542 +1056,763 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
         </TouchableOpacity>
       );
     },
-    [colors, isUserTyping, isUserOnline, navigation, renderMessageStatusIcon],
+    [
+      colors,
+      themeMode,
+      isUserTyping,
+      isUserOnline,
+      navigation,
+      renderMessageStatusIcon,
+      handleStartCallFromChat,
+    ],
   );
 
   // 💬 CHATS TAB (Dynamic Pure Deep Black / Light Theme)
-  const renderChatsTab = () => (
-    <View style={{ flex: 1 }}>
-      {/* Top Header Bar */}
-      <View style={styles.topHeaderRow}>
-        <TouchableOpacity
-          style={styles.avatarWrapper}
-          activeOpacity={0.8}
-          onPress={() => {
-            setSelectedFullScreenAvatar({
-              id: 'my_profile',
-              title: userProfile.name || 'My Profile',
-              username: userProfile.username,
-              phone: userProfile.phone,
-              avatarUrl: userProfile.avatarUrl,
-              groupBg: colors.primaryIndigo,
-            } as any);
-          }}
-        >
-          <SmartAvatar
-            avatarUrl={userProfile.avatarUrl}
-            name={userProfile.name}
-            username={userProfile.username}
-            size={38}
-          />
-          <View style={[styles.onlineBadge, { borderColor: colors.bg }]} />
-        </TouchableOpacity>
+  const renderChatsTab = () => {
+    const hour = new Date().getHours();
+    const greetingTime =
+      hour < 12 ? 'Good morning,' : hour < 17 ? 'Good afternoon,' : 'Good evening,';
+    const unreadCount = conversations
+      .filter((c) => c.unread && c.unread !== '0')
+      .reduce((acc, c) => acc + (parseInt(c.unread, 10) || 1), 0);
+    const activeCount = conversations.length;
 
-        {isSearching ? (
+    return (
+      <View style={{ flex: 1 }}>
+        {/* Top Header Utility Bar */}
+        <View style={styles.topHeaderRow}>
           <TouchableOpacity
-            activeOpacity={1}
-            onPress={() => chatsInputRef.current?.focus()}
-            style={[
-              styles.searchInputWrapper,
-              { backgroundColor: colors.surface, borderColor: colors.cardBorder },
-            ]}
-          >
-            <TextInput
-              ref={chatsInputRef}
-              style={[styles.searchInput, { color: colors.textPrimary }]}
-              placeholder="Search by name or @username..."
-              placeholderTextColor={colors.textSecondary}
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-              autoFocus
-            />
-            {searchQuery.length > 0 && (
-              <TouchableOpacity
-                onPress={() => setSearchQuery('')}
-                style={styles.clearSearchBtn}
-                activeOpacity={0.7}
-                hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
-              >
-                <View style={[styles.clearIconCircle, { backgroundColor: colors.cardBorder }]}>
-                  <X size={12} color={colors.textPrimary} />
-                </View>
-              </TouchableOpacity>
-            )}
-          </TouchableOpacity>
-        ) : (
-          <Text style={[styles.headerTitle, { color: colors.textPrimary }]}>Chats</Text>
-        )}
-
-        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-          <TouchableOpacity
-            style={[
-              styles.circleIconBtn,
-              { backgroundColor: colors.surface, borderColor: colors.cardBorder },
-            ]}
+            style={styles.avatarWrapper}
+            activeOpacity={0.8}
             onPress={() => {
-              setIsSearching(!isSearching);
-              if (isSearching) setSearchQuery('');
+              setSelectedFullScreenAvatar({
+                id: 'my_profile',
+                title: userProfile.name || 'My Profile',
+                username: userProfile.username,
+                phone: userProfile.phone,
+                avatarUrl: userProfile.avatarUrl,
+                groupBg: colors.primaryIndigo,
+              } as any);
             }}
           >
-            {isSearching ? (
-              <X size={18} color={colors.textPrimary} />
-            ) : (
-              <Search size={18} color={colors.textPrimary} />
+            <SmartAvatar
+              avatarUrl={userProfile.avatarUrl}
+              name={userProfile.name}
+              username={userProfile.username}
+              size={44}
+              borderRadius={14}
+            />
+            <View style={[styles.onlineBadge, { borderColor: colors.surface }]} />
+            {unreadCount > 0 && (
+              <View style={[styles.avatarBadgeMini, { backgroundColor: colors.accent }]}>
+                <Text style={styles.avatarBadgeMiniText}>
+                  {unreadCount > 9 ? '9+' : unreadCount}
+                </Text>
+              </View>
             )}
           </TouchableOpacity>
-          <View style={{ width: 10 }} />
-          <TouchableOpacity style={styles.plusIconBtn} onPress={() => setShowPlusMenu(true)}>
-            <Plus size={20} color="#FFF" />
-          </TouchableOpacity>
-        </View>
-      </View>
 
-      {/* Filter Pills Row */}
-      <View style={styles.filterRow}>
-        {['All', 'Unread'].map((pill) => {
-          const isSelected = selectedFilter === pill;
-          return (
+          {isSearching ? (
             <TouchableOpacity
-              key={pill}
+              activeOpacity={1}
+              onPress={() => chatsInputRef.current?.focus()}
               style={[
-                styles.filterPill,
-                {
-                  backgroundColor: 'transparent',
-                  borderBottomColor: isSelected ? colors.accent : 'transparent',
-                },
+                styles.searchInputWrapper,
+                { backgroundColor: colors.surface, borderColor: colors.border },
               ]}
-              onPress={() => setSelectedFilter(pill)}
             >
-              <Text
-                style={[
-                  styles.filterPillText,
-                  { color: isSelected ? colors.accent : colors.textSecondary },
-                  isSelected && styles.filterPillTextActive,
-                ]}
-              >
-                {pill}
-              </Text>
-            </TouchableOpacity>
-          );
-        })}
-      </View>
-
-      {/* 🚀 Instagram Style Sliding Progress Bar / Loading Strip */}
-      <Animated.View
-        style={[
-          styles.instaSlideLoaderWrapper,
-          {
-            maxHeight: slideAnim.interpolate({
-              inputRange: [0, 1],
-              outputRange: [0, 36],
-            }),
-            opacity: slideAnim,
-            marginBottom: slideAnim.interpolate({
-              inputRange: [0, 1],
-              outputRange: [0, 10],
-            }),
-          },
-        ]}
-      >
-        <View
-          style={[
-            styles.instaSlideLoaderPill,
-            { backgroundColor: colors.surface, borderColor: colors.cardBorder },
-          ]}
-        >
-          <ActivityIndicator size="small" color={colors.primaryIndigo} style={{ marginRight: 8 }} />
-          <Text style={[styles.instaSlideLoaderText, { color: colors.textSecondary }]}>
-            Updating chats...
-          </Text>
-          <Animated.View
-            style={[
-              styles.instaSlideProgressBar,
-              {
-                backgroundColor: colors.primaryIndigo,
-                width: shimmerAnim.interpolate({
-                  inputRange: [0, 1],
-                  outputRange: ['15%', '95%'],
-                }),
-              },
-            ]}
-          />
-        </View>
-      </Animated.View>
-
-      {/* Conversation List & Global Search Results */}
-      {searchQuery.trim().length > 0 ? (
-        <ScrollView
-          contentContainerStyle={styles.listContainer}
-          keyboardShouldPersistTaps="handled"
-        >
-          {/* Server / Global Users Searching Indicator */}
-          {isSearchingChatsServer && (
-            <View style={styles.searchLoadingRow}>
-              <ActivityIndicator
-                size="small"
-                color={colors.primaryIndigo}
-                style={{ marginRight: 8 }}
+              <Search size={17} color={colors.textSecondary} style={{ marginRight: 8 }} />
+              <TextInput
+                ref={chatsInputRef}
+                style={[styles.searchInput, { color: colors.textPrimary }]}
+                placeholder="Search messages or @username..."
+                placeholderTextColor={colors.textSecondary}
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+                autoFocus
               />
-              <Text style={{ color: colors.textSecondary, fontSize: 13 }}>
-                Searching registered users...
-              </Text>
-            </View>
-          )}
-
-          {/* 1. Server / Global Registered Users Found in Database */}
-          {chatsServerUsers.length > 0 && (
-            <View style={{ marginBottom: 14 }}>
-              <Text style={[styles.searchSectionHeader, { color: colors.primaryIndigo }]}>
-                REGISTERED USERS ({chatsServerUsers.length})
-              </Text>
-              {chatsServerUsers.map((user) => (
+              {searchQuery.length > 0 && (
                 <TouchableOpacity
-                  key={user.id}
-                  style={[
-                    styles.chatCard,
-                    { backgroundColor: colors.surface, borderColor: colors.cardBorder },
-                  ]}
-                  activeOpacity={0.85}
-                  onPress={() => handleDirectStartChat(user)}
+                  onPress={() => setSearchQuery('')}
+                  style={styles.clearSearchBtn}
+                  activeOpacity={0.7}
+                  hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
                 >
-                  <View style={styles.cardAvatarWrapper}>
-                    <SmartAvatar
-                      avatarUrl={user.avatarUrl}
-                      name={user.name}
-                      username={user.username}
-                      size={52}
-                      groupBg={colors.cardBorder}
-                    />
-                  </View>
-
-                  <View style={styles.cardContent}>
-                    <View style={styles.cardHeaderRow}>
-                      <View style={{ flex: 1 }}>
-                        <Text style={[styles.cardTitle, { color: colors.textPrimary }]}>
-                          {user.name}
-                        </Text>
-                        {user.username && (
-                          <Text style={[styles.cardUsername, { color: colors.primaryIndigo }]}>
-                            {user.username}
-                          </Text>
-                        )}
-                      </View>
-                      {(() => {
-                        const myUser = (userProfile.username || '')
-                          .toLowerCase()
-                          .replace(/^@+/, '');
-                        const myPhone = (userProfile.phone || '').replace(/\D/g, '').slice(-10);
-                        const uClean = (user.username || '').toLowerCase().replace(/^@+/, '');
-                        const uPhone = (user.phoneNumber || '').replace(/\D/g, '').slice(-10);
-                        const isMe =
-                          (uClean && myUser && uClean === myUser) ||
-                          (uPhone && myPhone && uPhone === myPhone);
-
-                        return isMe ? (
-                          <View
-                            style={[
-                              styles.directSearchBadge,
-                              { backgroundColor: '#475569', marginLeft: 8 },
-                            ]}
-                          >
-                            <Text style={styles.directSearchBadgeText}>You</Text>
-                          </View>
-                        ) : (
-                          <TouchableOpacity
-                            style={[
-                              styles.directSearchBadge,
-                              { backgroundColor: '#10B981', marginLeft: 8 },
-                            ]}
-                            onPress={() => handleDirectStartChat(user)}
-                          >
-                            <Text style={styles.directSearchBadgeText}>Chat</Text>
-                          </TouchableOpacity>
-                        );
-                      })()}
-                    </View>
-                    <Text
-                      style={[styles.cardSubtitle, { color: colors.textSecondary, marginTop: 4 }]}
-                      numberOfLines={1}
-                    >
-                      {user.about || 'Available on WhatsApp'}
-                    </Text>
+                  <View style={[styles.clearIconCircle, { backgroundColor: colors.cardBorder }]}>
+                    <X size={12} color={colors.textPrimary} />
                   </View>
                 </TouchableOpacity>
-              ))}
-            </View>
+              )}
+            </TouchableOpacity>
+          ) : (
+            <View style={{ flex: 1 }} />
           )}
 
-          {/* Local Conversations Found */}
-          {filteredConversations.length > 0 && (
-            <View>
-              <Text style={[styles.searchSectionHeader, { color: colors.textSecondary }]}>
-                EXISTING CONVERSATIONS ({filteredConversations.length})
-              </Text>
-              {filteredConversations.map((item) => {
-                const isUnread = item.unread !== '0';
-                const isMuted = item.isMuted === true;
-                const isTyping = Boolean(
-                  isUserTyping(item.id, item.recipientDbId) ||
-                  (item.username && isUserTyping(undefined, item.username.replace(/^@+/, ''))),
-                );
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+            <TouchableOpacity
+              style={[
+                styles.circleIconBtn,
+                {
+                  backgroundColor: colors.surface,
+                  borderColor: colors.border,
+                  ...(Platform.OS === 'web'
+                    ? { boxShadow: '0 2px 8px rgba(0,0,0,0.05)' }
+                    : {
+                        shadowColor: '#000',
+                        shadowOffset: { width: 0, height: 2 },
+                        shadowOpacity: 0.06,
+                        shadowRadius: 4,
+                        elevation: 2,
+                      }),
+                },
+              ]}
+              onPress={() => {
+                setIsSearching(!isSearching);
+                if (isSearching) setSearchQuery('');
+              }}
+            >
+              {isSearching ? (
+                <X size={18} color={colors.textPrimary} />
+              ) : (
+                <Search size={18} color={colors.textPrimary} />
+              )}
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.plusIconBtn,
+                {
+                  backgroundColor: colors.accent,
+                  ...(Platform.OS === 'web'
+                    ? { boxShadow: '0 4px 14px rgba(94, 74, 227, 0.35)' }
+                    : {
+                        shadowColor: colors.accent,
+                        shadowOffset: { width: 0, height: 3 },
+                        shadowOpacity: 0.3,
+                        shadowRadius: 6,
+                        elevation: 4,
+                      }),
+                },
+              ]}
+              onPress={() => setShowPlusMenu(true)}
+            >
+              <Plus size={20} color="#FFF" />
+            </TouchableOpacity>
+          </View>
+        </View>
 
-                return (
+        {/* Editorial Greeting Header (Reference 1 & 2 Style) */}
+        {!isSearching && (
+          <View style={styles.greetingContainer}>
+            <Text style={[styles.greetingPrefix, { color: colors.textSecondary }]}>
+              {greetingTime}
+            </Text>
+            <Text
+              style={[
+                styles.greetingName,
+                {
+                  color: colors.textPrimary,
+                  fontFamily: typography.editorialSerif,
+                },
+              ]}
+              numberOfLines={1}
+            >
+              {userProfile.name || 'Friend'}
+            </Text>
+            {/* <View style={styles.greetingStatsRow}>
+              <View
+                style={[
+                  styles.statPill,
+                  {
+                    backgroundColor:
+                      unreadCount > 0
+                        ? themeMode === 'dark'
+                          ? 'rgba(121, 102, 242, 0.22)'
+                          : 'rgba(94, 74, 227, 0.1)'
+                        : themeMode === 'dark'
+                          ? 'rgba(16, 185, 129, 0.22)'
+                          : 'rgba(16, 185, 129, 0.1)',
+                  },
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.statPillText,
+                    {
+                      color: unreadCount > 0 ? colors.accent : '#10B981',
+                    },
+                  ]}
+                >
+                  {unreadCount > 0
+                    ? `⚡ ${unreadCount} unread message${unreadCount > 1 ? 's' : ''}`
+                    : '✨ All caught up'}
+                </Text>
+              </View>
+              <View
+                style={[
+                  styles.statPill,
+                  {
+                    backgroundColor:
+                      themeMode === 'dark'
+                        ? 'rgba(255, 255, 255, 0.07)'
+                        : 'rgba(0, 0, 0, 0.04)',
+                  },
+                ]}
+              >
+                <Text style={[styles.statPillText, { color: colors.textSecondary }]}>
+                  💬 {activeCount} chat{activeCount === 1 ? '' : 's'}
+                </Text>
+              </View>
+            </View> */}
+          </View>
+        )}
+
+        {/* Pill Filter Tabs Bar */}
+        <View style={styles.filterRow}>
+          {[
+            { key: 'All', label: 'All Chats' },
+            { key: 'Groups', label: 'Groups' },
+            { key: 'Unread', label: 'Unread' },
+          ].map((tab) => {
+            const isSelected = selectedFilter === tab.key;
+            return (
+              <TouchableOpacity
+                key={tab.key}
+                style={[
+                  styles.filterPill,
+                  isSelected
+                    ? [
+                        styles.filterPillActive,
+                        {
+                          backgroundColor: colors.accent,
+                          ...(Platform.OS === 'web'
+                            ? { boxShadow: '0 4px 14px rgba(94, 74, 227, 0.35)' }
+                            : {
+                                shadowColor: colors.accent,
+                                shadowOffset: { width: 0, height: 3 },
+                                shadowOpacity: 0.3,
+                                shadowRadius: 6,
+                                elevation: 3,
+                              }),
+                        },
+                      ]
+                    : [
+                        styles.filterPillInactive,
+                        {
+                          backgroundColor:
+                            themeMode === 'dark'
+                              ? 'rgba(255, 255, 255, 0.06)'
+                              : 'rgba(0, 0, 0, 0.04)',
+                          borderColor: colors.border,
+                        },
+                      ],
+                ]}
+                onPress={() => setSelectedFilter(tab.key)}
+              >
+                <Text
+                  style={[
+                    styles.filterPillText,
+                    {
+                      color: isSelected ? '#FFFFFF' : colors.textSecondary,
+                      fontWeight: isSelected ? '700' : '500',
+                    },
+                  ]}
+                >
+                  {tab.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+
+        {/* 🚀 Instagram Style Sliding Progress Bar / Loading Strip */}
+        <Animated.View
+          style={[
+            styles.instaSlideLoaderWrapper,
+            {
+              maxHeight: slideAnim.interpolate({
+                inputRange: [0, 1],
+                outputRange: [0, 36],
+              }),
+              opacity: slideAnim,
+              marginBottom: slideAnim.interpolate({
+                inputRange: [0, 1],
+                outputRange: [0, 10],
+              }),
+            },
+          ]}
+        >
+          <View
+            style={[
+              styles.instaSlideLoaderPill,
+              { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+            ]}
+          >
+            <ActivityIndicator
+              size="small"
+              color={colors.primaryIndigo}
+              style={{ marginRight: 8 }}
+            />
+            <Text style={[styles.instaSlideLoaderText, { color: colors.textSecondary }]}>
+              Updating chats...
+            </Text>
+            <Animated.View
+              style={[
+                styles.instaSlideProgressBar,
+                {
+                  backgroundColor: colors.primaryIndigo,
+                  width: shimmerAnim.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: ['15%', '95%'],
+                  }),
+                },
+              ]}
+            />
+          </View>
+        </Animated.View>
+
+        {/* Conversation List & Global Search Results */}
+        {searchQuery.trim().length > 0 ? (
+          <ScrollView
+            contentContainerStyle={styles.listContainer}
+            keyboardShouldPersistTaps="handled"
+          >
+            {/* Server / Global Users Searching Indicator */}
+            {isSearchingChatsServer && (
+              <View style={styles.searchLoadingRow}>
+                <ActivityIndicator
+                  size="small"
+                  color={colors.primaryIndigo}
+                  style={{ marginRight: 8 }}
+                />
+                <Text style={{ color: colors.textSecondary, fontSize: 13 }}>
+                  Searching registered users...
+                </Text>
+              </View>
+            )}
+
+            {/* 1. Server / Global Registered Users Found in Database */}
+            {chatsServerUsers.length > 0 && (
+              <View style={{ marginBottom: 14 }}>
+                <Text style={[styles.searchSectionHeader, { color: colors.primaryIndigo }]}>
+                  REGISTERED USERS ({chatsServerUsers.length})
+                </Text>
+                {chatsServerUsers.map((user) => (
                   <TouchableOpacity
-                    key={item.id}
+                    key={user.id}
                     style={[
                       styles.chatCard,
                       { backgroundColor: colors.surface, borderColor: colors.cardBorder },
                     ]}
-                    activeOpacity={0.8}
-                    onPress={() => {
-                      isNavigatedToChatRef.current = true;
-                      const resolvedContact = getResolvedContact({
-                        userId: item.recipientDbId,
-                        username: item.username,
-                        phone: item.phone,
-                        name: item.title,
-                      });
-                      const rawAvatar = item.avatarUrl || resolvedContact?.avatarUrl;
-                      const effectiveAvatarUrl =
-                        rawAvatar && !rawAvatar.startsWith('file://')
-                          ? apiService.getResolvedMediaUrl(rawAvatar)
-                          : rawAvatar;
-
-                      navigation.navigate('Chat', {
-                        conversationId: item.id,
-                        title: item.title,
-                        username: item.username,
-                        avatarUrl: effectiveAvatarUrl,
-                        phone: item.phone,
-                        recipientDbId: item.recipientDbId,
-                      });
-                    }}
-                    onLongPress={() => setSelectedChatForAction(item)}
-                    delayLongPress={280}
+                    activeOpacity={0.85}
+                    onPress={() => handleDirectStartChat(user)}
                   >
+                    <View style={styles.cardAvatarWrapper}>
+                      <SmartAvatar
+                        avatarUrl={user.avatarUrl}
+                        name={user.name}
+                        username={user.username}
+                        size={52}
+                        groupBg={colors.cardBorder}
+                      />
+                    </View>
+
+                    <View style={styles.cardContent}>
+                      <View style={styles.cardHeaderRow}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={[styles.cardTitle, { color: colors.textPrimary }]}>
+                            {user.name}
+                          </Text>
+                          {user.username && (
+                            <Text style={[styles.cardUsername, { color: colors.primaryIndigo }]}>
+                              {user.username}
+                            </Text>
+                          )}
+                        </View>
+                        {(() => {
+                          const myUser = (userProfile.username || '')
+                            .toLowerCase()
+                            .replace(/^@+/, '');
+                          const myPhone = (userProfile.phone || '').replace(/\D/g, '').slice(-10);
+                          const uClean = (user.username || '').toLowerCase().replace(/^@+/, '');
+                          const uPhone = (user.phoneNumber || '').replace(/\D/g, '').slice(-10);
+                          const isMe =
+                            (uClean && myUser && uClean === myUser) ||
+                            (uPhone && myPhone && uPhone === myPhone);
+
+                          return isMe ? (
+                            <View
+                              style={[
+                                styles.directSearchBadge,
+                                { backgroundColor: '#475569', marginLeft: 8 },
+                              ]}
+                            >
+                              <Text style={styles.directSearchBadgeText}>You</Text>
+                            </View>
+                          ) : (
+                            <TouchableOpacity
+                              style={[
+                                styles.directSearchBadge,
+                                { backgroundColor: '#10B981', marginLeft: 8 },
+                              ]}
+                              onPress={() => handleDirectStartChat(user)}
+                            >
+                              <Text style={styles.directSearchBadgeText}>Chat</Text>
+                            </TouchableOpacity>
+                          );
+                        })()}
+                      </View>
+                      <Text
+                        style={[styles.cardSubtitle, { color: colors.textSecondary, marginTop: 4 }]}
+                        numberOfLines={1}
+                      >
+                        {user.about || 'Available on WhatsApp'}
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
+
+            {/* Local Conversations Found */}
+            {filteredConversations.length > 0 && (
+              <View>
+                <Text style={[styles.searchSectionHeader, { color: colors.textSecondary }]}>
+                  EXISTING CONVERSATIONS ({filteredConversations.length})
+                </Text>
+                {filteredConversations.map((item) => {
+                  const isUnread = item.unread !== '0';
+                  const isMuted = item.isMuted === true;
+                  const isTyping = Boolean(
+                    isUserTyping(item.id, item.recipientDbId) ||
+                    (item.username && isUserTyping(undefined, item.username.replace(/^@+/, ''))),
+                  );
+
+                  return (
                     <TouchableOpacity
-                      style={styles.cardAvatarWrapper}
-                      activeOpacity={0.7}
-                      onPress={(e) => {
-                        e.stopPropagation();
-                        setSelectedAvatarProfile(item);
-                      }}
-                    >
-                      {(() => {
+                      key={item.id}
+                      style={[
+                        styles.chatCard,
+                        {
+                          backgroundColor: colors.surface,
+                          borderColor: colors.border,
+                          ...(Platform.OS === 'web'
+                            ? {
+                                boxShadow:
+                                  '0 4px 16px rgba(94, 74, 227, 0.05), 0 1px 3px rgba(0, 0, 0, 0.03)',
+                              }
+                            : {
+                                shadowColor: colors.accent,
+                                shadowOffset: { width: 0, height: 2 },
+                                shadowOpacity: 0.05,
+                                shadowRadius: 6,
+                                elevation: 2,
+                              }),
+                        },
+                      ]}
+                      activeOpacity={0.8}
+                      onPress={() => {
+                        isNavigatedToChatRef.current = true;
                         const resolvedContact = getResolvedContact({
                           userId: item.recipientDbId,
                           username: item.username,
                           phone: item.phone,
                           name: item.title,
                         });
-                        const effectiveAvatarUrl = item.avatarUrl || resolvedContact?.avatarUrl;
+                        const rawAvatar = item.avatarUrl || resolvedContact?.avatarUrl;
+                        const effectiveAvatarUrl =
+                          rawAvatar && !rawAvatar.startsWith('file://')
+                            ? apiService.getResolvedMediaUrl(rawAvatar)
+                            : rawAvatar;
 
-                        return (
-                          <SmartAvatar
-                            avatarUrl={effectiveAvatarUrl}
-                            name={item.title}
-                            username={item.username}
-                            size={52}
-                            groupBg={item.groupBg}
-                          />
-                        );
-                      })()}
-                      {isUserOnline(item.recipientDbId) ||
-                      isUserOnline(item.username) ||
-                      isUserOnline(item.id) ||
-                      isUserOnline(item.title) ? (
-                        <View
-                          style={[
-                            styles.onlineBadgeCard,
-                            { backgroundColor: '#10B981', borderColor: colors.surface },
-                          ]}
-                        />
-                      ) : (
-                        <View
-                          style={[
-                            styles.offlineBadgeCard,
-                            { backgroundColor: '#374151', borderColor: colors.surface },
-                          ]}
-                        />
-                      )}
-                    </TouchableOpacity>
+                        navigation.navigate('Chat', {
+                          conversationId: item.id,
+                          title: item.title,
+                          username: item.username,
+                          avatarUrl: effectiveAvatarUrl,
+                          phone: item.phone,
+                          recipientDbId: item.recipientDbId,
+                        });
+                      }}
+                      onLongPress={() => setSelectedChatForAction(item)}
+                      delayLongPress={280}
+                    >
+                      <TouchableOpacity
+                        style={styles.cardAvatarWrapper}
+                        activeOpacity={0.7}
+                        onPress={(e) => {
+                          e.stopPropagation();
+                          setSelectedAvatarProfile(item);
+                        }}
+                      >
+                        {(() => {
+                          const resolvedContact = getResolvedContact({
+                            userId: item.recipientDbId,
+                            username: item.username,
+                            phone: item.phone,
+                            name: item.title,
+                          });
+                          const effectiveAvatarUrl = item.avatarUrl || resolvedContact?.avatarUrl;
 
-                    <View style={styles.cardContent}>
-                      <View style={styles.cardHeaderRow}>
-                        <View style={{ flex: 1, marginRight: 8 }}>
-                          <Text
-                            style={[styles.cardTitle, { color: colors.textPrimary }]}
-                            numberOfLines={1}
-                          >
-                            {getResolvedDisplayName(
-                              { username: item.username, name: item.title },
-                              item.title,
-                            )}
-                          </Text>
-                          {item.username && (
-                            <Text style={[styles.cardUsername, { color: colors.primaryIndigo }]}>
-                              {item.username}
-                            </Text>
-                          )}
-                        </View>
-                        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                          <Text
-                            style={[
-                              styles.cardTime,
-                              { color: colors.textSecondary, marginRight: 4 },
-                            ]}
-                          >
-                            {formatChatTime(item.time)}
-                          </Text>
-                          <TouchableOpacity
-                            style={styles.cardMenuBtn}
-                            hitSlop={{ top: 12, bottom: 12, left: 10, right: 10 }}
-                            onPress={() => setSelectedChatForAction(item)}
-                          >
-                            <MoreVertical size={16} color={colors.textSecondary} />
-                          </TouchableOpacity>
-                        </View>
-                      </View>
-
-                      <View style={styles.cardSubtitleRow}>
-                        {isTyping ? (
+                          return (
+                            <SmartAvatar
+                              avatarUrl={effectiveAvatarUrl}
+                              name={item.title}
+                              username={item.username}
+                              size={52}
+                              borderRadius={16}
+                              groupBg={item.groupBg}
+                            />
+                          );
+                        })()}
+                        {isUserOnline(item.recipientDbId) ||
+                        isUserOnline(item.username) ||
+                        isUserOnline(item.id) ||
+                        isUserOnline(item.title) ? (
                           <View
-                            style={{
-                              flexDirection: 'row',
-                              alignItems: 'center',
-                              flex: 1,
-                              marginRight: 8,
-                            }}
-                          >
-                            <Text
-                              style={{
-                                color: '#10B981',
-                                fontSize: 13,
-                                fontWeight: '700',
-                                marginRight: 4,
-                              }}
-                            >
-                              typing...
-                            </Text>
-                            <TypingDots color="#10B981" dotSize={4} />
-                          </View>
+                            style={[
+                              styles.onlineBadgeCard,
+                              { backgroundColor: '#10B981', borderColor: colors.surface },
+                            ]}
+                          />
                         ) : (
                           <View
-                            style={{
-                              flexDirection: 'row',
-                              alignItems: 'center',
-                              flex: 1,
-                              marginRight: 8,
-                            }}
-                          >
-                            {renderMessageStatusIcon(item)}
+                            style={[
+                              styles.offlineBadgeCard,
+                              { backgroundColor: '#374151', borderColor: colors.surface },
+                            ]}
+                          />
+                        )}
+                      </TouchableOpacity>
+
+                      <View style={styles.cardContent}>
+                        <View style={styles.cardHeaderRow}>
+                          <View style={{ flex: 1, marginRight: 8 }}>
                             <Text
-                              style={[
-                                styles.cardSubtitle,
-                                { color: colors.textSecondary, flex: 1, marginRight: 0 },
-                              ]}
+                              style={[styles.cardTitle, { color: colors.textPrimary }]}
                               numberOfLines={1}
                             >
-                              {item.lastMessage}
+                              {getResolvedDisplayName(
+                                { username: item.username, name: item.title },
+                                item.title,
+                              )}
                             </Text>
+                            {item.username && (
+                              <Text style={[styles.cardUsername, { color: colors.primaryIndigo }]}>
+                                {item.username}
+                              </Text>
+                            )}
                           </View>
-                        )}
-                        {isMuted ? (
-                          <BellOff size={16} color={colors.textSecondary} />
-                        ) : isUnread ? (
-                          <View style={[styles.unreadBadge, { minWidth: 20 }]}>
-                            <Text style={styles.unreadText}>
-                              {parseInt(item.unread, 10) > 99 ? '99+' : item.unread}
+                          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                            <Text
+                              style={[
+                                styles.cardTime,
+                                { color: colors.textSecondary, marginRight: 4 },
+                              ]}
+                            >
+                              {formatChatTime(item.time)}
                             </Text>
+                            <TouchableOpacity
+                              style={styles.cardMenuBtn}
+                              hitSlop={{ top: 12, bottom: 12, left: 10, right: 10 }}
+                              onPress={() => setSelectedChatForAction(item)}
+                            >
+                              <MoreVertical size={16} color={colors.textSecondary} />
+                            </TouchableOpacity>
                           </View>
-                        ) : null}
-                      </View>
-                    </View>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-          )}
+                        </View>
 
-          {/* 3. Empty State When No Registered Users or Chats Match Query */}
-          {filteredConversations.length === 0 &&
-            chatsServerUsers.length === 0 &&
-            !isSearchingChatsServer && (
-              <View style={styles.emptySearchContainer}>
-                <View
-                  style={[
-                    styles.emptySearchIconCircle,
-                    { backgroundColor: colors.surface, borderColor: colors.cardBorder },
-                  ]}
-                >
-                  <UserX size={34} color={colors.textSecondary} />
-                </View>
-                <Text style={[styles.emptySearchTitle, { color: colors.textPrimary }]}>
-                  No user found
-                </Text>
-                <Text style={[styles.emptySearchDesc, { color: colors.textSecondary }]}>
-                  No registered account matches "{searchQuery.trim()}". Make sure the username or
-                  phone number is correct.
-                </Text>
+                        <View style={styles.cardSubtitleRow}>
+                          {isTyping ? (
+                            <View
+                              style={{
+                                flexDirection: 'row',
+                                alignItems: 'center',
+                                flex: 1,
+                                marginRight: 8,
+                              }}
+                            >
+                              <Text
+                                style={{
+                                  color: '#10B981',
+                                  fontSize: 13,
+                                  fontWeight: '700',
+                                  marginRight: 4,
+                                }}
+                              >
+                                typing...
+                              </Text>
+                              <TypingDots color="#10B981" dotSize={4} />
+                            </View>
+                          ) : (
+                            <View
+                              style={{
+                                flexDirection: 'row',
+                                alignItems: 'center',
+                                flex: 1,
+                                marginRight: 8,
+                              }}
+                            >
+                              {renderMessageStatusIcon(item)}
+                              <Text
+                                style={[
+                                  styles.cardSubtitle,
+                                  { color: colors.textSecondary, flex: 1, marginRight: 0 },
+                                ]}
+                                numberOfLines={1}
+                              >
+                                {item.lastMessage}
+                              </Text>
+                            </View>
+                          )}
+                          {isMuted ? (
+                            <BellOff size={16} color={colors.textSecondary} />
+                          ) : isUnread ? (
+                            <View style={[styles.unreadBadge, { minWidth: 20 }]}>
+                              <Text style={styles.unreadText}>
+                                {parseInt(item.unread, 10) > 99 ? '99+' : item.unread}
+                              </Text>
+                            </View>
+                          ) : null}
+                        </View>
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
               </View>
             )}
-        </ScrollView>
-      ) : filteredConversations.length === 0 ? (
-        <ScrollView
-          contentContainerStyle={styles.emptyChatsContainer}
-          refreshControl={
-            <RefreshControl
-              refreshing={isRefreshingChats}
-              onRefresh={handleRefreshChats}
-              tintColor={colors.primaryIndigo}
-              colors={[colors.primaryIndigo]}
-            />
-          }
-        >
-          <View
-            style={[
-              styles.emptyIconCircle,
-              { backgroundColor: colors.surface, borderColor: colors.cardBorder },
-            ]}
+
+            {/* 3. Empty State When No Registered Users or Chats Match Query */}
+            {filteredConversations.length === 0 &&
+              chatsServerUsers.length === 0 &&
+              !isSearchingChatsServer && (
+                <View style={styles.emptySearchContainer}>
+                  <View
+                    style={[
+                      styles.emptySearchIconCircle,
+                      { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+                    ]}
+                  >
+                    <UserX size={34} color={colors.textSecondary} />
+                  </View>
+                  <Text style={[styles.emptySearchTitle, { color: colors.textPrimary }]}>
+                    No user found
+                  </Text>
+                  <Text style={[styles.emptySearchDesc, { color: colors.textSecondary }]}>
+                    No registered account matches "{searchQuery.trim()}". Make sure the username or
+                    phone number is correct.
+                  </Text>
+                </View>
+              )}
+          </ScrollView>
+        ) : filteredConversations.length === 0 ? (
+          <ScrollView
+            contentContainerStyle={styles.emptyChatsContainer}
+            refreshControl={
+              <RefreshControl
+                refreshing={isRefreshingChats}
+                onRefresh={handleRefreshChats}
+                tintColor={colors.accent}
+                colors={[colors.accent]}
+              />
+            }
           >
-            <MessageSquare size={36} color={colors.primaryIndigo} />
-          </View>
-          <Text style={[styles.emptyChatsTitle, { color: colors.textPrimary }]}>
-            No Conversations Yet
-          </Text>
-          <Text style={[styles.emptyChatsDesc, { color: colors.textSecondary }]}>
-            Connect and chat securely with your contacts. Tap below to start your first
-            conversation!
-          </Text>
-          <TouchableOpacity
-            style={[styles.emptyStartChatBtn, { backgroundColor: colors.accent }]}
-            onPress={() => navigation.navigate('Contacts')}
-          >
-            <Plus size={18} color="#FFF" style={{ marginRight: 8 }} />
-            <Text style={styles.emptyStartChatBtnText}>Start New Chat</Text>
-          </TouchableOpacity>
-        </ScrollView>
-      ) : (
-        <FlatList
-          data={filteredConversations}
-          keyExtractor={(item) => item.id}
-          contentContainerStyle={styles.listContainer}
-          windowSize={5}
-          maxToRenderPerBatch={8}
-          initialNumToRender={10}
-          renderItem={renderConversationItem}
-          refreshControl={
-            <RefreshControl
-              refreshing={isRefreshingChats}
-              onRefresh={handleRefreshChats}
-              tintColor={colors.primaryIndigo}
-              colors={[colors.primaryIndigo]}
-            />
-          }
-        />
-      )}
-    </View>
-  );
+            <View
+              style={[
+                styles.emptyHeroCard,
+                {
+                  backgroundColor: colors.surface,
+                  borderColor: colors.border,
+                  ...(Platform.OS === 'web'
+                    ? {
+                        boxShadow:
+                          '0 12px 32px rgba(94, 74, 227, 0.08), 0 2px 6px rgba(0, 0, 0, 0.03)',
+                      }
+                    : {
+                        shadowColor: colors.accent,
+                        shadowOffset: { width: 0, height: 6 },
+                        shadowOpacity: 0.1,
+                        shadowRadius: 16,
+                        elevation: 4,
+                      }),
+                },
+              ]}
+            >
+              <View
+                style={[
+                  styles.emptyIconCircle,
+                  {
+                    backgroundColor:
+                      themeMode === 'dark' ? 'rgba(121, 102, 242, 0.15)' : 'rgba(94, 74, 227, 0.1)',
+                    borderColor: colors.border,
+                  },
+                ]}
+              >
+                <Sparkles size={28} color={colors.accent} />
+              </View>
+              <Text
+                style={[
+                  styles.emptyChatsTitle,
+                  { color: colors.textPrimary, fontFamily: typography.editorialSerif },
+                ]}
+              >
+                {selectedFilter === 'Unread'
+                  ? 'No Unread Chats'
+                  : selectedFilter === 'Groups'
+                    ? 'No Group Chats'
+                    : 'Start a Conversation'}
+              </Text>
+              <Text style={[styles.emptyChatsDesc, { color: colors.textSecondary }]}>
+                {selectedFilter === 'Unread'
+                  ? 'You are all caught up! Great job staying on top of your messages.'
+                  : selectedFilter === 'Groups'
+                    ? 'No group chats yet. Create a split group or tap below to start.'
+                    : 'Connect securely with your contacts. Messages and calls are protected with end-to-end encryption.'}
+              </Text>
+              <TouchableOpacity
+                style={[
+                  styles.emptyStartChatBtn,
+                  {
+                    backgroundColor: colors.accent,
+                    ...(Platform.OS === 'web'
+                      ? { boxShadow: '0 6px 18px rgba(94, 74, 227, 0.35)' }
+                      : {
+                          shadowColor: colors.accent,
+                          shadowOffset: { width: 0, height: 4 },
+                          shadowOpacity: 0.3,
+                          shadowRadius: 8,
+                          elevation: 5,
+                        }),
+                  },
+                ]}
+                onPress={() => navigation.navigate('Contacts')}
+              >
+                <Plus size={18} color="#FFF" style={{ marginRight: 8 }} />
+                <Text style={styles.emptyStartChatBtnText}>New Conversation</Text>
+              </TouchableOpacity>
+            </View>
+          </ScrollView>
+        ) : (
+          <FlatList
+            data={filteredConversations}
+            keyExtractor={(item) => item.id}
+            contentContainerStyle={styles.listContainer}
+            windowSize={5}
+            maxToRenderPerBatch={8}
+            initialNumToRender={10}
+            renderItem={renderConversationItem}
+            refreshControl={
+              <RefreshControl
+                refreshing={isRefreshingChats}
+                onRefresh={handleRefreshChats}
+                tintColor={colors.accent}
+                colors={[colors.accent]}
+              />
+            }
+          />
+        )}
+      </View>
+    );
+  };
 
   // 📞 CALLS TAB
   const renderCallsTab = () => {
@@ -2384,8 +2638,9 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
             styles.settingRowItem,
             {
               backgroundColor: colors.surface,
-              borderColor: 'rgba(239, 68, 68, 0.3)',
+              borderColor: 'rgba(248, 30, 30, 0.3)',
               marginTop: 14,
+              padding: 10,
             },
           ]}
           activeOpacity={0.8}
@@ -2410,63 +2665,238 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
   );
 
   return (
-    <SafeAreaView
-      style={[styles.container, { backgroundColor: colors.bg }]}
-      edges={['top', 'left', 'right']}
+    <LinearGradient
+      colors={colors.bgGradient}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 0.7, y: 1 }}
+      style={{ flex: 1 }}
     >
-      <StatusBar
-        barStyle={themeMode === 'dark' ? 'light-content' : 'dark-content'}
-        backgroundColor={colors.bg}
-      />
-
-      {/* Persistent call banner — visible on all tabs when a call is active */}
-      <ActiveCallBanner navigation={navigation} />
-
-      {/* Instant Tab Switching Container (Zero-lag active tab rendering) */}
-      <View style={{ flex: 1 }}>
-        {selectedBottomNav === 0 && renderChatsTab()}
-        {selectedBottomNav === 1 && renderCallsTab()}
-        {selectedBottomNav === 2 && renderPeopleTab()}
-        {selectedBottomNav === 3 && renderSettingsTab()}
-      </View>
-
-      <LogoutConfirmModal
-        visible={showLogoutModal}
-        userName={userProfile.name}
-        onCancel={() => setShowLogoutModal(false)}
-        onConfirm={handleConfirmLogout}
-      />
-
-      {/* WhatsApp-Style Chat Action Modal (Long Press on Chat Card) */}
-      <Modal
-        visible={!!selectedChatForAction && !showDeleteConfirmModal}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setSelectedChatForAction(null)}
+      <SafeAreaView
+        style={[styles.container, { backgroundColor: 'transparent' }]}
+        edges={['top', 'left', 'right']}
       >
-        <TouchableOpacity
-          style={styles.actionModalOverlay}
-          activeOpacity={1}
-          onPress={() => setSelectedChatForAction(null)}
+        <StatusBar
+          barStyle={themeMode === 'dark' ? 'light-content' : 'dark-content'}
+          backgroundColor="transparent"
+          translucent
+        />
+
+        {/* Persistent call banner — visible on all tabs when a call is active */}
+        <ActiveCallBanner navigation={navigation} />
+
+        {/* Instant Tab Switching Container (Zero-lag active tab rendering) */}
+        <View style={{ flex: 1 }}>
+          {selectedBottomNav === 0 && renderChatsTab()}
+          {selectedBottomNav === 1 && renderCallsTab()}
+          {selectedBottomNav === 2 && renderPeopleTab()}
+          {selectedBottomNav === 3 && renderSettingsTab()}
+        </View>
+
+        <LogoutConfirmModal
+          visible={showLogoutModal}
+          userName={userProfile.name}
+          onCancel={() => setShowLogoutModal(false)}
+          onConfirm={handleConfirmLogout}
+        />
+
+        {/* WhatsApp-Style Chat Action Modal (Long Press on Chat Card) */}
+        <Modal
+          visible={!!selectedChatForAction && !showDeleteConfirmModal}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setSelectedChatForAction(null)}
         >
-          <View
-            style={[
-              styles.actionModalCard,
-              { backgroundColor: colors.surface, borderColor: colors.cardBorder },
-            ]}
+          <TouchableOpacity
+            style={styles.actionModalOverlay}
+            activeOpacity={1}
+            onPress={() => setSelectedChatForAction(null)}
           >
-            {/* Header info */}
-            <View style={styles.actionModalHeader}>
-              <View style={[styles.actionAvatar, { backgroundColor: colors.cardBorder }]}>
-                <Text style={[styles.actionAvatarText, { color: colors.primaryIndigo }]}>
-                  {selectedChatForAction?.avatar || 'C'}
-                </Text>
+            <View
+              style={[
+                styles.actionModalCard,
+                { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+              ]}
+            >
+              {/* Header info */}
+              <View style={styles.actionModalHeader}>
+                <View style={[styles.actionAvatar, { backgroundColor: colors.cardBorder }]}>
+                  <Text style={[styles.actionAvatarText, { color: colors.primaryIndigo }]}>
+                    {selectedChatForAction?.avatar || 'C'}
+                  </Text>
+                </View>
+                <View style={{ marginLeft: 12, flex: 1 }}>
+                  <Text
+                    style={[styles.actionChatTitle, { color: colors.textPrimary }]}
+                    numberOfLines={1}
+                  >
+                    {selectedChatForAction
+                      ? getResolvedDisplayName(
+                          {
+                            username: selectedChatForAction.username,
+                            name: selectedChatForAction.title,
+                          },
+                          selectedChatForAction.title,
+                        )
+                      : ''}
+                  </Text>
+                  {selectedChatForAction?.username && (
+                    <Text style={[styles.actionChatUsername, { color: colors.primaryIndigo }]}>
+                      {selectedChatForAction.username}
+                    </Text>
+                  )}
+                </View>
               </View>
-              <View style={{ marginLeft: 12, flex: 1 }}>
-                <Text
-                  style={[styles.actionChatTitle, { color: colors.textPrimary }]}
-                  numberOfLines={1}
+
+              <View style={[styles.actionDivider, { backgroundColor: colors.cardBorder }]} />
+
+              {/* Mark as Read */}
+              <TouchableOpacity
+                style={styles.actionRow}
+                onPress={() => {
+                  if (selectedChatForAction) {
+                    markConversationRead(selectedChatForAction.id);
+                    showToast('Marked as read', 'info', 1200);
+                  }
+                  setSelectedChatForAction(null);
+                }}
+              >
+                <CheckCheck size={20} color={colors.primaryIndigo} />
+                <Text style={[styles.actionRowText, { color: colors.textPrimary }]}>
+                  Mark as Read
+                </Text>
+              </TouchableOpacity>
+
+              {/* Audio Call — explicitly separate from row tap */}
+              {selectedChatForAction?.recipientDbId && (
+                <TouchableOpacity
+                  style={styles.actionRow}
+                  onPress={() => {
+                    const item = selectedChatForAction;
+                    setSelectedChatForAction(null);
+                    if (!item?.recipientDbId) return;
+                    const session = callService.startCall({
+                      targetUserId: item.recipientDbId,
+                      targetUserName: item.title,
+                      targetUserAvatar: item.avatarUrl,
+                      callType: 'audio',
+                    });
+                    navigation.navigate('Call', {
+                      callId: session.callId,
+                      targetUserId: item.recipientDbId,
+                      targetUserName: item.title,
+                      isCaller: true,
+                      isVideo: false,
+                    });
+                  }}
                 >
+                  <Phone size={20} color="#10B981" />
+                  <Text style={[styles.actionRowText, { color: colors.textPrimary }]}>
+                    Audio Call
+                  </Text>
+                </TouchableOpacity>
+              )}
+
+              {/* Video Call — explicitly separate from row tap */}
+              {selectedChatForAction?.recipientDbId && (
+                <TouchableOpacity
+                  style={styles.actionRow}
+                  onPress={() => {
+                    const item = selectedChatForAction;
+                    setSelectedChatForAction(null);
+                    if (!item?.recipientDbId) return;
+                    const session = callService.startCall({
+                      targetUserId: item.recipientDbId,
+                      targetUserName: item.title,
+                      targetUserAvatar: item.avatarUrl,
+                      callType: 'video',
+                    });
+                    navigation.navigate('Call', {
+                      callId: session.callId,
+                      targetUserId: item.recipientDbId,
+                      targetUserName: item.title,
+                      isCaller: true,
+                      isVideo: true,
+                    });
+                  }}
+                >
+                  <Video size={20} color="#3B82F6" />
+                  <Text style={[styles.actionRowText, { color: colors.textPrimary }]}>
+                    Video Call
+                  </Text>
+                </TouchableOpacity>
+              )}
+
+              {/* Clear Messages */}
+              <TouchableOpacity
+                style={styles.actionRow}
+                onPress={() => {
+                  if (selectedChatForAction) {
+                    clearMessages(selectedChatForAction.id);
+                    showToast('Chat cleared', 'info', 1500);
+                  }
+                  setSelectedChatForAction(null);
+                }}
+              >
+                <Eraser size={20} color="#F59E0B" />
+                <Text style={[styles.actionRowText, { color: colors.textPrimary }]}>
+                  Clear Messages
+                </Text>
+              </TouchableOpacity>
+
+              {/* Delete Chat */}
+              <TouchableOpacity
+                style={styles.actionRow}
+                onPress={() => {
+                  setShowDeleteConfirmModal(true);
+                }}
+              >
+                <Trash2 size={20} color="#EF4444" />
+                <Text style={[styles.actionRowText, { color: '#EF4444', fontWeight: '700' }]}>
+                  Delete Chat
+                </Text>
+              </TouchableOpacity>
+
+              <View style={[styles.actionDivider, { backgroundColor: colors.cardBorder }]} />
+
+              {/* Cancel Button */}
+              <TouchableOpacity
+                style={styles.actionCancelBtn}
+                onPress={() => setSelectedChatForAction(null)}
+              >
+                <Text style={[styles.actionCancelText, { color: colors.textSecondary }]}>
+                  Cancel
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </TouchableOpacity>
+        </Modal>
+
+        {/* Delete Confirmation Modal */}
+        <Modal
+          visible={showDeleteConfirmModal}
+          transparent
+          animationType="fade"
+          onRequestClose={() => {
+            setShowDeleteConfirmModal(false);
+            setSelectedChatForAction(null);
+          }}
+        >
+          <View style={styles.confirmModalOverlay}>
+            <View
+              style={[
+                styles.confirmModalCard,
+                { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+              ]}
+            >
+              <View style={styles.confirmIconCircle}>
+                <Trash2 size={28} color="#EF4444" />
+              </View>
+              <Text style={[styles.confirmModalTitle, { color: colors.textPrimary }]}>
+                Delete this chat?
+              </Text>
+              <Text style={[styles.confirmModalDesc, { color: colors.textSecondary }]}>
+                Messages will be permanently deleted from this device for{' '}
+                <Text style={{ fontWeight: '700', color: colors.textPrimary }}>
                   {selectedChatForAction
                     ? getResolvedDisplayName(
                         {
@@ -2475,992 +2905,838 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                         },
                         selectedChatForAction.title,
                       )
-                    : ''}
+                    : 'this contact'}
                 </Text>
-                {selectedChatForAction?.username && (
-                  <Text style={[styles.actionChatUsername, { color: colors.primaryIndigo }]}>
-                    {selectedChatForAction.username}
-                  </Text>
-                )}
-              </View>
-            </View>
-
-            <View style={[styles.actionDivider, { backgroundColor: colors.cardBorder }]} />
-
-            {/* Mark as Read */}
-            <TouchableOpacity
-              style={styles.actionRow}
-              onPress={() => {
-                if (selectedChatForAction) {
-                  markConversationRead(selectedChatForAction.id);
-                  showToast('Marked as read', 'info', 1200);
-                }
-                setSelectedChatForAction(null);
-              }}
-            >
-              <CheckCheck size={20} color={colors.primaryIndigo} />
-              <Text style={[styles.actionRowText, { color: colors.textPrimary }]}>
-                Mark as Read
+                .
               </Text>
-            </TouchableOpacity>
 
-            {/* Audio Call — explicitly separate from row tap */}
-            {selectedChatForAction?.recipientDbId && (
-              <TouchableOpacity
-                style={styles.actionRow}
-                onPress={() => {
-                  const item = selectedChatForAction;
-                  setSelectedChatForAction(null);
-                  if (!item?.recipientDbId) return;
-                  const session = callService.startCall({
-                    targetUserId: item.recipientDbId,
-                    targetUserName: item.title,
-                    targetUserAvatar: item.avatarUrl,
-                    callType: 'audio',
-                  });
-                  navigation.navigate('Call', {
-                    callId: session.callId,
-                    targetUserId: item.recipientDbId,
-                    targetUserName: item.title,
-                    isCaller: true,
-                    isVideo: false,
-                  });
-                }}
-              >
-                <Phone size={20} color="#10B981" />
-                <Text style={[styles.actionRowText, { color: colors.textPrimary }]}>
-                  Audio Call
-                </Text>
-              </TouchableOpacity>
-            )}
-
-            {/* Video Call — explicitly separate from row tap */}
-            {selectedChatForAction?.recipientDbId && (
-              <TouchableOpacity
-                style={styles.actionRow}
-                onPress={() => {
-                  const item = selectedChatForAction;
-                  setSelectedChatForAction(null);
-                  if (!item?.recipientDbId) return;
-                  const session = callService.startCall({
-                    targetUserId: item.recipientDbId,
-                    targetUserName: item.title,
-                    targetUserAvatar: item.avatarUrl,
-                    callType: 'video',
-                  });
-                  navigation.navigate('Call', {
-                    callId: session.callId,
-                    targetUserId: item.recipientDbId,
-                    targetUserName: item.title,
-                    isCaller: true,
-                    isVideo: true,
-                  });
-                }}
-              >
-                <Video size={20} color="#3B82F6" />
-                <Text style={[styles.actionRowText, { color: colors.textPrimary }]}>
-                  Video Call
-                </Text>
-              </TouchableOpacity>
-            )}
-
-            {/* Clear Messages */}
-            <TouchableOpacity
-              style={styles.actionRow}
-              onPress={() => {
-                if (selectedChatForAction) {
-                  clearMessages(selectedChatForAction.id);
-                  showToast('Chat cleared', 'info', 1500);
-                }
-                setSelectedChatForAction(null);
-              }}
-            >
-              <Eraser size={20} color="#F59E0B" />
-              <Text style={[styles.actionRowText, { color: colors.textPrimary }]}>
-                Clear Messages
-              </Text>
-            </TouchableOpacity>
-
-            {/* Delete Chat */}
-            <TouchableOpacity
-              style={styles.actionRow}
-              onPress={() => {
-                setShowDeleteConfirmModal(true);
-              }}
-            >
-              <Trash2 size={20} color="#EF4444" />
-              <Text style={[styles.actionRowText, { color: '#EF4444', fontWeight: '700' }]}>
-                Delete Chat
-              </Text>
-            </TouchableOpacity>
-
-            <View style={[styles.actionDivider, { backgroundColor: colors.cardBorder }]} />
-
-            {/* Cancel Button */}
-            <TouchableOpacity
-              style={styles.actionCancelBtn}
-              onPress={() => setSelectedChatForAction(null)}
-            >
-              <Text style={[styles.actionCancelText, { color: colors.textSecondary }]}>Cancel</Text>
-            </TouchableOpacity>
-          </View>
-        </TouchableOpacity>
-      </Modal>
-
-      {/* Delete Confirmation Modal */}
-      <Modal
-        visible={showDeleteConfirmModal}
-        transparent
-        animationType="fade"
-        onRequestClose={() => {
-          setShowDeleteConfirmModal(false);
-          setSelectedChatForAction(null);
-        }}
-      >
-        <View style={styles.confirmModalOverlay}>
-          <View
-            style={[
-              styles.confirmModalCard,
-              { backgroundColor: colors.surface, borderColor: colors.cardBorder },
-            ]}
-          >
-            <View style={styles.confirmIconCircle}>
-              <Trash2 size={28} color="#EF4444" />
-            </View>
-            <Text style={[styles.confirmModalTitle, { color: colors.textPrimary }]}>
-              Delete this chat?
-            </Text>
-            <Text style={[styles.confirmModalDesc, { color: colors.textSecondary }]}>
-              Messages will be permanently deleted from this device for{' '}
-              <Text style={{ fontWeight: '700', color: colors.textPrimary }}>
-                {selectedChatForAction
-                  ? getResolvedDisplayName(
-                      {
-                        username: selectedChatForAction.username,
-                        name: selectedChatForAction.title,
-                      },
-                      selectedChatForAction.title,
-                    )
-                  : 'this contact'}
-              </Text>
-              .
-            </Text>
-
-            <View style={styles.confirmModalButtons}>
-              <TouchableOpacity
-                style={[
-                  styles.confirmBtnSecondary,
-                  { backgroundColor: colors.bg, borderColor: colors.cardBorder },
-                ]}
-                onPress={() => {
-                  setShowDeleteConfirmModal(false);
-                  setSelectedChatForAction(null);
-                }}
-              >
-                <Text style={[styles.confirmBtnSecondaryText, { color: colors.textPrimary }]}>
-                  Cancel
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.confirmBtnDanger, { backgroundColor: '#EF4444' }]}
-                onPress={() => {
-                  if (selectedChatForAction) {
-                    deleteConversation(selectedChatForAction.id);
-                    showToast('Chat deleted', 'success', 1500);
-                  }
-                  setShowDeleteConfirmModal(false);
-                  setSelectedChatForAction(null);
-                }}
-              >
-                <Text style={styles.confirmBtnDangerText}>Delete Chat</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
-
-      {/* 🖼️ WhatsApp Quick Profile Picture Modal on Avatar Click */}
-      <Modal
-        visible={!!selectedAvatarProfile}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setSelectedAvatarProfile(null)}
-      >
-        <TouchableOpacity
-          style={styles.avatarModalBackdrop}
-          activeOpacity={1}
-          onPress={() => setSelectedAvatarProfile(null)}
-        >
-          <View
-            style={[
-              styles.avatarModalCard,
-              { backgroundColor: colors.surface, borderColor: colors.cardBorder },
-            ]}
-            onStartShouldSetResponder={() => true}
-          >
-            {/* Header with Name */}
-            <View style={styles.avatarModalHeader}>
-              <Text
-                style={[styles.avatarModalTitle, { color: colors.textPrimary }]}
-                numberOfLines={1}
-              >
-                {selectedAvatarProfile
-                  ? getResolvedDisplayName(
-                      {
-                        username: selectedAvatarProfile.username,
-                        name: selectedAvatarProfile.title,
-                        phone: selectedAvatarProfile.phone,
-                      },
-                      selectedAvatarProfile.title,
-                    )
-                  : ''}
-              </Text>
-              <TouchableOpacity
-                onPress={() => setSelectedAvatarProfile(null)}
-                style={styles.avatarModalCloseBtn}
-              >
-                <X size={20} color={colors.textSecondary} />
-              </TouchableOpacity>
-            </View>
-
-            {/* Big Profile Photo */}
-            <View style={styles.avatarModalImageContainer}>
-              <TouchableOpacity
-                activeOpacity={0.9}
-                style={{ width: '100%', height: '100%' }}
-                onPress={() => {
-                  const p = selectedAvatarProfile;
-                  setSelectedAvatarProfile(null);
-                  if (p) setSelectedFullScreenAvatar(p);
-                }}
-              >
-                <SmartAvatar
-                  avatarUrl={selectedAvatarProfile?.avatarUrl}
-                  name={selectedAvatarProfile?.title}
-                  username={selectedAvatarProfile?.username}
-                  size={280}
-                  borderRadius={0}
-                  style={styles.avatarModalImage}
-                  textStyle={styles.avatarModalPlaceholderLetter}
-                  groupBg={selectedAvatarProfile?.groupBg || colors.primaryIndigo}
-                />
-              </TouchableOpacity>
-            </View>
-
-            {/* Quick WhatsApp Action Buttons */}
-            <View style={[styles.avatarModalActions, { borderTopColor: colors.cardBorder }]}>
-              <TouchableOpacity
-                style={styles.avatarModalActionBtn}
-                onPress={() => {
-                  const p = selectedAvatarProfile;
-                  setSelectedAvatarProfile(null);
-                  if (p) navigation.navigate('Chat', { conversationId: p.id, title: p.title });
-                }}
-              >
-                <MessageSquare size={22} color={colors.primaryIndigo} />
-                <Text style={[styles.avatarModalActionText, { color: colors.primaryIndigo }]}>
-                  Message
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.avatarModalActionBtn}
-                onPress={() => {
-                  const p = selectedAvatarProfile;
-                  setSelectedAvatarProfile(null);
-                  if (p) {
-                    const recipientId =
-                      (p as any).recipientDbId ||
-                      (p as any).recipientId ||
-                      (p as any).participantId ||
-                      p.id;
-                    const session = callService.startCall({
-                      targetUserId: recipientId,
-                      targetUserName: p.title,
-                      targetUserAvatar: p.avatarUrl,
-                      callType: 'audio',
-                      myUserId: (userProfile as any)?.userId || userProfile?.phone || 'me',
-                      myName: userProfile?.name,
-                      myAvatar: userProfile?.avatarUrl,
-                      conversationId: p.id,
-                    });
-                    navigation.navigate('Call', {
-                      callId: session.callId,
-                      targetUserId: recipientId,
-                      targetUserName: p.title,
-                      isCaller: true,
-                      isVideo: false,
-                    });
-                  }
-                }}
-              >
-                <Phone size={22} color="#10B981" />
-                <Text style={[styles.avatarModalActionText, { color: '#10B981' }]}>Audio</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.avatarModalActionBtn}
-                onPress={() => {
-                  const p = selectedAvatarProfile;
-                  setSelectedAvatarProfile(null);
-                  if (p) {
-                    const recipientId =
-                      (p as any).recipientDbId ||
-                      (p as any).recipientId ||
-                      (p as any).participantId ||
-                      p.id;
-                    const session = callService.startCall({
-                      targetUserId: recipientId,
-                      targetUserName: p.title,
-                      targetUserAvatar: p.avatarUrl,
-                      callType: 'video',
-                      myUserId: (userProfile as any)?.userId || userProfile?.phone || 'me',
-                      myName: userProfile?.name,
-                      myAvatar: userProfile?.avatarUrl,
-                      conversationId: p.id,
-                    });
-                    navigation.navigate('Call', {
-                      callId: session.callId,
-                      targetUserId: recipientId,
-                      targetUserName: p.title,
-                      isCaller: true,
-                      isVideo: true,
-                    });
-                  }
-                }}
-              >
-                <Video size={22} color="#8B5CF6" />
-                <Text style={[styles.avatarModalActionText, { color: '#8B5CF6' }]}>Video</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.avatarModalActionBtn}
-                onPress={() => {
-                  const p = selectedAvatarProfile;
-                  setSelectedAvatarProfile(null);
-                  if (p) setSelectedInfoProfile(p);
-                }}
-              >
-                <Info size={22} color={colors.textSecondary} />
-                <Text style={[styles.avatarModalActionText, { color: colors.textSecondary }]}>
-                  Info
-                </Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </TouchableOpacity>
-      </Modal>
-
-      {/* 🖼️ WhatsApp Style Fullscreen Profile Photo Viewer */}
-      <Modal
-        visible={!!selectedFullScreenAvatar}
-        transparent={false}
-        animationType="fade"
-        onRequestClose={() => setSelectedFullScreenAvatar(null)}
-      >
-        <SafeAreaView style={{ flex: 1, backgroundColor: '#000' }}>
-          <StatusBar barStyle="light-content" backgroundColor="#000" />
-          {(() => {
-            const isMyProfile = selectedFullScreenAvatar?.id === 'my_profile';
-            const title = isMyProfile
-              ? 'My Profile Photo'
-              : selectedFullScreenAvatar
-                ? getResolvedDisplayName(
-                    {
-                      username: selectedFullScreenAvatar.username,
-                      name: selectedFullScreenAvatar.title,
-                      phone: selectedFullScreenAvatar.phone,
-                    },
-                    selectedFullScreenAvatar.title,
-                  )
-                : 'Profile Photo';
-
-            return (
-              <>
-                <View
-                  style={{
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    paddingHorizontal: 16,
-                    paddingVertical: 12,
-                    backgroundColor: '#111',
+              <View style={styles.confirmModalButtons}>
+                <TouchableOpacity
+                  style={[
+                    styles.confirmBtnSecondary,
+                    { backgroundColor: colors.bg, borderColor: colors.cardBorder },
+                  ]}
+                  onPress={() => {
+                    setShowDeleteConfirmModal(false);
+                    setSelectedChatForAction(null);
                   }}
                 >
-                  <TouchableOpacity
-                    onPress={() => setSelectedFullScreenAvatar(null)}
-                    style={{ padding: 6 }}
-                  >
-                    <ArrowLeft size={24} color="#FFF" />
-                  </TouchableOpacity>
-                  <Text
-                    style={{
-                      color: '#FFF',
-                      fontSize: 17,
-                      fontWeight: '700',
-                      flex: 1,
-                      textAlign: 'center',
-                      marginHorizontal: 8,
-                    }}
-                    numberOfLines={1}
-                  >
-                    {title}
+                  <Text style={[styles.confirmBtnSecondaryText, { color: colors.textPrimary }]}>
+                    Cancel
                   </Text>
-                  {isMyProfile ? (
-                    <TouchableOpacity
-                      onPress={() => {
-                        setSelectedFullScreenAvatar(null);
-                        navigation.navigate('EditProfile');
-                      }}
-                      style={{ padding: 6 }}
-                    >
-                      <Edit2 size={20} color="#38BDF8" />
-                    </TouchableOpacity>
-                  ) : (
-                    <View style={{ width: 36 }} />
-                  )}
-                </View>
-                <View
-                  style={{
-                    flex: 1,
-                    justifyContent: 'center',
-                    alignItems: 'center',
-                    backgroundColor: '#000',
-                    padding: 16,
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.confirmBtnDanger, { backgroundColor: '#EF4444' }]}
+                  onPress={() => {
+                    if (selectedChatForAction) {
+                      deleteConversation(selectedChatForAction.id);
+                      showToast('Chat deleted', 'success', 1500);
+                    }
+                    setShowDeleteConfirmModal(false);
+                    setSelectedChatForAction(null);
+                  }}
+                >
+                  <Text style={styles.confirmBtnDangerText}>Delete Chat</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </Modal>
+
+        {/* 🖼️ WhatsApp Quick Profile Picture Modal on Avatar Click */}
+        <Modal
+          visible={!!selectedAvatarProfile}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setSelectedAvatarProfile(null)}
+        >
+          <TouchableOpacity
+            style={styles.avatarModalBackdrop}
+            activeOpacity={1}
+            onPress={() => setSelectedAvatarProfile(null)}
+          >
+            <View
+              style={[
+                styles.avatarModalCard,
+                { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+              ]}
+              onStartShouldSetResponder={() => true}
+            >
+              {/* Header with Name */}
+              <View style={styles.avatarModalHeader}>
+                <Text
+                  style={[styles.avatarModalTitle, { color: colors.textPrimary }]}
+                  numberOfLines={1}
+                >
+                  {selectedAvatarProfile
+                    ? getResolvedDisplayName(
+                        {
+                          username: selectedAvatarProfile.username,
+                          name: selectedAvatarProfile.title,
+                          phone: selectedAvatarProfile.phone,
+                        },
+                        selectedAvatarProfile.title,
+                      )
+                    : ''}
+                </Text>
+                <TouchableOpacity
+                  onPress={() => setSelectedAvatarProfile(null)}
+                  style={styles.avatarModalCloseBtn}
+                >
+                  <X size={20} color={colors.textSecondary} />
+                </TouchableOpacity>
+              </View>
+
+              {/* Big Profile Photo */}
+              <View style={styles.avatarModalImageContainer}>
+                <TouchableOpacity
+                  activeOpacity={0.9}
+                  style={{ width: '100%', height: '100%' }}
+                  onPress={() => {
+                    const p = selectedAvatarProfile;
+                    setSelectedAvatarProfile(null);
+                    if (p) setSelectedFullScreenAvatar(p);
                   }}
                 >
                   <SmartAvatar
-                    avatarUrl={selectedFullScreenAvatar?.avatarUrl}
-                    name={selectedFullScreenAvatar?.title}
-                    username={selectedFullScreenAvatar?.username}
+                    avatarUrl={selectedAvatarProfile?.avatarUrl}
+                    name={selectedAvatarProfile?.title}
+                    username={selectedAvatarProfile?.username}
                     size={280}
-                    borderRadius={140}
-                    groupBg={selectedFullScreenAvatar?.groupBg || colors.primaryIndigo}
-                    textColor="#FFF"
-                    textStyle={{ fontSize: 96, fontWeight: '800' }}
+                    borderRadius={0}
+                    style={styles.avatarModalImage}
+                    textStyle={styles.avatarModalPlaceholderLetter}
+                    groupBg={selectedAvatarProfile?.groupBg || colors.primaryIndigo}
                   />
-                </View>
-              </>
-            );
-          })()}
-        </SafeAreaView>
-      </Modal>
+                </TouchableOpacity>
+              </View>
 
-      {/* 👤 Contact Info Screen Modal (Opened on Info button click) */}
-      <Modal
-        visible={!!selectedInfoProfile}
-        animationType="slide"
-        transparent={false}
-        onRequestClose={() => setSelectedInfoProfile(null)}
-      >
-        <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg }}>
-          <StatusBar
-            barStyle={themeMode === 'dark' ? 'light-content' : 'dark-content'}
-            backgroundColor={colors.bg}
-          />
-          {/* Header */}
-          <View
-            style={{
-              flexDirection: 'row',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              paddingHorizontal: 16,
-              paddingVertical: 14,
-              borderBottomWidth: 1,
-              borderBottomColor: colors.cardBorder,
-              backgroundColor: colors.surface,
-            }}
-          >
-            <TouchableOpacity onPress={() => setSelectedInfoProfile(null)} style={{ padding: 4 }}>
-              <ArrowLeft size={24} color={colors.textPrimary} />
-            </TouchableOpacity>
-            <Text
-              style={{
-                fontSize: 18,
-                fontWeight: '800',
-                color: colors.textPrimary,
-              }}
-            >
-              Contact Info
-            </Text>
-            <View style={{ width: 32 }} />
-          </View>
+              {/* Quick WhatsApp Action Buttons */}
+              <View style={[styles.avatarModalActions, { borderTopColor: colors.cardBorder }]}>
+                <TouchableOpacity
+                  style={styles.avatarModalActionBtn}
+                  onPress={() => {
+                    const p = selectedAvatarProfile;
+                    setSelectedAvatarProfile(null);
+                    if (p) navigation.navigate('Chat', { conversationId: p.id, title: p.title });
+                  }}
+                >
+                  <MessageSquare size={22} color={colors.primaryIndigo} />
+                  <Text style={[styles.avatarModalActionText, { color: colors.primaryIndigo }]}>
+                    Message
+                  </Text>
+                </TouchableOpacity>
 
-          <ScrollView
-            contentContainerStyle={{
-              paddingHorizontal: 16,
-              paddingTop: 18,
-              paddingBottom: 40,
-            }}
-          >
-            {/* Hero */}
-            <View style={{ alignItems: 'center', marginBottom: 20 }}>
-              <TouchableOpacity
-                activeOpacity={0.9}
-                onPress={() => {
-                  const p = selectedInfoProfile;
-                  setSelectedInfoProfile(null);
-                  if (p) setSelectedFullScreenAvatar(p);
-                }}
-              >
-                {selectedInfoProfile?.avatarUrl ? (
-                  <Image
-                    source={{
-                      uri: apiService.getResolvedMediaUrl(selectedInfoProfile.avatarUrl),
-                    }}
-                    style={{
-                      width: 100,
-                      height: 100,
-                      borderRadius: 50,
-                      marginBottom: 12,
-                    }}
-                    resizeMode="cover"
-                  />
-                ) : (
-                  <View
-                    style={{
-                      width: 100,
-                      height: 100,
-                      borderRadius: 50,
-                      backgroundColor: selectedInfoProfile?.groupBg || colors.primaryIndigo,
-                      justifyContent: 'center',
-                      alignItems: 'center',
-                      marginBottom: 12,
-                    }}
-                  >
-                    <Text style={{ fontSize: 40, fontWeight: '800', color: '#FFF' }}>
-                      {selectedInfoProfile
-                        ? (
-                            getResolvedDisplayName(
-                              {
-                                username: selectedInfoProfile.username,
-                                name: selectedInfoProfile.title,
-                              },
-                              selectedInfoProfile.title,
-                            )[0] || 'U'
-                          ).toUpperCase()
-                        : 'U'}
-                    </Text>
-                  </View>
-                )}
-              </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.avatarModalActionBtn}
+                  onPress={() => {
+                    const p = selectedAvatarProfile;
+                    setSelectedAvatarProfile(null);
+                    if (p) {
+                      const recipientId =
+                        (p as any).recipientDbId ||
+                        (p as any).recipientId ||
+                        (p as any).participantId ||
+                        p.id;
+                      const session = callService.startCall({
+                        targetUserId: recipientId,
+                        targetUserName: p.title,
+                        targetUserAvatar: p.avatarUrl,
+                        callType: 'audio',
+                        myUserId: (userProfile as any)?.userId || userProfile?.phone || 'me',
+                        myName: userProfile?.name,
+                        myAvatar: userProfile?.avatarUrl,
+                        conversationId: p.id,
+                      });
+                      navigation.navigate('Call', {
+                        callId: session.callId,
+                        targetUserId: recipientId,
+                        targetUserName: p.title,
+                        isCaller: true,
+                        isVideo: false,
+                      });
+                    }
+                  }}
+                >
+                  <Phone size={22} color="#10B981" />
+                  <Text style={[styles.avatarModalActionText, { color: '#10B981' }]}>Audio</Text>
+                </TouchableOpacity>
 
-              <Text
-                style={{
-                  fontSize: 22,
-                  fontWeight: '800',
-                  color: colors.textPrimary,
-                  textAlign: 'center',
-                }}
-              >
-                {selectedInfoProfile
+                <TouchableOpacity
+                  style={styles.avatarModalActionBtn}
+                  onPress={() => {
+                    const p = selectedAvatarProfile;
+                    setSelectedAvatarProfile(null);
+                    if (p) {
+                      const recipientId =
+                        (p as any).recipientDbId ||
+                        (p as any).recipientId ||
+                        (p as any).participantId ||
+                        p.id;
+                      const session = callService.startCall({
+                        targetUserId: recipientId,
+                        targetUserName: p.title,
+                        targetUserAvatar: p.avatarUrl,
+                        callType: 'video',
+                        myUserId: (userProfile as any)?.userId || userProfile?.phone || 'me',
+                        myName: userProfile?.name,
+                        myAvatar: userProfile?.avatarUrl,
+                        conversationId: p.id,
+                      });
+                      navigation.navigate('Call', {
+                        callId: session.callId,
+                        targetUserId: recipientId,
+                        targetUserName: p.title,
+                        isCaller: true,
+                        isVideo: true,
+                      });
+                    }
+                  }}
+                >
+                  <Video size={22} color="#8B5CF6" />
+                  <Text style={[styles.avatarModalActionText, { color: '#8B5CF6' }]}>Video</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.avatarModalActionBtn}
+                  onPress={() => {
+                    const p = selectedAvatarProfile;
+                    setSelectedAvatarProfile(null);
+                    if (p) setSelectedInfoProfile(p);
+                  }}
+                >
+                  <Info size={22} color={colors.textSecondary} />
+                  <Text style={[styles.avatarModalActionText, { color: colors.textSecondary }]}>
+                    Info
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </TouchableOpacity>
+        </Modal>
+
+        {/* 🖼️ WhatsApp Style Fullscreen Profile Photo Viewer */}
+        <Modal
+          visible={!!selectedFullScreenAvatar}
+          transparent={false}
+          animationType="fade"
+          onRequestClose={() => setSelectedFullScreenAvatar(null)}
+        >
+          <SafeAreaView style={{ flex: 1, backgroundColor: '#000' }}>
+            <StatusBar barStyle="light-content" backgroundColor="#000" />
+            {(() => {
+              const isMyProfile = selectedFullScreenAvatar?.id === 'my_profile';
+              const title = isMyProfile
+                ? 'My Profile Photo'
+                : selectedFullScreenAvatar
                   ? getResolvedDisplayName(
                       {
-                        username: selectedInfoProfile.username,
-                        name: selectedInfoProfile.title,
-                        phone: selectedInfoProfile.phone,
+                        username: selectedFullScreenAvatar.username,
+                        name: selectedFullScreenAvatar.title,
+                        phone: selectedFullScreenAvatar.phone,
                       },
-                      selectedInfoProfile.title,
+                      selectedFullScreenAvatar.title,
                     )
-                  : ''}
-              </Text>
+                  : 'Profile Photo';
 
-              {selectedInfoProfile?.username ? (
-                <Text
-                  style={{
-                    fontSize: 15,
-                    fontWeight: '600',
-                    color: colors.primaryIndigo,
-                    marginTop: 3,
-                  }}
-                >
-                  {selectedInfoProfile.username.startsWith('@')
-                    ? selectedInfoProfile.username
-                    : `@${selectedInfoProfile.username}`}
-                </Text>
-              ) : null}
+              return (
+                <>
+                  <View
+                    style={{
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      paddingHorizontal: 16,
+                      paddingVertical: 12,
+                      backgroundColor: '#111',
+                    }}
+                  >
+                    <TouchableOpacity
+                      onPress={() => setSelectedFullScreenAvatar(null)}
+                      style={{ padding: 6 }}
+                    >
+                      <ArrowLeft size={24} color="#FFF" />
+                    </TouchableOpacity>
+                    <Text
+                      style={{
+                        color: '#FFF',
+                        fontSize: 17,
+                        fontWeight: '700',
+                        flex: 1,
+                        textAlign: 'center',
+                        marginHorizontal: 8,
+                      }}
+                      numberOfLines={1}
+                    >
+                      {title}
+                    </Text>
+                    {isMyProfile ? (
+                      <TouchableOpacity
+                        onPress={() => {
+                          setSelectedFullScreenAvatar(null);
+                          navigation.navigate('EditProfile');
+                        }}
+                        style={{ padding: 6 }}
+                      >
+                        <Edit2 size={20} color="#38BDF8" />
+                      </TouchableOpacity>
+                    ) : (
+                      <View style={{ width: 36 }} />
+                    )}
+                  </View>
+                  <View
+                    style={{
+                      flex: 1,
+                      justifyContent: 'center',
+                      alignItems: 'center',
+                      backgroundColor: '#000',
+                      padding: 16,
+                    }}
+                  >
+                    <SmartAvatar
+                      avatarUrl={selectedFullScreenAvatar?.avatarUrl}
+                      name={selectedFullScreenAvatar?.title}
+                      username={selectedFullScreenAvatar?.username}
+                      size={280}
+                      borderRadius={140}
+                      groupBg={selectedFullScreenAvatar?.groupBg || colors.primaryIndigo}
+                      textColor="#FFF"
+                      textStyle={{ fontSize: 96, fontWeight: '800' }}
+                    />
+                  </View>
+                </>
+              );
+            })()}
+          </SafeAreaView>
+        </Modal>
 
-              {selectedInfoProfile?.phone ? (
-                <Text
-                  style={{
-                    fontSize: 13,
-                    color: colors.textSecondary,
-                    marginTop: 2,
-                  }}
-                >
-                  {selectedInfoProfile.phone}
-                </Text>
-              ) : null}
-
-              <Text
-                style={{
-                  fontSize: 13,
-                  fontWeight: '600',
-                  color: isUserOnline(selectedInfoProfile?.recipientDbId)
-                    ? '#10B981'
-                    : colors.textSecondary,
-                  marginTop: 6,
-                }}
-              >
-                {isUserOnline(selectedInfoProfile?.recipientDbId) ? 'Online' : 'Offline'}
-              </Text>
-            </View>
-
-            {/* Action Buttons (Message, Audio, Video) */}
-            <View
-              style={{
-                flexDirection: 'row',
-                justifyContent: 'center',
-                gap: 12,
-                marginBottom: 20,
-              }}
-            >
-              <TouchableOpacity
-                style={{
-                  flex: 1,
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  paddingVertical: 12,
-                  borderRadius: 14,
-                  backgroundColor: colors.surface,
-                  borderWidth: 1,
-                  borderColor: colors.cardBorder,
-                }}
-                onPress={() => {
-                  const p = selectedInfoProfile;
-                  setSelectedInfoProfile(null);
-                  if (p)
-                    navigation.navigate('Chat', {
-                      conversationId: p.id,
-                      title: p.title,
-                    });
-                }}
-              >
-                <MessageSquare size={18} color={colors.primaryIndigo} style={{ marginRight: 6 }} />
-                <Text
-                  style={{
-                    fontSize: 14,
-                    fontWeight: '700',
-                    color: colors.primaryIndigo,
-                  }}
-                >
-                  Message
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={{
-                  flex: 1,
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  paddingVertical: 12,
-                  borderRadius: 14,
-                  backgroundColor: colors.surface,
-                  borderWidth: 1,
-                  borderColor: colors.cardBorder,
-                  marginRight: 10,
-                }}
-                onPress={() => {
-                  const p = selectedInfoProfile;
-                  setSelectedInfoProfile(null);
-                  if (p) {
-                    const recipientId =
-                      (p as any).recipientDbId ||
-                      (p as any).recipientId ||
-                      (p as any).participantId ||
-                      p.id;
-                    const session = callService.startCall({
-                      targetUserId: recipientId,
-                      targetUserName: p.title,
-                      targetUserAvatar: p.avatarUrl,
-                      callType: 'audio',
-                      myUserId: (userProfile as any)?.userId || userProfile?.phone || 'me',
-                      myName: userProfile?.name,
-                      myAvatar: userProfile?.avatarUrl,
-                      conversationId: p.id,
-                    });
-                    navigation.navigate('Call', {
-                      callId: session.callId,
-                      targetUserId: recipientId,
-                      targetUserName: p.title,
-                      isCaller: true,
-                      isVideo: false,
-                    });
-                  }
-                }}
-              >
-                <Phone size={18} color="#10B981" style={{ marginRight: 6 }} />
-                <Text style={{ fontSize: 14, fontWeight: '700', color: '#10B981' }}>Audio</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={{
-                  flex: 1,
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  paddingVertical: 12,
-                  borderRadius: 14,
-                  backgroundColor: colors.surface,
-                  borderWidth: 1,
-                  borderColor: colors.cardBorder,
-                }}
-                onPress={() => {
-                  const p = selectedInfoProfile;
-                  setSelectedInfoProfile(null);
-                  if (p) {
-                    const recipientId =
-                      (p as any).recipientDbId ||
-                      (p as any).recipientId ||
-                      (p as any).participantId ||
-                      p.id;
-                    const session = callService.startCall({
-                      targetUserId: recipientId,
-                      targetUserName: p.title,
-                      targetUserAvatar: p.avatarUrl,
-                      callType: 'video',
-                      myUserId: (userProfile as any)?.userId || userProfile?.phone || 'me',
-                      myName: userProfile?.name,
-                      myAvatar: userProfile?.avatarUrl,
-                      conversationId: p.id,
-                    });
-                    navigation.navigate('Call', {
-                      callId: session.callId,
-                      targetUserId: recipientId,
-                      targetUserName: p.title,
-                      isCaller: true,
-                      isVideo: true,
-                    });
-                  }
-                }}
-              >
-                <Video size={18} color="#8B5CF6" style={{ marginRight: 6 }} />
-                <Text style={{ fontSize: 14, fontWeight: '700', color: '#8B5CF6' }}>Video</Text>
-              </TouchableOpacity>
-            </View>
-
-            {/* Encryption Verified Card */}
+        {/* 👤 Contact Info Screen Modal (Opened on Info button click) */}
+        <Modal
+          visible={!!selectedInfoProfile}
+          animationType="slide"
+          transparent={false}
+          onRequestClose={() => setSelectedInfoProfile(null)}
+        >
+          <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg }}>
+            <StatusBar
+              barStyle={themeMode === 'dark' ? 'light-content' : 'dark-content'}
+              backgroundColor={colors.bg}
+            />
+            {/* Header */}
             <View
               style={{
                 flexDirection: 'row',
                 alignItems: 'center',
-                padding: 16,
-                borderRadius: 16,
+                justifyContent: 'space-between',
+                paddingHorizontal: 16,
+                paddingVertical: 14,
+                borderBottomWidth: 1,
+                borderBottomColor: colors.cardBorder,
                 backgroundColor: colors.surface,
-                borderWidth: 1,
-                borderColor: colors.cardBorder,
-                marginBottom: 14,
               }}
             >
-              <ShieldCheck size={22} color="#10B981" style={{ marginRight: 12 }} />
-              <View style={{ flex: 1 }}>
+              <TouchableOpacity onPress={() => setSelectedInfoProfile(null)} style={{ padding: 4 }}>
+                <ArrowLeft size={24} color={colors.textPrimary} />
+              </TouchableOpacity>
+              <Text
+                style={{
+                  fontSize: 18,
+                  fontWeight: '800',
+                  color: colors.textPrimary,
+                }}
+              >
+                Contact Info
+              </Text>
+              <View style={{ width: 32 }} />
+            </View>
+
+            <ScrollView
+              contentContainerStyle={{
+                paddingHorizontal: 16,
+                paddingTop: 18,
+                paddingBottom: 40,
+              }}
+            >
+              {/* Hero */}
+              <View style={{ alignItems: 'center', marginBottom: 20 }}>
+                <TouchableOpacity
+                  activeOpacity={0.9}
+                  onPress={() => {
+                    const p = selectedInfoProfile;
+                    setSelectedInfoProfile(null);
+                    if (p) setSelectedFullScreenAvatar(p);
+                  }}
+                >
+                  {selectedInfoProfile?.avatarUrl ? (
+                    <Image
+                      source={{
+                        uri: apiService.getResolvedMediaUrl(selectedInfoProfile.avatarUrl),
+                      }}
+                      style={{
+                        width: 100,
+                        height: 100,
+                        borderRadius: 50,
+                        marginBottom: 12,
+                      }}
+                      resizeMode="cover"
+                    />
+                  ) : (
+                    <View
+                      style={{
+                        width: 100,
+                        height: 100,
+                        borderRadius: 50,
+                        backgroundColor: selectedInfoProfile?.groupBg || colors.primaryIndigo,
+                        justifyContent: 'center',
+                        alignItems: 'center',
+                        marginBottom: 12,
+                      }}
+                    >
+                      <Text style={{ fontSize: 40, fontWeight: '800', color: '#FFF' }}>
+                        {selectedInfoProfile
+                          ? (
+                              getResolvedDisplayName(
+                                {
+                                  username: selectedInfoProfile.username,
+                                  name: selectedInfoProfile.title,
+                                },
+                                selectedInfoProfile.title,
+                              )[0] || 'U'
+                            ).toUpperCase()
+                          : 'U'}
+                      </Text>
+                    </View>
+                  )}
+                </TouchableOpacity>
+
                 <Text
                   style={{
-                    fontSize: 14,
+                    fontSize: 22,
+                    fontWeight: '800',
+                    color: colors.textPrimary,
+                    textAlign: 'center',
+                  }}
+                >
+                  {selectedInfoProfile
+                    ? getResolvedDisplayName(
+                        {
+                          username: selectedInfoProfile.username,
+                          name: selectedInfoProfile.title,
+                          phone: selectedInfoProfile.phone,
+                        },
+                        selectedInfoProfile.title,
+                      )
+                    : ''}
+                </Text>
+
+                {selectedInfoProfile?.username ? (
+                  <Text
+                    style={{
+                      fontSize: 15,
+                      fontWeight: '600',
+                      color: colors.primaryIndigo,
+                      marginTop: 3,
+                    }}
+                  >
+                    {selectedInfoProfile.username.startsWith('@')
+                      ? selectedInfoProfile.username
+                      : `@${selectedInfoProfile.username}`}
+                  </Text>
+                ) : null}
+
+                {selectedInfoProfile?.phone ? (
+                  <Text
+                    style={{
+                      fontSize: 13,
+                      color: colors.textSecondary,
+                      marginTop: 2,
+                    }}
+                  >
+                    {selectedInfoProfile.phone}
+                  </Text>
+                ) : null}
+
+                <Text
+                  style={{
+                    fontSize: 13,
+                    fontWeight: '600',
+                    color: isUserOnline(selectedInfoProfile?.recipientDbId)
+                      ? '#10B981'
+                      : colors.textSecondary,
+                    marginTop: 6,
+                  }}
+                >
+                  {isUserOnline(selectedInfoProfile?.recipientDbId) ? 'Online' : 'Offline'}
+                </Text>
+              </View>
+
+              {/* Action Buttons (Message, Audio, Video) */}
+              <View
+                style={{
+                  flexDirection: 'row',
+                  justifyContent: 'center',
+                  gap: 12,
+                  marginBottom: 20,
+                }}
+              >
+                <TouchableOpacity
+                  style={{
+                    flex: 1,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    paddingVertical: 12,
+                    borderRadius: 14,
+                    backgroundColor: colors.surface,
+                    borderWidth: 1,
+                    borderColor: colors.cardBorder,
+                  }}
+                  onPress={() => {
+                    const p = selectedInfoProfile;
+                    setSelectedInfoProfile(null);
+                    if (p)
+                      navigation.navigate('Chat', {
+                        conversationId: p.id,
+                        title: p.title,
+                      });
+                  }}
+                >
+                  <MessageSquare
+                    size={18}
+                    color={colors.primaryIndigo}
+                    style={{ marginRight: 6 }}
+                  />
+                  <Text
+                    style={{
+                      fontSize: 14,
+                      fontWeight: '700',
+                      color: colors.primaryIndigo,
+                    }}
+                  >
+                    Message
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={{
+                    flex: 1,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    paddingVertical: 12,
+                    borderRadius: 14,
+                    backgroundColor: colors.surface,
+                    borderWidth: 1,
+                    borderColor: colors.cardBorder,
+                    marginRight: 10,
+                  }}
+                  onPress={() => {
+                    const p = selectedInfoProfile;
+                    setSelectedInfoProfile(null);
+                    if (p) {
+                      const recipientId =
+                        (p as any).recipientDbId ||
+                        (p as any).recipientId ||
+                        (p as any).participantId ||
+                        p.id;
+                      const session = callService.startCall({
+                        targetUserId: recipientId,
+                        targetUserName: p.title,
+                        targetUserAvatar: p.avatarUrl,
+                        callType: 'audio',
+                        myUserId: (userProfile as any)?.userId || userProfile?.phone || 'me',
+                        myName: userProfile?.name,
+                        myAvatar: userProfile?.avatarUrl,
+                        conversationId: p.id,
+                      });
+                      navigation.navigate('Call', {
+                        callId: session.callId,
+                        targetUserId: recipientId,
+                        targetUserName: p.title,
+                        isCaller: true,
+                        isVideo: false,
+                      });
+                    }
+                  }}
+                >
+                  <Phone size={18} color="#10B981" style={{ marginRight: 6 }} />
+                  <Text style={{ fontSize: 14, fontWeight: '700', color: '#10B981' }}>Audio</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={{
+                    flex: 1,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    paddingVertical: 12,
+                    borderRadius: 14,
+                    backgroundColor: colors.surface,
+                    borderWidth: 1,
+                    borderColor: colors.cardBorder,
+                  }}
+                  onPress={() => {
+                    const p = selectedInfoProfile;
+                    setSelectedInfoProfile(null);
+                    if (p) {
+                      const recipientId =
+                        (p as any).recipientDbId ||
+                        (p as any).recipientId ||
+                        (p as any).participantId ||
+                        p.id;
+                      const session = callService.startCall({
+                        targetUserId: recipientId,
+                        targetUserName: p.title,
+                        targetUserAvatar: p.avatarUrl,
+                        callType: 'video',
+                        myUserId: (userProfile as any)?.userId || userProfile?.phone || 'me',
+                        myName: userProfile?.name,
+                        myAvatar: userProfile?.avatarUrl,
+                        conversationId: p.id,
+                      });
+                      navigation.navigate('Call', {
+                        callId: session.callId,
+                        targetUserId: recipientId,
+                        targetUserName: p.title,
+                        isCaller: true,
+                        isVideo: true,
+                      });
+                    }
+                  }}
+                >
+                  <Video size={18} color="#8B5CF6" style={{ marginRight: 6 }} />
+                  <Text style={{ fontSize: 14, fontWeight: '700', color: '#8B5CF6' }}>Video</Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Encryption Verified Card */}
+              <View
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  padding: 16,
+                  borderRadius: 16,
+                  backgroundColor: colors.surface,
+                  borderWidth: 1,
+                  borderColor: colors.cardBorder,
+                  marginBottom: 14,
+                }}
+              >
+                <ShieldCheck size={22} color="#10B981" style={{ marginRight: 12 }} />
+                <View style={{ flex: 1 }}>
+                  <Text
+                    style={{
+                      fontSize: 14,
+                      fontWeight: '700',
+                      color: colors.textPrimary,
+                    }}
+                  >
+                    Encryption Verified
+                  </Text>
+                  <Text
+                    style={{
+                      fontSize: 12,
+                      color: colors.textSecondary,
+                      marginTop: 2,
+                    }}
+                  >
+                    Messages and calls are end-to-end encrypted.
+                  </Text>
+                </View>
+              </View>
+
+              {/* Clear Messages Action */}
+              <TouchableOpacity
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  padding: 16,
+                  borderRadius: 16,
+                  backgroundColor: colors.surface,
+                  borderWidth: 1,
+                  borderColor: colors.cardBorder,
+                  marginBottom: 12,
+                }}
+                onPress={() => {
+                  if (selectedInfoProfile) {
+                    clearMessages(selectedInfoProfile.id);
+                    showToast('Chat cleared', 'info', 1500);
+                  }
+                  setSelectedInfoProfile(null);
+                }}
+              >
+                <Eraser size={20} color="#F59E0B" style={{ marginRight: 12 }} />
+                <Text
+                  style={{
+                    fontSize: 15,
                     fontWeight: '700',
                     color: colors.textPrimary,
                   }}
                 >
-                  Encryption Verified
+                  Clear Chat Messages
                 </Text>
-                <Text
-                  style={{
-                    fontSize: 12,
-                    color: colors.textSecondary,
-                    marginTop: 2,
-                  }}
-                >
-                  Messages and calls are end-to-end encrypted.
-                </Text>
-              </View>
-            </View>
+              </TouchableOpacity>
 
-            {/* Clear Messages Action */}
-            <TouchableOpacity
-              style={{
-                flexDirection: 'row',
-                alignItems: 'center',
-                padding: 16,
-                borderRadius: 16,
-                backgroundColor: colors.surface,
-                borderWidth: 1,
-                borderColor: colors.cardBorder,
-                marginBottom: 12,
-              }}
-              onPress={() => {
-                if (selectedInfoProfile) {
-                  clearMessages(selectedInfoProfile.id);
-                  showToast('Chat cleared', 'info', 1500);
-                }
-                setSelectedInfoProfile(null);
-              }}
-            >
-              <Eraser size={20} color="#F59E0B" style={{ marginRight: 12 }} />
-              <Text
+              {/* Delete Chat Action */}
+              <TouchableOpacity
                 style={{
-                  fontSize: 15,
-                  fontWeight: '700',
-                  color: colors.textPrimary,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  padding: 16,
+                  borderRadius: 16,
+                  backgroundColor: colors.surface,
+                  borderWidth: 1,
+                  borderColor: 'rgba(239, 68, 68, 0.3)',
+                }}
+                onPress={() => {
+                  const p = selectedInfoProfile;
+                  setSelectedInfoProfile(null);
+                  if (p) {
+                    setSelectedChatForAction(p);
+                    setShowDeleteConfirmModal(true);
+                  }
                 }}
               >
-                Clear Chat Messages
-              </Text>
-            </TouchableOpacity>
+                <Trash2 size={20} color="#EF4444" style={{ marginRight: 12 }} />
+                <Text style={{ fontSize: 15, fontWeight: '700', color: '#EF4444' }}>
+                  Delete Entire Chat
+                </Text>
+              </TouchableOpacity>
+            </ScrollView>
+          </SafeAreaView>
+        </Modal>
 
-            {/* Delete Chat Action */}
-            <TouchableOpacity
-              style={{
-                flexDirection: 'row',
-                alignItems: 'center',
-                padding: 16,
-                borderRadius: 16,
-                backgroundColor: colors.surface,
-                borderWidth: 1,
-                borderColor: 'rgba(239, 68, 68, 0.3)',
-              }}
-              onPress={() => {
-                const p = selectedInfoProfile;
-                setSelectedInfoProfile(null);
-                if (p) {
-                  setSelectedChatForAction(p);
-                  setShowDeleteConfirmModal(true);
-                }
-              }}
-            >
-              <Trash2 size={20} color="#EF4444" style={{ marginRight: 12 }} />
-              <Text style={{ fontSize: 15, fontWeight: '700', color: '#EF4444' }}>
-                Delete Entire Chat
-              </Text>
-            </TouchableOpacity>
-          </ScrollView>
-        </SafeAreaView>
-      </Modal>
-
-      {/* Dynamic Bottom Navigation Bar */}
-      <View
-        style={[
-          styles.bottomBar,
-          { backgroundColor: colors.bottomBarBg, borderTopColor: colors.cardBorder },
-        ]}
-      >
-        {[
-          { label: 'Chats', icon: MessageSquare },
-          { label: 'Calls', icon: Phone },
-          { label: 'People', icon: Users },
-          { label: 'Settings', icon: SettingsIcon },
-        ].map((nav, idx) => {
-          const isSelected = selectedBottomNav === idx;
-          const IconComponent = nav.icon;
-          const activeColor = colors.primaryIndigo;
-          const inactiveColor = colors.textSecondary;
-
-          return (
-            <TouchableOpacity
-              key={nav.label}
-              style={styles.navItem}
-              onPress={() => handleTabPress(idx)}
-            >
-              <IconComponent size={22} color={isSelected ? activeColor : inactiveColor} />
-              <Text
-                style={[
-                  styles.navLabel,
-                  { color: isSelected ? activeColor : inactiveColor },
-                  isSelected && styles.navLabelActive,
-                ]}
-              >
-                {nav.label}
-              </Text>
-              <View style={[styles.navIndicator, isSelected && styles.navIndicatorActive]} />
-            </TouchableOpacity>
-          );
-        })}
-      </View>
-
-      {/* Plus Menu Modal */}
-      <Modal
-        visible={showPlusMenu}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setShowPlusMenu(false)}
-      >
-        <TouchableOpacity
-          style={styles.plusMenuOverlay}
-          activeOpacity={1}
-          onPress={() => setShowPlusMenu(false)}
+        {/* Dynamic Bottom Navigation Bar */}
+        <View
+          style={[
+            styles.bottomBar,
+            { backgroundColor: colors.bottomBarBg, borderTopColor: colors.border },
+          ]}
         >
-          <View
-            style={[
-              styles.plusMenuDropdown,
-              { backgroundColor: colors.surface, borderColor: colors.cardBorder },
-            ]}
-          >
-            <TouchableOpacity
-              style={styles.plusMenuItem}
-              onPress={() => {
-                setShowPlusMenu(false);
-                navigation.navigate('Contacts');
-              }}
-            >
-              <UserPlus size={18} color={colors.primaryIndigo} />
-              <Text style={[styles.plusMenuItemText, { color: colors.textPrimary }]}>New Chat</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.plusMenuItem}
-              onPress={() => {
-                setShowPlusMenu(false);
-                setShowSplitModal(true);
-              }}
-            >
-              <Receipt size={18} color="#10B981" />
-              <Text style={[styles.plusMenuItemText, { color: colors.textPrimary }]}>
-                New Split (Bill Split)
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.plusMenuItem}
-              onPress={() => {
-                setShowPlusMenu(false);
-                navigation.navigate('ExpenseHistory');
-              }}
-            >
-              <Receipt size={18} color="#6366F1" />
-              <Text style={[styles.plusMenuItemText, { color: colors.textPrimary }]}>
-                Hisaab / My Splits
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </TouchableOpacity>
-      </Modal>
+          {[
+            { label: 'Chats', icon: MessageSquare },
+            { label: 'Calls', icon: Phone },
+            { label: 'People', icon: Users },
+            { label: 'Settings', icon: SettingsIcon },
+          ].map((nav, idx) => {
+            const isSelected = selectedBottomNav === idx;
+            const IconComponent = nav.icon;
+            const activeColor = colors.accent;
+            const inactiveColor = colors.textSecondary;
 
-      {/* Split Bill Modal from ConversationList */}
-      <SplitBillModal
-        visible={showSplitModal}
-        onClose={() => setShowSplitModal(false)}
-        defaultParticipants={[]}
-        availableContacts={availableContactsForSplit}
-        onSuccess={(created) => {
-          showToast('Expense split created! 💰', 'success');
-          refreshLocalConversations();
-          syncServerConversations().catch(() => {});
-          const convId =
-            created.conversationId ||
-            created.expense?.splitGroupId ||
-            created.expense?.conversationId;
-          if (convId) {
-            navigation.navigate('Chat', {
-              conversationId: convId,
-              title: created.expense?.title ? `${created.expense.title} - Split` : 'Bill Split',
-              isSplitGroup: Boolean(created.isSplitGroup || created.expense?.splitGroupId),
-              splitExpenseId: created.expense?.id,
-            });
-          }
-        }}
-        colors={colors}
-      />
-    </SafeAreaView>
+            return (
+              <TouchableOpacity
+                key={nav.label}
+                style={styles.navItem}
+                onPress={() => handleTabPress(idx)}
+              >
+                <IconComponent size={22} color={isSelected ? activeColor : inactiveColor} />
+                <Text
+                  style={[
+                    styles.navLabel,
+                    { color: isSelected ? activeColor : inactiveColor },
+                    isSelected && styles.navLabelActive,
+                  ]}
+                >
+                  {nav.label}
+                </Text>
+                <View
+                  style={[
+                    styles.navIndicator,
+                    isSelected && [styles.navIndicatorActive, { backgroundColor: colors.accent }],
+                  ]}
+                />
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+
+        {/* Plus Menu Modal */}
+        <Modal
+          visible={showPlusMenu}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setShowPlusMenu(false)}
+        >
+          <TouchableOpacity
+            style={styles.plusMenuOverlay}
+            activeOpacity={1}
+            onPress={() => setShowPlusMenu(false)}
+          >
+            <View
+              style={[
+                styles.plusMenuDropdown,
+                { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+              ]}
+            >
+              <TouchableOpacity
+                style={styles.plusMenuItem}
+                onPress={() => {
+                  setShowPlusMenu(false);
+                  navigation.navigate('Contacts');
+                }}
+              >
+                <UserPlus size={18} color={colors.primaryIndigo} />
+                <Text style={[styles.plusMenuItemText, { color: colors.textPrimary }]}>
+                  New Chat
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.plusMenuItem}
+                onPress={() => {
+                  setShowPlusMenu(false);
+                  setShowSplitModal(true);
+                }}
+              >
+                <Receipt size={18} color="#10B981" />
+                <Text style={[styles.plusMenuItemText, { color: colors.textPrimary }]}>
+                  New Split (Bill Split)
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.plusMenuItem}
+                onPress={() => {
+                  setShowPlusMenu(false);
+                  navigation.navigate('ExpenseHistory');
+                }}
+              >
+                <Receipt size={18} color="#6366F1" />
+                <Text style={[styles.plusMenuItemText, { color: colors.textPrimary }]}>
+                  Hisaab / My Splits
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </TouchableOpacity>
+        </Modal>
+
+        {/* Split Bill Modal from ConversationList */}
+        <SplitBillModal
+          visible={showSplitModal}
+          onClose={() => setShowSplitModal(false)}
+          defaultParticipants={[]}
+          availableContacts={availableContactsForSplit}
+          onSuccess={(created) => {
+            showToast('Expense split created! 💰', 'success');
+            refreshLocalConversations();
+            syncServerConversations().catch(() => {});
+            const convId =
+              created.conversationId ||
+              created.expense?.splitGroupId ||
+              created.expense?.conversationId;
+            if (convId) {
+              navigation.navigate('Chat', {
+                conversationId: convId,
+                title: created.expense?.title ? `${created.expense.title} - Split` : 'Bill Split',
+                isSplitGroup: Boolean(created.isSplitGroup || created.expense?.splitGroupId),
+                splitExpenseId: created.expense?.id,
+              });
+            }
+          }}
+          colors={colors}
+        />
+      </SafeAreaView>
+    </LinearGradient>
   );
 };
 
@@ -3472,9 +3748,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
+    paddingHorizontal: 20,
     paddingTop: 14,
-    paddingBottom: 10,
+    paddingBottom: 8,
   },
   headerTitle: {
     fontSize: 26,
@@ -3483,20 +3759,37 @@ const styles = StyleSheet.create({
   },
   avatarWrapper: {
     position: 'relative',
-    marginRight: 12,
+  },
+  avatarBadgeMini: {
+    position: 'absolute',
+    top: -4,
+    right: -4,
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 4,
+    borderWidth: 1.5,
+    borderColor: '#FFF',
+  },
+  avatarBadgeMiniText: {
+    color: '#FFF',
+    fontSize: 10,
+    fontWeight: '800',
   },
   headerAvatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 44,
+    height: 44,
+    borderRadius: 14,
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 1,
   },
   headerAvatarImage: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 44,
+    height: 44,
+    borderRadius: 14,
   },
   headerAvatarLetter: {
     fontSize: 16,
@@ -3504,18 +3797,18 @@ const styles = StyleSheet.create({
   },
   onlineBadge: {
     position: 'absolute',
-    right: 0,
-    top: 0,
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: '#22C55E',
+    right: -1,
+    bottom: -1,
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#10B981',
     borderWidth: 2,
   },
   searchInputWrapper: {
     flex: 1,
-    height: 40,
-    borderRadius: 20,
+    height: 44,
+    borderRadius: 22,
     paddingHorizontal: 14,
     flexDirection: 'row',
     alignItems: 'center',
@@ -3529,64 +3822,103 @@ const styles = StyleSheet.create({
     paddingVertical: 0,
   },
   circleIconBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+    width: 42,
+    height: 42,
+    borderRadius: 21,
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 1,
   },
   plusIconBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: '#6366F1',
+    width: 42,
+    height: 42,
+    borderRadius: 21,
     justifyContent: 'center',
     alignItems: 'center',
   },
+  greetingContainer: {
+    paddingHorizontal: 20,
+    paddingTop: 10,
+    paddingBottom: 14,
+  },
+  greetingPrefix: {
+    fontSize: 17,
+    fontWeight: '500',
+    letterSpacing: -0.2,
+    marginBottom: 2,
+  },
+  greetingName: {
+    fontSize: 28,
+    fontWeight: '800',
+    letterSpacing: -0.4,
+    marginBottom: 8,
+  },
+  greetingStatsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
+  statPill: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  statPillText: {
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.1,
+  },
   filterRow: {
     flexDirection: 'row',
-    paddingHorizontal: 16,
+    paddingHorizontal: 20,
     paddingVertical: 10,
+    gap: 10,
   },
   filterPill: {
-    paddingHorizontal: 16,
-    paddingVertical: 7,
-    borderRadius: 6,
-    marginRight: 10,
+    paddingHorizontal: 18,
+    paddingVertical: 9,
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  filterPillActive: {
     borderWidth: 0,
-    borderBottomWidth: 2.5,
-    borderBottomColor: 'transparent',
+  },
+  filterPillInactive: {
+    borderWidth: 1,
   },
   filterPillText: {
-    fontSize: 14,
-    fontWeight: '500',
+    fontSize: 13,
+    letterSpacing: 0.2,
   },
   filterPillTextActive: {
     fontWeight: '700',
   },
   listContainer: {
     paddingHorizontal: 0,
-    paddingTop: 4,
-    paddingBottom: 16,
+    paddingTop: 8,
+    paddingBottom: 28,
   },
   chatCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderRadius: 0,
+    borderRadius: 24,
+    marginHorizontal: 18,
+    marginBottom: 12,
     paddingHorizontal: 16,
-    paddingVertical: 13,
-    marginBottom: 0,
-    borderWidth: 0,
-    borderBottomWidth: 1,
+    paddingVertical: 14,
+    borderWidth: 1,
   },
   cardAvatarWrapper: {
     position: 'relative',
   },
   cardAvatar: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: 52,
+    height: 52,
+    borderRadius: 16,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -3596,21 +3928,20 @@ const styles = StyleSheet.create({
   },
   onlineBadgeCard: {
     position: 'absolute',
-    right: 0,
-    bottom: 0,
-    width: 11,
-    height: 11,
-    borderRadius: 5.5,
-    backgroundColor: '#2ABCB0',
+    right: -2,
+    bottom: -2,
+    width: 13,
+    height: 13,
+    borderRadius: 6.5,
     borderWidth: 2,
   },
   offlineBadgeCard: {
     position: 'absolute',
-    right: 0,
-    bottom: 0,
-    width: 11,
-    height: 11,
-    borderRadius: 5.5,
+    right: -2,
+    bottom: -2,
+    width: 13,
+    height: 13,
+    borderRadius: 6.5,
     borderWidth: 2,
   },
   offlineDotSmall: {
@@ -3621,7 +3952,7 @@ const styles = StyleSheet.create({
   },
   cardContent: {
     flex: 1,
-    marginLeft: 12,
+    marginLeft: 14,
   },
   cardHeaderRow: {
     flexDirection: 'row',
@@ -3629,16 +3960,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   cardTitle: {
-    fontSize: 15,
-    fontWeight: '600',
+    fontSize: 16,
+    fontWeight: '700',
+    letterSpacing: -0.2,
   },
   cardUsername: {
     fontSize: 12,
-    fontWeight: '500',
+    fontWeight: '600',
     marginTop: 1,
   },
   cardTime: {
-    fontSize: 11,
+    fontSize: 12,
   },
   cardMenuBtn: {
     padding: 4,
@@ -3650,26 +3982,74 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginTop: 4,
+    marginTop: 5,
   },
   cardSubtitle: {
-    fontSize: 14,
-    flex: 1,
-    marginRight: 8,
+    fontSize: 13.5,
+    lineHeight: 18,
   },
   unreadBadge: {
-    minWidth: 20,
-    height: 20,
-    borderRadius: 10,
-    backgroundColor: '#E8622A',
+    minWidth: 22,
+    height: 22,
+    borderRadius: 11,
     justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: 5,
+    paddingHorizontal: 6,
   },
   unreadText: {
     fontSize: 11,
-    fontWeight: '700',
+    fontWeight: '800',
     color: '#FFF',
+  },
+  emptyChatsContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 40,
+    paddingHorizontal: 20,
+  },
+  emptyHeroCard: {
+    width: '100%',
+    borderRadius: 28,
+    paddingVertical: 36,
+    paddingHorizontal: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+  },
+  emptyIconCircle: {
+    width: 76,
+    height: 76,
+    borderRadius: 38,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    marginBottom: 18,
+  },
+  emptyChatsTitle: {
+    fontSize: 24,
+    fontWeight: '700',
+    marginBottom: 8,
+    textAlign: 'center',
+    letterSpacing: -0.3,
+  },
+  emptyChatsDesc: {
+    fontSize: 14,
+    lineHeight: 22,
+    textAlign: 'center',
+    maxWidth: 290,
+    marginBottom: 24,
+  },
+  emptyStartChatBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 24,
+    paddingVertical: 14,
+    borderRadius: 999,
+  },
+  emptyStartChatBtnText: {
+    color: '#FFF',
+    fontSize: 15,
+    fontWeight: '700',
   },
   topHeader: {
     paddingHorizontal: 20,
@@ -4040,52 +4420,7 @@ const styles = StyleSheet.create({
   navIndicatorActive: {
     width: 24,
   },
-  emptyChatsContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: 36,
-    paddingBottom: 40,
-  },
-  emptyIconCircle: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 20,
-    borderWidth: 1,
-  },
-  emptyChatsTitle: {
-    fontSize: 20,
-    fontWeight: '800',
-    marginBottom: 10,
-    textAlign: 'center',
-  },
-  emptyChatsDesc: {
-    fontSize: 14,
-    textAlign: 'center',
-    lineHeight: 22,
-    marginBottom: 26,
-  },
-  emptyStartChatBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 24,
-    paddingVertical: 14,
-    borderRadius: 12,
-    shadowColor: '#E8622A',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.25,
-    shadowRadius: 8,
-    elevation: 4,
-  },
-  emptyStartChatBtnText: {
-    color: '#FFF',
-    fontSize: 15,
-    fontWeight: '700',
-  },
+
   instaSlideLoaderWrapper: {
     paddingHorizontal: 16,
     overflow: 'hidden',

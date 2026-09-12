@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import { Platform } from 'react-native';
 import { safeStorage } from '../services/storageHelper';
 
 export type ThemeMode = 'dark' | 'light';
@@ -16,133 +17,165 @@ const THEME_STORAGE_KEY = '@whatsapp_connect_theme_mode';
 export interface ThemeColors {
   mode: ThemeMode;
 
-  // ── Backgrounds
-  bg: string; // page / screen background
-  surface: string; // cards, rows, bottom nav
-  surfaceElevated: string; // modals, bottom sheets, selected state
-  overlay: string; // modal backdrop overlay
+  // ── Backgrounds & Gradients
+  bg: string;
+  bgGradient: [string, string, string];
+  surface: string;
+  surfaceElevated: string;
+  overlay: string;
 
   // ── Borders
-  border: string; // subtle dividers, card edges
-  borderStrong: string; // input outlines, focused states
+  border: string;
+  borderStrong: string;
 
-  // ── Accent — ember orange
-  accent: string; // primary CTA, unread badge, active icon
-  accentLight: string; // pressed / hover state
-  accentDim: string; // tinted backgrounds (badge bg, unread row tint)
+  // ── Brand Accent — Vibrant Periwinkle/Indigo Violet (from reference)
+  accent: string;
+  accentLight: string;
+  accentDim: string;
+  accentGradient: [string, string];
 
-  // ── Secondary accent — teal
-  accentAlt: string; // read receipts double-tick, online dot, reactions
-  accentAltDim: string; // teal tinted bg
+  // ── Secondary accent — Emerald / Mint
+  accentAlt: string;
+  accentAltDim: string;
+
+  // ── Warm Accent — Peach / Coral (from wellness reference)
+  accentWarm: string;
+  accentWarmDim: string;
 
   // ── Text
-  textPrimary: string; // main text
-  textSecondary: string; // subtitles, timestamps, labels
-  textTertiary: string; // placeholders, disabled
+  textPrimary: string;
+  textSecondary: string;
+  textTertiary: string;
 
   // ── Chat bubbles
-  bubbleMe: string; // my bubble background
-  bubbleMeText: string; // my bubble text
-  bubbleThem: string; // their bubble background
-  bubbleThemText: string; // their bubble text
+  bubbleMe: string;
+  bubbleMeText: string;
+  bubbleThem: string;
+  bubbleThemText: string;
 
   // ── Status colors
-  danger: string; // delete, missed call, error
-  success: string; // upload done, sent success, positive
-  warning: string; // pending, amber states
+  danger: string;
+  success: string;
+  warning: string;
 
-  // ── Legacy aliases (kept for backward compat with existing screens)
-  primaryIndigo: string; // maps to accent
-  onlineEmerald: string; // maps to accentAlt
-  unreadBadge: string; // maps to accent
-  missedRed: string; // maps to danger
-  inputBg: string; // maps to surface
-  bottomBarBg: string; // maps to surface
-  cardBorder: string; // maps to border
+  // ── Legacy aliases
+  primaryIndigo: string;
+  onlineEmerald: string;
+  unreadBadge: string;
+  missedRed: string;
+  inputBg: string;
+  bottomBarBg: string;
+  cardBorder: string;
 }
 
-// ─── Dark mode ──────────────────────────────────────────────────────────────
+// ─── Dark mode (Pure Deep Pitch Black) ───────────────────────────────────────
 export const darkThemeColors: ThemeColors = {
   mode: 'dark',
 
-  bg: '#0D0D0D',
-  surface: '#161618',
-  surfaceElevated: '#1E1E21',
-  overlay: 'rgba(0,0,0,0.78)',
+  bg: '#000000',
+  bgGradient: ['#000000', '#000000', '#000000'],
+  surface: '#0B0B0E',
+  surfaceElevated: '#131317',
+  overlay: 'rgba(0,0,0,0.85)',
 
-  border: '#2A2A2E',
-  borderStrong: '#3A3A40',
+  border: '#1C1C24',
+  borderStrong: '#2A2A36',
 
-  accent: '#E8622A',
-  accentLight: '#FF8A5C',
-  accentDim: '#3D2218',
+  accent: '#7966F2',
+  accentLight: '#9585F7',
+  accentDim: '#1C1838',
+  accentGradient: ['#8574F5', '#604EE6'],
 
-  accentAlt: '#2ABCB0',
-  accentAltDim: '#0F2E2B',
+  accentAlt: '#10B981',
+  accentAltDim: '#0E3326',
 
-  textPrimary: '#F0EDE8',
-  textSecondary: '#8A8680',
-  textTertiary: '#5A5650',
+  accentWarm: '#FF8A65',
+  accentWarmDim: '#3D1E16',
 
-  bubbleMe: '#2D1A10',
-  bubbleMeText: '#F5DDD0',
-  bubbleThem: '#1A1A1E',
-  bubbleThemText: '#F0EDE8',
+  textPrimary: '#FFFFFF',
+  textSecondary: '#9A94B8',
+  textTertiary: '#676088',
 
-  danger: '#E05252',
-  success: '#52C97A',
+  bubbleMe: '#5E4AE3',
+  bubbleMeText: '#FFFFFF',
+  bubbleThem: '#131317',
+  bubbleThemText: '#FFFFFF',
+
+  danger: '#EF4444',
+  success: '#10B981',
   warning: '#F59E0B',
 
   // Legacy aliases
-  primaryIndigo: '#E8622A',
-  onlineEmerald: '#2ABCB0',
-  unreadBadge: '#E8622A',
-  missedRed: '#E05252',
-  inputBg: '#161618',
-  bottomBarBg: '#161618',
-  cardBorder: '#2A2A2E',
+  primaryIndigo: '#7966F2',
+  onlineEmerald: '#10B981',
+  unreadBadge: '#7966F2',
+  missedRed: '#EF4444',
+  inputBg: '#0B0B0E',
+  bottomBarBg: '#000000',
+  cardBorder: '#1C1C24',
 };
 
-// ─── Light mode ─────────────────────────────────────────────────────────────
+// ─── Light mode (Soft Lavender to Warm Cream gradient — from reference) ───
 export const lightThemeColors: ThemeColors = {
   mode: 'light',
 
-  bg: '#FAF8F5',
+  bg: '#F5F2FD',
+  bgGradient: ['#F4F0FD', '#F8F6FD', '#FAF7F5'],
   surface: '#FFFFFF',
-  surfaceElevated: '#F0EDE8',
-  overlay: 'rgba(0,0,0,0.55)',
+  surfaceElevated: '#F9F8FD',
+  overlay: 'rgba(15,12,30,0.45)',
 
-  border: '#E8E2D8',
-  borderStrong: '#D0C8BA',
+  border: '#ECE7F6',
+  borderStrong: '#DCD4EE',
 
-  accent: '#D4511F',
-  accentLight: '#E8622A',
-  accentDim: '#FEE8DC',
+  accent: '#5E4AE3',
+  accentLight: '#7563F5',
+  accentDim: '#EEECFD',
+  accentGradient: ['#6956F7', '#5340D8'],
 
-  accentAlt: '#1A9E94',
-  accentAltDim: '#D6F2F0',
+  accentAlt: '#10B981',
+  accentAltDim: '#D1FAE5',
 
-  textPrimary: '#1A1714',
-  textSecondary: '#706860',
-  textTertiary: '#A8A098',
+  accentWarm: '#FF7043',
+  accentWarmDim: '#FBE9E7',
 
-  bubbleMe: '#E8622A',
+  textPrimary: '#141226',
+  textSecondary: '#6B6684',
+  textTertiary: '#A29DBE',
+
+  bubbleMe: '#5E4AE3',
   bubbleMeText: '#FFFFFF',
   bubbleThem: '#FFFFFF',
-  bubbleThemText: '#1A1714',
+  bubbleThemText: '#141226',
 
-  danger: '#C84040',
-  success: '#3A9E5C',
+  danger: '#DC2626',
+  success: '#059669',
   warning: '#D97706',
 
   // Legacy aliases
-  primaryIndigo: '#D4511F',
-  onlineEmerald: '#1A9E94',
-  unreadBadge: '#D4511F',
-  missedRed: '#C84040',
+  primaryIndigo: '#5E4AE3',
+  onlineEmerald: '#10B981',
+  unreadBadge: '#5E4AE3',
+  missedRed: '#DC2626',
   inputBg: '#FFFFFF',
   bottomBarBg: '#FFFFFF',
-  cardBorder: '#E8E2D8',
+  cardBorder: '#ECE7F6',
+};
+
+// ─── Typography pairings (Editorial Serif + Clean Sans-Serif) ───────────────
+export const typography = {
+  editorialSerif: Platform.select({
+    ios: 'Georgia',
+    android: 'serif',
+    web: 'Fraunces, "DM Serif Display", Georgia, serif',
+    default: 'serif',
+  }),
+  modernSans: Platform.select({
+    ios: 'System',
+    android: 'sans-serif',
+    web: '"Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+    default: 'sans-serif',
+  }),
 };
 
 // ─── Spacing scale ───────────────────────────────────────────────────────────

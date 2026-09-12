@@ -23,6 +23,19 @@ import { ToastProvider, useToast } from './src/context/ToastContext';
 import { store } from './src/store';
 import { restoreSession, logout } from './src/store/authSlice';
 import { apiService, setSessionExpiredHandler } from './src/services/apiService';
+import { Platform } from 'react-native';
+
+if (Platform.OS === 'web' && typeof document !== 'undefined') {
+  const fontId = 'google-fonts-fraunces-plus-jakarta';
+  if (!document.getElementById(fontId)) {
+    const link = document.createElement('link');
+    link.id = fontId;
+    link.rel = 'stylesheet';
+    link.href =
+      'https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400..700;1,9..144,400..700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap';
+    document.head.appendChild(link);
+  }
+}
 
 import { PhoneAuthScreen } from './src/screens/PhoneAuthScreen';
 import { OtpVerificationScreen } from './src/screens/OtpVerificationScreen';
@@ -166,7 +179,24 @@ function AppNavigator() {
   };
 
   return (
-    <View style={{ flex: 1, backgroundColor: colors.bg }}>
+    <View
+      style={{
+        flex: 1,
+        backgroundColor: colors.bg,
+        ...(Platform.OS === 'web'
+          ? {
+              maxWidth: 440,
+              width: '100%',
+              marginHorizontal: 'auto',
+              minHeight: '100vh' as any,
+              shadowColor: '#000',
+              shadowOffset: { width: 0, height: 12 },
+              shadowOpacity: 0.18,
+              shadowRadius: 36,
+            }
+          : {}),
+      }}
+    >
       <StatusBar
         barStyle={themeMode === 'dark' ? 'light-content' : 'dark-content'}
         backgroundColor={colors.bg}
