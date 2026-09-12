@@ -576,7 +576,7 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
 
               <View style={[styles.viewfinderFrame, { borderColor: colors.primaryIndigo }]}>
                 <CameraView
-                  style={StyleSheet.absoluteFillObject}
+                  style={StyleSheet.absoluteFill}
                   facing="back"
                   enableTorch={flashOn}
                   barcodeScannerSettings={{

@@ -110,6 +110,11 @@ model User {
   settings      Setting?
   messageDeletions MessageDeletion[]
   attachmentDownloads AttachmentDownload[]
+  createdSplits ExpenseSplit[]         @relation("CreatedSplits")
+  paidSplits    ExpenseSplit[]         @relation("PaidSplits")
+  participations ExpenseParticipant[]
+  settlementsPaid ExpenseSettlement[]    @relation("SettlementsPaid")
+  settlementsReceived ExpenseSettlement[] @relation("SettlementsReceived")
 
   @@index([phoneNumber])
   @@index([isActive])
@@ -196,17 +201,22 @@ model OneTimePreKey {
 }
 
 model Conversation {
-  id           String               @id @default(uuid())
-  type         ConversationType
-  title        String?
-  avatarUrl    String?
-  createdAt    DateTime             @default(now())
-  updatedAt    DateTime             @updatedAt
-  deletedAt    DateTime?
+  id             String               @id @default(uuid())
+  type           ConversationType
+  title          String?
+  avatarUrl      String?
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+  deletedAt      DateTime?
 
-  members      ConversationMember[]
-  messages     Message[]
-  calls        Call[]
+  isSplitGroup   Boolean              @default(false)
+  splitExpenseId String?              @unique
+
+  members        ConversationMember[]
+  messages       Message[]
+  calls          Call[]
+  splitExpense   ExpenseSplit?        @relation("SplitGroupExpense")
+  linkedExpenses ExpenseSplit[]       @relation("ConversationExpenses")
 }
 
 model ConversationMember {
@@ -472,4 +482,66 @@ model Report {
   @@index([reporterId])
   @@index([reportedUserId])
   @@index([status])
+}
+
+model ExpenseSplit {
+  id             String          @id @default(uuid())
+  createdBy      String          // userId jisne split banaya
+  paidBy         String?         // userId jisne paisa pay kiya (defaults to createdBy)
+  title          String          // jaise "Goa Trip", "Dinner at XYZ"
+  totalAmount    Decimal
+  currency       String          @default("INR")
+  splitType      String          @default("EQUAL") // EQUAL | EXACT | PERCENT | SHARES
+  category       String          @default("OTHER") // FOOD | TRAVEL | RENT | ENTERTAINMENT | SHOPPING | BILLS | OTHER
+  conversationId String?         // agar existing 1:1 chat se bana hai
+  splitGroupId   String?         @unique // agar naya temp split-group bana hai (isse link)
+  isOngoingGroup Boolean         @default(false) // permanent group (disables auto-delete)
+  status         String          @default("ACTIVE") // ACTIVE | SETTLED
+  createdAt      DateTime        @default(now())
+  settledAt      DateTime?
+  autoDeleteAt   DateTime?       // 24h grace period after settled for auto-delete
+
+  creator        User            @relation("CreatedSplits", fields: [createdBy], references: [id], onDelete: Cascade)
+  payer          User?           @relation("PaidSplits", fields: [paidBy], references: [id], onDelete: SetNull)
+  conversation   Conversation?   @relation("ConversationExpenses", fields: [conversationId], references: [id], onDelete: SetNull)
+  splitGroup     Conversation?   @relation("SplitGroupExpense", fields: [splitGroupId], references: [id], onDelete: SetNull)
+  participants   ExpenseParticipant[]
+
+  @@index([createdBy])
+  @@index([paidBy])
+  @@index([status])
+  @@index([category])
+  @@index([autoDeleteAt])
+}
+
+model ExpenseParticipant {
+  id             String       @id @default(uuid())
+  expenseSplitId String
+  userId         String
+  amountOwed     Decimal      // is participant ko kitna dena hai
+  shareValue     Decimal?     // percentage or share weight
+  isPaid         Boolean      @default(false)
+  paidAt         DateTime?
+
+  expenseSplit   ExpenseSplit @relation(fields: [expenseSplitId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([expenseSplitId, userId])
+  @@index([userId])
+}
+
+model ExpenseSettlement {
+  id             String       @id @default(uuid())
+  payerId        String
+  receiverId     String
+  amount         Decimal
+  currency       String       @default("INR")
+  notes          String?
+  createdAt      DateTime     @default(now())
+
+  payer          User         @relation("SettlementsPaid", fields: [payerId], references: [id], onDelete: Cascade)
+  receiver       User         @relation("SettlementsReceived", fields: [receiverId], references: [id], onDelete: Cascade)
+
+  @@index([payerId])
+  @@index([receiverId])
 }

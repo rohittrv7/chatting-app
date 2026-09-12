@@ -17,6 +17,7 @@ import { HttpLoggerMiddleware } from './common/middleware/http-logger.middleware
 import { SystemDiagnosticsService } from './common/services/system-diagnostics.service';
 import { ObservabilityModule } from './modules/observability/observability.module';
 import { ReportsModule } from './modules/reports/reports.module';
+import { ExpenseModule } from './modules/expenses/expense.module';
 import { PrismaModule } from './database/prisma.module';
 import { AppController } from './app.controller';
 import { HealthController } from './modules/health/health.controller';
@@ -45,7 +46,7 @@ import { LastActiveInterceptor } from './common/interceptors/last-active.interce
         {
           name: 'global',
           ttl: 60 * 1000, // 1 minute
-          limit: 120, // 120 req/min per IP for general API endpoints
+          limit: 1000, // 1000 req/min for smooth dev experience without 429 rate limit errors
         },
       ],
     }),
@@ -62,6 +63,7 @@ import { LastActiveInterceptor } from './common/interceptors/last-active.interce
     CallModule,
     PresenceModule,
     SecurityModule,
+    ExpenseModule,
   ],
   controllers: [AppController, HealthController, MetricsController],
   providers: [

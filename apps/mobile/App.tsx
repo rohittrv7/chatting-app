@@ -42,6 +42,7 @@ import { NotificationSettingsScreen } from './src/screens/NotificationSettingsSc
 import { StorageSettingsScreen } from './src/screens/StorageSettingsScreen';
 import { HelpSettingsScreen } from './src/screens/HelpSettingsScreen';
 import { QrCodeScreen } from './src/screens/QrCodeScreen';
+import { ExpenseHistoryScreen } from './src/screens/ExpenseHistoryScreen';
 import { IncomingCallModal } from './src/components/IncomingCallModal';
 import { notificationService } from './src/services/notificationService';
 import { BackupProvider } from './src/context/BackupContext';
@@ -211,6 +212,7 @@ function AppNavigator() {
           <Stack.Screen name="StorageSettings" component={StorageSettingsScreen} />
           <Stack.Screen name="HelpSettings" component={HelpSettingsScreen} />
           <Stack.Screen name="QrCode" component={QrCodeScreen} />
+          <Stack.Screen name="ExpenseHistory" component={ExpenseHistoryScreen} />
         </Stack.Navigator>
       </NavigationContainer>
       <IncomingCallModal navigationRef={navigationRef} />
@@ -291,11 +293,11 @@ export default function App() {
         <Provider store={store}>
           <ThemeProvider>
             <BackupProvider>
-              <ChatProvider>
-                <ToastProvider>
+              <ToastProvider>
+                <ChatProvider>
                   <AppNavigator />
-                </ToastProvider>
-              </ChatProvider>
+                </ChatProvider>
+              </ToastProvider>
             </BackupProvider>
           </ThemeProvider>
         </Provider>

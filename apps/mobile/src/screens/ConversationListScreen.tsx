@@ -28,9 +28,11 @@ import { RootState } from '../store';
 import { useToast } from '../context/ToastContext';
 import { logout } from '../store/authSlice';
 import { useLocalConversations } from '../db/useLocalDb';
+import { SplitBillModal } from '../components/SplitBillModal';
 import {
   Search,
   Plus,
+  Receipt,
   X,
   User,
   Users,
@@ -249,6 +251,8 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
     null,
   );
   const [selectedInfoProfile, setSelectedInfoProfile] = useState<ConversationItem | null>(null);
+  const [showPlusMenu, setShowPlusMenu] = useState(false);
+  const [showSplitModal, setShowSplitModal] = useState(false);
 
   const [callLogs, setCallLogs] = useState<CallLogItem[]>(callHistoryService.getLogs());
   const [registeredContacts, setRegisteredContacts] = useState<DeviceContact[]>([]);
@@ -325,6 +329,42 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
     }
   }, [selectedBottomNav]);
 
+  const currentUserId = useSelector(
+    (state: RootState) => (state.auth as any).userId || (state.auth as any).userProfile?.id || '',
+  );
+
+  const availableContactsForSplit = useMemo(() => {
+    const map = new Map<string, { id: string; name: string; phone?: string; username?: string }>();
+
+    registeredContacts.forEach((c) => {
+      const id = c.userId || c.id;
+      if (id && id !== currentUserId) {
+        map.set(id, {
+          id,
+          name: c.name || 'Contact',
+          phone: c.phone,
+          username: c.username,
+        });
+      }
+    });
+
+    conversations.forEach((conv: any) => {
+      const id = conv.recipientDbId || conv.id;
+      if (id && id !== currentUserId && !conv.isSplitGroup && !conv.isGroup) {
+        if (!map.has(id)) {
+          map.set(id, {
+            id,
+            name: conv.title || conv.name || 'Chat Contact',
+            phone: conv.phone,
+            username: conv.username,
+          });
+        }
+      }
+    });
+
+    return Array.from(map.values());
+  }, [registeredContacts, conversations, currentUserId]);
+
   const isNavigatedToChatRef = useRef(false);
   const isSearchingRef = useRef(isSearching);
   isSearchingRef.current = isSearching;
@@ -396,6 +436,12 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
       )
         return true;
       if (cleanPhone && c.phone && c.phone.replace(/\D/g, '').slice(-10) === cleanPhone)
+        return true;
+      if (
+        contact.name &&
+        c.title &&
+        c.title.trim().toLowerCase() === contact.name.trim().toLowerCase()
+      )
         return true;
       return false;
     });
@@ -475,6 +521,13 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
         targetPhone &&
         c.phone &&
         c.phone.replace(/\D/g, '').slice(-10) === targetPhone.replace(/\D/g, '').slice(-10)
+      )
+        return true;
+      if (
+        targetName &&
+        targetName !== 'User' &&
+        c.title &&
+        c.title.trim().toLowerCase() === targetName.trim().toLowerCase()
       )
         return true;
       return false;
@@ -598,7 +651,7 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
   }, [searchQuery, token, conversations]);
 
   const filteredConversations = useMemo(() => {
-    return conversations.filter((item) => {
+    const list = conversations.filter((item) => {
       if (selectedFilter === 'Unread' && item.unread === '0') return false;
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase().trim().replace(/^@+/, '');
@@ -611,8 +664,32 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
       }
       return true;
     });
-    // Sort is already handled in the SQLite query (ORDER BY last_message_at DESC)
-    // so no client-side sort needed — avoids a full-array sort on every render.
+
+    // Deduplicate so duplicate rows for the same contact/username are never rendered
+    const deduped: ConversationItem[] = [];
+    const seen = new Set<string>();
+
+    for (const item of list) {
+      if (item.isSplitGroup) {
+        deduped.push(item);
+        continue;
+      }
+      const uKey = item.username ? item.username.toLowerCase().replace(/^@+/, '') : '';
+      const pKey = item.phone ? item.phone.replace(/\D/g, '').slice(-10) : '';
+      const dbKey = item.recipientDbId || '';
+      const tKey =
+        item.title && item.title !== 'Chat' && item.title !== 'DIRECT'
+          ? item.title.trim().toLowerCase()
+          : '';
+
+      const key = dbKey || uKey || pKey || tKey || item.id;
+      if (!seen.has(key)) {
+        seen.add(key);
+        deduped.push(item);
+      }
+    }
+
+    return deduped;
   }, [conversations, selectedFilter, searchQuery]);
 
   const handleInviteContact = async (contact: DeviceContact) => {
@@ -774,9 +851,12 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
         <TouchableOpacity
           style={[
             styles.chatCard,
-            { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+            {
+              backgroundColor: isUnread ? colors.accentDim : colors.surface,
+              borderColor: colors.border,
+            },
           ]}
-          activeOpacity={0.8}
+          activeOpacity={0.75}
           onPress={() => {
             isNavigatedToChatRef.current = true;
             navigation.navigate('Chat', {
@@ -786,6 +866,8 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
               avatarUrl: item.avatarUrl,
               phone: item.phone,
               recipientDbId: item.recipientDbId,
+              isSplitGroup: item.isSplitGroup || item.title?.endsWith(' - Split'),
+              splitExpenseId: item.splitExpenseId,
             });
           }}
           onLongPress={() => setSelectedChatForAction(item)}
@@ -828,13 +910,32 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
 
           <View style={styles.cardContent}>
             <View style={styles.cardHeaderRow}>
-              <View style={{ flex: 1, marginRight: 8 }}>
+              <View
+                style={{
+                  flex: 1,
+                  marginRight: 8,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 6,
+                  flexWrap: 'nowrap',
+                }}
+              >
                 <Text style={[styles.cardTitle, { color: colors.textPrimary }]} numberOfLines={1}>
                   {getResolvedDisplayName(
                     { username: item.username, name: item.title },
                     item.title,
                   )}
                 </Text>
+                {(item.isSplitGroup || item.title?.endsWith(' - Split')) &&
+                  (item.autoDeleteAt ? (
+                    <View style={styles.settlingBadge}>
+                      <Text style={styles.settlingBadgeText}>⏳ Settling...</Text>
+                    </View>
+                  ) : (
+                    <View style={styles.splitGroupCardBadge}>
+                      <Text style={styles.splitGroupCardBadgeText}>Split Group</Text>
+                    </View>
+                  ))}
                 {item.username && (
                   <Text style={[styles.cardUsername, { color: colors.primaryIndigo }]}>
                     {item.username}
@@ -1006,10 +1107,7 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
             )}
           </TouchableOpacity>
           <View style={{ width: 10 }} />
-          <TouchableOpacity
-            style={styles.plusIconBtn}
-            onPress={() => navigation.navigate('Contacts')}
-          >
+          <TouchableOpacity style={styles.plusIconBtn} onPress={() => setShowPlusMenu(true)}>
             <Plus size={20} color="#FFF" />
           </TouchableOpacity>
         </View>
@@ -1025,8 +1123,8 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
               style={[
                 styles.filterPill,
                 {
-                  backgroundColor: isSelected ? colors.primaryIndigo : colors.surface,
-                  borderColor: isSelected ? colors.primaryIndigo : colors.cardBorder,
+                  backgroundColor: 'transparent',
+                  borderBottomColor: isSelected ? colors.accent : 'transparent',
                 },
               ]}
               onPress={() => setSelectedFilter(pill)}
@@ -1034,7 +1132,7 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
               <Text
                 style={[
                   styles.filterPillText,
-                  { color: isSelected ? '#FFF' : colors.textSecondary },
+                  { color: isSelected ? colors.accent : colors.textSecondary },
                   isSelected && styles.filterPillTextActive,
                 ]}
               >
@@ -1433,7 +1531,7 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
             conversation!
           </Text>
           <TouchableOpacity
-            style={[styles.emptyStartChatBtn, { backgroundColor: colors.primaryIndigo }]}
+            style={[styles.emptyStartChatBtn, { backgroundColor: colors.accent }]}
             onPress={() => navigation.navigate('Contacts')}
           >
             <Plus size={18} color="#FFF" style={{ marginRight: 8 }} />
@@ -1576,7 +1674,7 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
               contacts.
             </Text>
             <TouchableOpacity
-              style={[styles.emptyStartChatBtn, { backgroundColor: colors.primaryIndigo }]}
+              style={[styles.emptyStartChatBtn, { backgroundColor: colors.accent }]}
               onPress={() => navigation.navigate('Contacts')}
             >
               <Phone size={18} color="#FFF" style={{ marginRight: 8 }} />
@@ -2187,6 +2285,13 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
         <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>PREFERENCES</Text>
 
         {[
+          {
+            title: 'Hisaab / My Splits',
+            subtitle: 'Track shared expenses, settled & pending bills',
+            icon: Receipt,
+            iconBg: 'rgba(16, 185, 129, 0.12)',
+            screen: 'ExpenseHistory',
+          },
           {
             title: 'Account',
             subtitle: 'Security, 2-step verification, change number',
@@ -3273,6 +3378,88 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
           );
         })}
       </View>
+
+      {/* Plus Menu Modal */}
+      <Modal
+        visible={showPlusMenu}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowPlusMenu(false)}
+      >
+        <TouchableOpacity
+          style={styles.plusMenuOverlay}
+          activeOpacity={1}
+          onPress={() => setShowPlusMenu(false)}
+        >
+          <View
+            style={[
+              styles.plusMenuDropdown,
+              { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+            ]}
+          >
+            <TouchableOpacity
+              style={styles.plusMenuItem}
+              onPress={() => {
+                setShowPlusMenu(false);
+                navigation.navigate('Contacts');
+              }}
+            >
+              <UserPlus size={18} color={colors.primaryIndigo} />
+              <Text style={[styles.plusMenuItemText, { color: colors.textPrimary }]}>New Chat</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.plusMenuItem}
+              onPress={() => {
+                setShowPlusMenu(false);
+                setShowSplitModal(true);
+              }}
+            >
+              <Receipt size={18} color="#10B981" />
+              <Text style={[styles.plusMenuItemText, { color: colors.textPrimary }]}>
+                New Split (Bill Split)
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.plusMenuItem}
+              onPress={() => {
+                setShowPlusMenu(false);
+                navigation.navigate('ExpenseHistory');
+              }}
+            >
+              <Receipt size={18} color="#6366F1" />
+              <Text style={[styles.plusMenuItemText, { color: colors.textPrimary }]}>
+                Hisaab / My Splits
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Split Bill Modal from ConversationList */}
+      <SplitBillModal
+        visible={showSplitModal}
+        onClose={() => setShowSplitModal(false)}
+        defaultParticipants={[]}
+        availableContacts={availableContactsForSplit}
+        onSuccess={(created) => {
+          showToast('Expense split created! 💰', 'success');
+          refreshLocalConversations();
+          syncServerConversations().catch(() => {});
+          const convId =
+            created.conversationId ||
+            created.expense?.splitGroupId ||
+            created.expense?.conversationId;
+          if (convId) {
+            navigation.navigate('Chat', {
+              conversationId: convId,
+              title: created.expense?.title ? `${created.expense.title} - Split` : 'Bill Split',
+              isSplitGroup: Boolean(created.isSplitGroup || created.expense?.splitGroupId),
+              splitExpenseId: created.expense?.id,
+            });
+          }
+        }}
+        colors={colors}
+      />
     </SafeAreaView>
   );
 };
@@ -3363,11 +3550,13 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
   },
   filterPill: {
-    paddingHorizontal: 18,
-    paddingVertical: 8,
-    borderRadius: 20,
+    paddingHorizontal: 16,
+    paddingVertical: 7,
+    borderRadius: 6,
     marginRight: 10,
-    borderWidth: 1,
+    borderWidth: 0,
+    borderBottomWidth: 2.5,
+    borderBottomColor: 'transparent',
   },
   filterPillText: {
     fontSize: 14,
@@ -3377,18 +3566,19 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   listContainer: {
-    paddingHorizontal: 16,
+    paddingHorizontal: 0,
     paddingTop: 4,
     paddingBottom: 16,
   },
   chatCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderRadius: 20,
+    borderRadius: 0,
     paddingHorizontal: 16,
-    paddingVertical: 14,
-    marginBottom: 10,
-    borderWidth: 1,
+    paddingVertical: 13,
+    marginBottom: 0,
+    borderWidth: 0,
+    borderBottomWidth: 1,
   },
   cardAvatarWrapper: {
     position: 'relative',
@@ -3411,7 +3601,7 @@ const styles = StyleSheet.create({
     width: 11,
     height: 11,
     borderRadius: 5.5,
-    backgroundColor: '#22C55E',
+    backgroundColor: '#2ABCB0',
     borderWidth: 2,
   },
   offlineBadgeCard: {
@@ -3439,16 +3629,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   cardTitle: {
-    fontSize: 16,
-    fontWeight: '700',
+    fontSize: 15,
+    fontWeight: '600',
   },
   cardUsername: {
     fontSize: 12,
-    fontWeight: '600',
+    fontWeight: '500',
     marginTop: 1,
   },
   cardTime: {
-    fontSize: 12,
+    fontSize: 11,
   },
   cardMenuBtn: {
     padding: 4,
@@ -3468,12 +3658,13 @@ const styles = StyleSheet.create({
     marginRight: 8,
   },
   unreadBadge: {
-    width: 20,
+    minWidth: 20,
     height: 20,
     borderRadius: 10,
-    backgroundColor: '#6366F1',
+    backgroundColor: '#E8622A',
     justifyContent: 'center',
     alignItems: 'center',
+    paddingHorizontal: 5,
   },
   unreadText: {
     fontSize: 11,
@@ -3682,10 +3873,11 @@ const styles = StyleSheet.create({
   profileCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderRadius: 22,
+    borderRadius: 14,
     padding: 16,
-    marginBottom: 14,
-    borderWidth: 1,
+    marginBottom: 20,
+    borderWidth: 0,
+    borderBottomWidth: 1,
   },
   profileAvatarWrapper: {
     position: 'relative',
@@ -3740,9 +3932,9 @@ const styles = StyleSheet.create({
   },
   // Theme Card Styles
   themeCardBox: {
-    borderRadius: 20,
-    padding: 16,
-    marginBottom: 16,
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 20,
     borderWidth: 1,
   },
   themeBoxLabel: {
@@ -3760,8 +3952,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 11,
-    borderRadius: 14,
+    paddingVertical: 10,
+    borderRadius: 8,
     marginHorizontal: 4,
   },
   themeChoiceText: {
@@ -3779,26 +3971,27 @@ const styles = StyleSheet.create({
   settingRowItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderRadius: 18,
-    paddingHorizontal: 16,
+    borderRadius: 0,
+    paddingHorizontal: 0,
     paddingVertical: 14,
-    marginBottom: 10,
-    borderWidth: 1,
+    marginBottom: 0,
+    borderWidth: 0,
+    borderBottomWidth: 1,
   },
   settingIconBadge: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 36,
+    height: 36,
+    borderRadius: 8,
     justifyContent: 'center',
     alignItems: 'center',
   },
   settingItemTitle: {
-    fontSize: 16,
-    fontWeight: '700',
+    fontSize: 15,
+    fontWeight: '500',
   },
   settingItemSubtitle: {
     fontSize: 12,
-    marginTop: 2,
+    marginTop: 1,
   },
   settingIconBox: {
     width: 36,
@@ -3820,18 +4013,19 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-around',
     alignItems: 'center',
-    paddingTop: 10,
-    paddingBottom: Platform.OS === 'ios' ? 24 : 14,
+    paddingTop: 8,
+    paddingBottom: Platform.OS === 'ios' ? 24 : 12,
     borderTopWidth: 1,
   },
   navItem: {
     alignItems: 'center',
     flex: 1,
+    paddingTop: 4,
   },
   navLabel: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '500',
-    marginTop: 2,
+    marginTop: 3,
   },
   navLabelActive: {
     fontWeight: '700',
@@ -3839,12 +4033,12 @@ const styles = StyleSheet.create({
   navIndicator: {
     height: 3,
     width: 0,
-    backgroundColor: '#6366F1',
+    backgroundColor: '#E8622A',
     borderRadius: 2,
-    marginTop: 4,
+    marginTop: 5,
   },
   navIndicatorActive: {
-    width: 16,
+    width: 24,
   },
   emptyChatsContainer: {
     flex: 1,
@@ -3880,8 +4074,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 24,
     paddingVertical: 14,
-    borderRadius: 24,
-    shadowColor: '#6366F1',
+    borderRadius: 12,
+    shadowColor: '#E8622A',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.25,
     shadowRadius: 8,
@@ -4217,5 +4411,61 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     textAlign: 'center',
     maxWidth: 280,
+  },
+  splitGroupCardBadge: {
+    backgroundColor: 'rgba(99, 102, 241, 0.15)',
+    borderColor: 'rgba(99, 102, 241, 0.25)',
+    borderWidth: 1,
+    borderRadius: 6,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+  },
+  splitGroupCardBadgeText: {
+    color: '#818CF8',
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  settlingBadge: {
+    backgroundColor: 'rgba(245, 158, 11, 0.15)',
+    borderColor: 'rgba(245, 158, 11, 0.3)',
+    borderWidth: 1,
+    borderRadius: 6,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+  },
+  settlingBadgeText: {
+    color: '#F59E0B',
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  plusMenuOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    justifyContent: 'flex-start',
+    alignItems: 'flex-end',
+    paddingTop: 65,
+    paddingRight: 16,
+  },
+  plusMenuDropdown: {
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingVertical: 6,
+    width: 210,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 10,
+    elevation: 6,
+  },
+  plusMenuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  plusMenuItemText: {
+    fontSize: 14,
+    fontWeight: '600',
   },
 });

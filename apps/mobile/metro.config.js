@@ -55,6 +55,15 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
       type: 'sourceFile',
     };
   }
+  // react-native-incall-manager requires native compilation — provide a no-op
+  // shim in Expo Go / development so metro can bundle without crashing.
+  // In a real device build (EAS), the native module will be available.
+  if (moduleName === 'react-native-incall-manager') {
+    return {
+      filePath: path.resolve(projectRoot, 'src/shims/inCallManagerShim.js'),
+      type: 'sourceFile',
+    };
+  }
   if (typeof defaultResolveRequest === 'function') {
     return defaultResolveRequest(context, moduleName, platform);
   }

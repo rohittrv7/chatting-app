@@ -1,18 +1,21 @@
 import { Controller, Get, ServiceUnavailableException } from '@nestjs/common';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { PrismaService } from '../../database/prisma.service';
+import { Public } from '../../common/decorators/public.decorator';
 
 @ApiTags('Health & Observability')
 @Controller('health')
 export class HealthController {
   constructor(private readonly prisma: PrismaService) {}
 
+  @Public()
   @Get()
   @ApiOperation({ summary: 'Liveness probe endpoint' })
   getLiveness() {
     return { status: 'up', timestamp: new Date().toISOString() };
   }
 
+  @Public()
   @Get('ready')
   @ApiOperation({ summary: 'Readiness probe checking database & service connectivity' })
   async getReadiness() {

@@ -74,6 +74,9 @@ interface ConvRow {
   cleared_history_at: number | null;
   created_at_ms: number;
   updated_at_ms: number;
+  is_split_group?: number;
+  split_expense_id?: string | null;
+  auto_delete_at?: string | null;
 }
 
 // ─── Row → UI type converters ─────────────────────────────────────────────────
@@ -142,21 +145,39 @@ export function convRowToItem(c: ConvRow): ConversationItem {
       })()
     : '';
 
+  const rawTitle = String(c.title || '').trim();
+  const cleanTitle =
+    rawTitle && rawTitle !== 'DIRECT'
+      ? rawTitle
+      : c.recipient_username
+        ? String(c.recipient_username).replace(/^@+/, '')
+        : 'Chat';
+
+  const rawPhone = c.recipient_phone != null ? String(c.recipient_phone).trim() : undefined;
+  const safePhone = rawPhone && !/^\d{13}$/.test(rawPhone) ? rawPhone : undefined;
+
+  const rawLastMsg = c.last_message_text != null ? String(c.last_message_text) : '';
+  const safeUnread =
+    c.unread_count != null && !isNaN(Number(c.unread_count)) ? String(c.unread_count) : '0';
+
   return {
     id: c.server_id,
-    title: c.title || 'Chat',
+    title: cleanTitle,
     username: c.recipient_username || undefined,
-    phone: c.recipient_phone || undefined,
+    phone: safePhone,
     avatarUrl: c.avatar_url || undefined,
     recipientDbId: c.recipient_db_id || undefined,
-    lastMessage: c.last_message_text || '',
+    lastMessage: rawLastMsg,
     time: lastMsgTime,
-    unread: String(c.unread_count),
-    avatar: (c.title || 'C')[0].toUpperCase(),
+    unread: safeUnread,
+    avatar: (cleanTitle || 'C')[0].toUpperCase(),
     lastMessageIsMe: c.last_message_is_me === 1,
     lastMessageStatus: c.last_message_status as any,
     isMuted: c.is_muted === 1,
     isOnline: false, // presence is real-time only, never stored
+    isSplitGroup: c.is_split_group === 1,
+    splitExpenseId: c.split_expense_id || undefined,
+    autoDeleteAt: c.auto_delete_at || undefined,
   };
 }
 
@@ -333,6 +354,9 @@ export async function upsertConversation(data: {
   lastMessageStatus?: string;
   unreadCount?: number;
   isMuted?: boolean;
+  isSplitGroup?: boolean;
+  splitExpenseId?: string;
+  autoDeleteAt?: string;
 }): Promise<void> {
   const db = await getDatabase();
   const now = Date.now();
@@ -341,8 +365,9 @@ export async function upsertConversation(data: {
       server_id, type, title, avatar_url,
       recipient_db_id, recipient_username, recipient_phone,
       last_message_text, last_message_at, last_message_is_me, last_message_status,
-      unread_count, is_muted, created_at_ms, updated_at_ms
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      unread_count, is_muted, created_at_ms, updated_at_ms,
+      is_split_group, split_expense_id, auto_delete_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(server_id) DO UPDATE SET
       title               = COALESCE(excluded.title, title),
       avatar_url          = COALESCE(excluded.avatar_url, avatar_url),
@@ -351,7 +376,10 @@ export async function upsertConversation(data: {
       last_message_is_me  = excluded.last_message_is_me,
       last_message_status = COALESCE(excluded.last_message_status, last_message_status),
       unread_count        = excluded.unread_count,
-      updated_at_ms       = excluded.updated_at_ms`,
+      updated_at_ms       = excluded.updated_at_ms,
+      is_split_group      = COALESCE(excluded.is_split_group, is_split_group),
+      split_expense_id    = COALESCE(excluded.split_expense_id, split_expense_id),
+      auto_delete_at      = COALESCE(excluded.auto_delete_at, auto_delete_at)`,
     [
       data.serverId,
       data.type ?? 'DIRECT',
@@ -368,8 +396,19 @@ export async function upsertConversation(data: {
       data.isMuted ? 1 : 0,
       now,
       now,
+      data.isSplitGroup ? 1 : 0,
+      data.splitExpenseId ?? null,
+      data.autoDeleteAt ?? null,
     ],
   );
+}
+
+export async function deleteLocalConversation(conversationServerId: string): Promise<void> {
+  const db = await getDatabase();
+  await db.runAsync('DELETE FROM messages WHERE conversation_server_id = ?', [
+    conversationServerId,
+  ]);
+  await db.runAsync('DELETE FROM conversations WHERE server_id = ?', [conversationServerId]);
 }
 
 // ─── Read: one-shot ───────────────────────────────────────────────────────────
@@ -379,7 +418,58 @@ export async function getConversations(): Promise<ConversationItem[]> {
   const rows = await db.getAllAsync<ConvRow>(
     `SELECT * FROM conversations ORDER BY last_message_at DESC`,
   );
-  return rows.map(convRowToItem);
+
+  // Group conversations by contact identity to avoid duplicate rows for the same recipient
+  const groupMap = new Map<string, ConvRow[]>();
+  for (const r of rows) {
+    if (r.is_split_group) {
+      groupMap.set(r.server_id, [r]);
+      continue;
+    }
+    const u = (r.recipient_username || '').toLowerCase().replace(/^@+/, '');
+    const p = (r.recipient_phone ? String(r.recipient_phone) : '').replace(/\D/g, '').slice(-10);
+    const dbId = r.recipient_db_id || '';
+    const t = (r.title || '').trim().toLowerCase();
+    const key = dbId || u || p || (t && t !== 'chat' && t !== 'direct' ? t : r.server_id);
+    if (!groupMap.has(key)) groupMap.set(key, []);
+    groupMap.get(key)!.push(r);
+  }
+
+  const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const consolidated: ConvRow[] = [];
+
+  for (const [_, group] of groupMap.entries()) {
+    if (group.length === 1) {
+      consolidated.push(group[0]);
+    } else {
+      // Pick canonical: prefer server UUID, then most recent last_message_at
+      group.sort((a, b) => {
+        const aIsUuid = UUID_REGEX.test(a.server_id) ? 1 : 0;
+        const bIsUuid = UUID_REGEX.test(b.server_id) ? 1 : 0;
+        if (aIsUuid !== bIsUuid) return bIsUuid - aIsUuid;
+        return (Number(b.last_message_at) || 0) - (Number(a.last_message_at) || 0);
+      });
+      const canonical = group[0];
+      consolidated.push(canonical);
+
+      // Asynchronously heal: migrate messages from stale IDs to canonical and remove duplicate row
+      (async () => {
+        try {
+          for (let i = 1; i < group.length; i++) {
+            const stale = group[i];
+            await db.runAsync(
+              'UPDATE messages SET conversation_server_id = ? WHERE conversation_server_id = ?',
+              [canonical.server_id, stale.server_id],
+            );
+            await db.runAsync('DELETE FROM conversations WHERE server_id = ?', [stale.server_id]);
+          }
+        } catch (_) {}
+      })();
+    }
+  }
+
+  consolidated.sort((a, b) => (Number(b.last_message_at) || 0) - (Number(a.last_message_at) || 0));
+  return consolidated.map(convRowToItem);
 }
 
 export async function getMessages(

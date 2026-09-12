@@ -17,6 +17,9 @@ export interface ConversationItem {
   isMuted?: boolean;
   lastMessageStatus?: 'SENDING' | 'SENT' | 'DELIVERED' | 'READ' | 'SERVER_RECEIVED' | 'FAILED';
   lastMessageIsMe?: boolean;
+  isSplitGroup?: boolean;
+  splitExpenseId?: string;
+  autoDeleteAt?: string;
 }
 
 export interface ChatMessage {
@@ -70,9 +73,20 @@ export interface ChatMessage {
   mediaSize?: string;
   isDownloaded?: boolean;
   /** Audio voice message properties */
-  type?: 'TEXT' | 'IMAGE' | 'VIDEO' | 'AUDIO' | 'DOCUMENT' | 'LOCATION' | 'CONTACT' | 'CALL';
+  type?:
+    | 'TEXT'
+    | 'IMAGE'
+    | 'VIDEO'
+    | 'AUDIO'
+    | 'DOCUMENT'
+    | 'LOCATION'
+    | 'CONTACT'
+    | 'CALL'
+    | 'SYSTEM'
+    | 'EXPENSE';
   audioPath?: string;
   audioDurationSeconds?: number;
+  expenseId?: string;
 }
 
 export interface UserProfile {
@@ -95,6 +109,8 @@ export type RootStackParamList = {
     avatarUrl?: string;
     phone?: string;
     recipientDbId?: string;
+    isSplitGroup?: boolean;
+    splitExpenseId?: string;
   };
   Call: {
     callId: string;
@@ -116,4 +132,5 @@ export type RootStackParamList = {
   StorageSettings: undefined;
   HelpSettings: undefined;
   QrCode: undefined;
+  ExpenseHistory: undefined;
 };

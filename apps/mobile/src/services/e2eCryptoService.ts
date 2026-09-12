@@ -17,41 +17,48 @@ import { apiService } from './apiService';
 
 // ─── Encoding helpers (cross-platform Base64 & UTF-8) ─────────────────────────
 
-const CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+const B64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+const B64_LOOKUP = new Uint8Array(256);
+for (let i = 0; i < B64_CHARS.length; i++) {
+  B64_LOOKUP[B64_CHARS.charCodeAt(i)] = i;
+}
 
-function uint8ArrayToBase64(bytes: Uint8Array): string {
+export function uint8ArrayToBase64(bytes: Uint8Array): string {
   let base64 = '';
   const len = bytes.length;
   for (let i = 0; i < len; i += 3) {
-    const b1 = bytes[i];
-    const b2 = i + 1 < len ? bytes[i + 1] : 0;
-    const b3 = i + 2 < len ? bytes[i + 2] : 0;
-
-    const triplet = (b1 << 16) | (b2 << 8) | b3;
-
-    base64 += CHARS[(triplet >> 18) & 63];
-    base64 += CHARS[(triplet >> 12) & 63];
-    base64 += i + 1 < len ? CHARS[(triplet >> 6) & 63] : '=';
-    base64 += i + 2 < len ? CHARS[triplet & 63] : '=';
+    const b0 = bytes[i];
+    const b1 = i + 1 < len ? bytes[i + 1] : 0;
+    const b2 = i + 2 < len ? bytes[i + 2] : 0;
+    base64 += B64_CHARS[b0 >> 2];
+    base64 += B64_CHARS[((b0 & 3) << 4) | (b1 >> 4)];
+    base64 += i + 1 < len ? B64_CHARS[((b1 & 15) << 2) | (b2 >> 6)] : '=';
+    base64 += i + 2 < len ? B64_CHARS[b2 & 63] : '=';
   }
   return base64;
 }
 
-function base64ToUint8Array(base64: string): Uint8Array {
-  const clean = base64.replace(/[^A-Za-z0-9+/]/g, '');
-  const len = clean.length;
-  const placeHolders = base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0;
-  const bytes = new Uint8Array((len * 3) / 4 - placeHolders);
+export function base64ToUint8Array(base64: string): Uint8Array {
+  if (!base64) return new Uint8Array(0);
+  let str = base64.replace(/[\r\n\t ]/g, '');
+  let len = str.length;
+  if (len % 4 !== 0) {
+    str += '='.repeat(4 - (len % 4));
+    len = str.length;
+  }
+  let placeHolders = 0;
+  if (str.endsWith('==')) placeHolders = 2;
+  else if (str.endsWith('=')) placeHolders = 1;
 
+  const bytes = new Uint8Array((len * 3) / 4 - placeHolders);
   let byteIdx = 0;
   for (let i = 0; i < len; i += 4) {
-    const c1 = CHARS.indexOf(clean[i]);
-    const c2 = CHARS.indexOf(clean[i + 1]);
-    const c3 = i + 2 < len ? CHARS.indexOf(clean[i + 2]) : 0;
-    const c4 = i + 3 < len ? CHARS.indexOf(clean[i + 3]) : 0;
+    const c0 = B64_LOOKUP[str.charCodeAt(i)];
+    const c1 = B64_LOOKUP[str.charCodeAt(i + 1)];
+    const c2 = str[i + 2] === '=' ? 0 : B64_LOOKUP[str.charCodeAt(i + 2)];
+    const c3 = str[i + 3] === '=' ? 0 : B64_LOOKUP[str.charCodeAt(i + 3)];
 
-    const triplet = (c1 << 18) | (c2 << 12) | (c3 << 6) | c4;
-
+    const triplet = (c0 << 18) | (c1 << 12) | (c2 << 6) | c3;
     if (byteIdx < bytes.length) bytes[byteIdx++] = (triplet >> 16) & 255;
     if (byteIdx < bytes.length) bytes[byteIdx++] = (triplet >> 8) & 255;
     if (byteIdx < bytes.length) bytes[byteIdx++] = triplet & 255;

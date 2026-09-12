@@ -33,7 +33,12 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as Contacts from 'expo-contacts';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
-import * as MediaLibrary from 'expo-media-library';
+let MediaLibrary: any = null;
+if (Platform.OS !== 'web') {
+  try {
+    MediaLibrary = require('expo-media-library');
+  } catch (_) {}
+}
 
 let Location: any = null;
 try {
@@ -47,6 +52,8 @@ import { SmartAvatar } from '../components/SmartAvatar';
 import { ActiveCallBanner } from '../components/ActiveCallBanner';
 import { ChatInputBar, ChatInputBarRef } from '../components/ChatInputBar';
 import { AudioMessageBubble } from '../components/AudioMessageBubble';
+import { SplitBillModal } from '../components/SplitBillModal';
+import { ExpenseCard, ExpenseSplitData } from '../components/ExpenseCard';
 import { getResolvedDisplayName, getResolvedContact } from '../services/contactsService';
 import nacl from 'tweetnacl';
 import { arrayBufferToBase64, base64ToArrayBuffer } from '../services/signalProtocolStore';
@@ -57,6 +64,7 @@ import {
   MoreVertical,
   Plus,
   Smile,
+  Receipt,
   Mic,
   Send,
   FileText,
@@ -485,6 +493,15 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
   const [contactSearchQuery, setContactSearchQuery] = useState('');
   const [isLoadingContacts, setIsLoadingContacts] = useState(false);
 
+  const [showSplitBillModal, setShowSplitBillModal] = useState(false);
+  const [showExpenseDetailsModal, setShowExpenseDetailsModal] = useState(false);
+  const [activeExpenseData, setActiveExpenseData] = useState<ExpenseSplitData | null>(null);
+  const isSplitGroup = Boolean(
+    (route.params as any)?.isSplitGroup ||
+    route.params.title?.endsWith(' - Split') ||
+    route.params.title?.toLowerCase().includes('split'),
+  );
+
   const flatListRef = useRef<FlatList>(null);
   const chatInputBarRef = useRef<ChatInputBarRef>(null);
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -585,13 +602,24 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
     const reduxMsgs = [
       ...(messagesMap[conversationId] || []),
       ...(resolvedConvId !== conversationId ? messagesMap[resolvedConvId] || [] : []),
-    ].filter((m) => m.status === 'SENDING' || m.status === 'FAILED');
+    ];
 
-    // Merge: SQLite is source of truth; Redux SENDING/FAILED overlay for optimistic UI
+    // Merge: SQLite has persistent records, Redux has real-time updates (like message:ack / status)
     const merged = new Map<string, ChatMessage>();
     for (const m of localMessages) merged.set(m.id, m);
     for (const m of reduxMsgs) {
-      if (!merged.has(m.id)) merged.set(m.id, m); // only add if not yet in DB
+      if (m?.id) {
+        const existing = merged.get(m.id);
+        if (existing) {
+          // If Redux has confirmed delivery/sent, let that take precedence over stale SQLite SENDING
+          merged.set(m.id, {
+            ...existing,
+            status: m.status !== 'SENDING' ? m.status : existing.status,
+          });
+        } else {
+          merged.set(m.id, m);
+        }
+      }
     }
     return Array.from(merged.values()).sort((a, b) => {
       const tA = a.createdAtMs || (a.createdAt ? new Date(a.createdAt).getTime() : 0);
@@ -599,6 +627,79 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
       return tA - tB;
     });
   }, [localMessages, messagesMap, conversationId, resolvedConvId]);
+
+  // ─── Ref to always have fresh activeExpenseData in socket callbacks ─────
+  // The stale closure bug: socket listeners registered in useEffect capture
+  // activeExpenseData at registration time. If it's null then, the 'if (activeExpenseData &&...)'
+  // check always fails and live updates are silently dropped.
+  // Fix: use a ref that always points to the current value.
+  const activeExpenseDataRef = useRef<ExpenseSplitData | null>(null);
+  activeExpenseDataRef.current = activeExpenseData;
+
+  useEffect(() => {
+    let isMounted = true;
+    async function loadExpense() {
+      if (!token) return;
+      if ((route.params as any)?.splitExpenseId) {
+        const res = await apiService.getExpenseById(token, (route.params as any).splitExpenseId);
+        if (isMounted && res.success && res.data) {
+          setActiveExpenseData(res.data);
+          return;
+        }
+      }
+      const msgWithExpense = roomMessages.find(
+        (m) => (m as any).expenseId || (m.ciphertexts as any)?.expenseId,
+      );
+      const expId =
+        (msgWithExpense as any)?.expenseId || (msgWithExpense?.ciphertexts as any)?.expenseId;
+      if (expId) {
+        const res = await apiService.getExpenseById(token, expId);
+        if (isMounted && res.success && res.data) {
+          setActiveExpenseData(res.data);
+          return;
+        }
+      }
+      if (isSplitGroup) {
+        const historyRes = await apiService.getExpenseHistory(token);
+        if (isMounted && historyRes.success && historyRes.data) {
+          const list = (historyRes.data as any).splits || [];
+          const match = list.find(
+            (s: any) => s.splitGroupId === conversationId || s.conversationId === conversationId,
+          );
+          if (match) setActiveExpenseData(match);
+        }
+      }
+    }
+    loadExpense();
+
+    // FIX: Use ref instead of captured state value to avoid stale closure.
+    // Previously: if (activeExpenseData && ...) — always false when expense loaded
+    //   AFTER this effect registered the listener.
+    // Now: activeExpenseDataRef.current is always the live value.
+    const onExpenseUpdated = (data: any) => {
+      const current = activeExpenseDataRef.current;
+      const targetId = data.expenseId || data.id;
+      if (targetId && token) {
+        // If we have expense data and it matches, refresh it
+        // If we have NO expense data yet but the event matches our conversation, load it
+        if (!current || current.id === targetId) {
+          apiService.getExpenseById(token, targetId).then((res) => {
+            if (isMounted && res.success && res.data) setActiveExpenseData(res.data);
+          });
+        }
+      }
+    };
+    const onExpenseSettled = onExpenseUpdated; // same logic
+
+    socketService.on('expense:updated', onExpenseUpdated);
+    socketService.on('expense:settled', onExpenseSettled);
+
+    return () => {
+      isMounted = false;
+      socketService.off('expense:updated', onExpenseUpdated);
+      socketService.off('expense:settled', onExpenseSettled);
+    };
+  }, [conversationId, token, isSplitGroup, roomMessages.length]);
 
   // ── Scroll to bottom on new messages ──────────────────────────────────────
   useEffect(() => {
@@ -643,24 +744,22 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
         )?.replace(/^@+/, '');
 
         if (handle) {
-          // Fire-and-forget: resolve in background, subsequent sends will have the UUID
-          apiService
-            .searchUsers(token, handle)
-            .then((results) => {
-              const match =
-                results.find(
-                  (u) =>
-                    (u.username &&
-                      u.username.toLowerCase().replace(/^@+/, '') === handle.toLowerCase()) ||
-                    (u.phoneNumber &&
-                      u.phoneNumber.replace(/\D/g, '') === handle.replace(/\D/g, '')) ||
-                    (u.name && u.name.toLowerCase() === title.toLowerCase()),
-                ) || results[0];
-              if (match?.id) {
-                setResolvedRecipientId(match.id);
-              }
-            })
-            .catch(() => {});
+          try {
+            const results = await apiService.searchUsers(token, handle);
+            const match =
+              results.find(
+                (u) =>
+                  (u.username &&
+                    u.username.toLowerCase().replace(/^@+/, '') === handle.toLowerCase()) ||
+                  (u.phoneNumber &&
+                    u.phoneNumber.replace(/\D/g, '') === handle.replace(/\D/g, '')) ||
+                  (u.name && u.name.toLowerCase() === title.toLowerCase()),
+              ) || results[0];
+            if (match?.id) {
+              targetId = match.id;
+              setResolvedRecipientId(match.id);
+            }
+          } catch (_) {}
         }
       }
 
@@ -1407,7 +1506,7 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
             </TouchableOpacity>
           );
         if (msg.status === 'READ')
-          return <CheckCheck size={14} color="#38BDF8" style={{ marginLeft: 4 }} />;
+          return <CheckCheck size={14} color="#2ABCB0" style={{ marginLeft: 4 }} />;
         if (msg.status === 'DELIVERED')
           return <CheckCheck size={14} color="rgba(255,255,255,0.85)" style={{ marginLeft: 4 }} />;
         return <Check size={14} color="rgba(255,255,255,0.6)" style={{ marginLeft: 4 }} />;
@@ -1613,7 +1712,7 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
                           <TouchableOpacity
                             activeOpacity={0.9}
                             onPress={() => setSelectedPhotoMsg(msg)}
-                            style={StyleSheet.absoluteFillObject}
+                            style={StyleSheet.absoluteFill}
                           />
                         )}
                         {/* File size badge — shown after upload completes */}
@@ -2013,7 +2112,7 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
 
                 {/* Message text */}
                 {msg.text?.trim() ? (
-                  <Text style={[styles.msgText, { color: isMe ? '#FFF' : colors.textPrimary }]}>
+                  <Text style={[styles.msgText, { color: isMe ? '#F5DDD0' : colors.textPrimary }]}>
                     {msg.text}
                   </Text>
                 ) : null}
@@ -2107,7 +2206,13 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
 
           <TouchableOpacity
             style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}
-            onPress={() => setShowUserProfileModal(true)}
+            onPress={() => {
+              if (isSplitGroup) {
+                setShowExpenseDetailsModal(true);
+              } else {
+                setShowUserProfileModal(true);
+              }
+            }}
             activeOpacity={0.7}
           >
             <View style={styles.avatarWrapper}>
@@ -2130,9 +2235,16 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
               )}
             </View>
             <View style={{ marginLeft: 10, flex: 1 }}>
-              <Text style={[styles.headerTitle, { color: colors.textPrimary }]} numberOfLines={1}>
-                {resolvedDisplayName}
-              </Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Text style={[styles.headerTitle, { color: colors.textPrimary }]} numberOfLines={1}>
+                  {resolvedDisplayName}
+                </Text>
+                {isSplitGroup && (
+                  <View style={styles.splitGroupBadge}>
+                    <Text style={styles.splitGroupBadgeText}>Split Group</Text>
+                  </View>
+                )}
+              </View>
               {displayStatus ? (
                 <Text
                   style={{
@@ -2172,6 +2284,54 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
           </TouchableOpacity>
         </View>
       </View>
+
+      {/* ── Pinned Expense Banner ── */}
+      {activeExpenseData && (
+        <TouchableOpacity
+          style={[
+            styles.pinnedExpenseBanner,
+            {
+              backgroundColor: themeMode === 'dark' ? '#1E1A14' : '#FEF3ED',
+              borderColor: activeExpenseData.status === 'SETTLED' ? '#10B981' : colors.cardBorder,
+            },
+          ]}
+          onPress={() => setShowExpenseDetailsModal(true)}
+          activeOpacity={0.8}
+        >
+          <View
+            style={[
+              styles.pinnedExpenseIconBox,
+              {
+                backgroundColor:
+                  activeExpenseData.status === 'SETTLED'
+                    ? 'rgba(16,185,129,0.15)'
+                    : 'rgba(99,102,241,0.15)',
+              },
+            ]}
+          >
+            <Receipt
+              size={16}
+              color={activeExpenseData.status === 'SETTLED' ? '#10B981' : colors.primaryIndigo}
+            />
+          </View>
+          <View style={{ flex: 1, marginHorizontal: 8 }}>
+            <Text
+              style={[styles.pinnedExpenseTitle, { color: colors.textPrimary }]}
+              numberOfLines={1}
+            >
+              {activeExpenseData.title} • ₹{Number(activeExpenseData.totalAmount).toFixed(2)}
+            </Text>
+            <Text style={[styles.pinnedExpenseSub, { color: colors.textSecondary }]}>
+              {activeExpenseData.status === 'SETTLED'
+                ? '🎉 All Settled • Auto-deletes in 24h'
+                : `${activeExpenseData.participants?.filter((p) => p.isPaid).length || 0} of ${activeExpenseData.participants?.length || 0} paid`}
+            </Text>
+          </View>
+          <Text style={[styles.pinnedExpenseAction, { color: colors.primaryIndigo }]}>
+            Hisaab &gt;
+          </Text>
+        </TouchableOpacity>
+      )}
 
       {/* ── Secure Storage Alert Banner (graceful UI handling) ── */}
       {secureStorageError && (
@@ -2343,6 +2503,19 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
                 <MapPin size={22} color="#10B981" />
               </View>
               <Text style={[styles.attachLabel, { color: colors.textSecondary }]}>Location</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.attachItem}
+              onPress={() => {
+                setShowAttachMenu(false);
+                setShowSplitBillModal(true);
+              }}
+            >
+              <View style={[styles.attachIcon, { backgroundColor: 'rgba(99,102,241,0.15)' }]}>
+                <Receipt size={22} color={colors.primaryIndigo} />
+              </View>
+              <Text style={[styles.attachLabel, { color: colors.textSecondary }]}>Split Bill</Text>
             </TouchableOpacity>
           </View>
         )}
@@ -2741,7 +2914,7 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
                 style={[
                   styles.profileHeroStatus,
                   {
-                    color: isTargetOnline ? '#10B981' : colors.textSecondary,
+                    color: isTargetOnline ? '#2ABCB0' : colors.textSecondary,
                     marginTop: 4,
                   },
                 ]}
@@ -2883,6 +3056,32 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
               <User size={18} color={colors.primaryIndigo} />
               <Text style={[styles.menuItemText, { color: colors.textPrimary }]}>Contact Info</Text>
             </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={() => {
+                setShowMoreMenuModal(false);
+                setShowSplitBillModal(true);
+              }}
+            >
+              <Receipt size={18} color="#10B981" />
+              <Text style={[styles.menuItemText, { color: colors.textPrimary }]}>
+                Split an expense
+              </Text>
+            </TouchableOpacity>
+            {activeExpenseData && (
+              <TouchableOpacity
+                style={styles.menuItem}
+                onPress={() => {
+                  setShowMoreMenuModal(false);
+                  setShowExpenseDetailsModal(true);
+                }}
+              >
+                <Receipt size={18} color={colors.primaryIndigo} />
+                <Text style={[styles.menuItemText, { color: colors.textPrimary }]}>
+                  Expense Details (Hisaab)
+                </Text>
+              </TouchableOpacity>
+            )}
             <TouchableOpacity
               style={styles.menuItem}
               onPress={() => {
@@ -3139,6 +3338,87 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
             />
           )}
         </SafeAreaView>
+      </Modal>
+
+      {/* ── Split Bill Modal ── */}
+      <SplitBillModal
+        visible={showSplitBillModal}
+        onClose={() => setShowSplitBillModal(false)}
+        conversationId={isSplitGroup ? undefined : conversationId}
+        defaultParticipants={[
+          {
+            id: effectiveRecipientId || recipientDbId || 'recipient',
+            name: resolvedDisplayName,
+            phone: route.params?.phone,
+            username: route.params?.username,
+          },
+        ]}
+        availableContacts={availablePhoneContacts}
+        onSuccess={(createdData) => {
+          showToast('Expense split created! 💰', 'success');
+          const exp = createdData.expense || createdData;
+          setActiveExpenseData(exp);
+          const newGroupId = createdData.conversationId || exp.splitGroupId;
+          if (newGroupId && newGroupId !== conversationId) {
+            navigation.navigate('Chat', {
+              conversationId: newGroupId,
+              title: exp.title ? `${exp.title} - Split` : 'Bill Split',
+              isSplitGroup: true,
+              splitExpenseId: exp.id,
+            });
+          } else {
+            setShowExpenseDetailsModal(true);
+          }
+        }}
+        colors={colors}
+      />
+
+      {/* ── Expense Details Modal ── */}
+      <Modal
+        visible={showExpenseDetailsModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowExpenseDetailsModal(false)}
+      >
+        <View style={styles.menuOverlay}>
+          <View
+            style={[
+              styles.expenseModalCard,
+              { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+            ]}
+          >
+            <View style={styles.expenseModalHeader}>
+              <Text style={[styles.expenseModalTitle, { color: colors.textPrimary }]}>
+                {isSplitGroup ? 'Split Group Info & Hisaab' : 'Expense Details'}
+              </Text>
+              <TouchableOpacity
+                onPress={() => setShowExpenseDetailsModal(false)}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <X size={20} color={colors.textSecondary} />
+              </TouchableOpacity>
+            </View>
+            <ScrollView contentContainerStyle={{ paddingBottom: 20 }}>
+              {activeExpenseData ? (
+                <ExpenseCard
+                  expense={activeExpenseData}
+                  onUpdated={(updated) => setActiveExpenseData(updated)}
+                  onDeleted={() => {
+                    setShowExpenseDetailsModal(false);
+                    navigation.goBack();
+                  }}
+                />
+              ) : (
+                <View style={{ padding: 24, alignItems: 'center' }}>
+                  <ActivityIndicator size="small" color={colors.primaryIndigo} />
+                  <Text style={{ marginTop: 8, color: colors.textSecondary }}>
+                    Loading expense details...
+                  </Text>
+                </View>
+              )}
+            </ScrollView>
+          </View>
+        </View>
       </Modal>
 
       {/* ── Location Picker Modal ───────────────────────────────────────── */}
@@ -3405,7 +3685,7 @@ const styles = StyleSheet.create({
     borderRadius: 5,
     borderWidth: 2,
   },
-  headerTitle: { fontSize: 16, fontWeight: '700' },
+  headerTitle: { fontSize: 15, fontWeight: '600' },
   headerSubtitle: { fontSize: 12, marginTop: 1 },
   headerActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   actionBtn: { padding: 6 },
@@ -3452,7 +3732,7 @@ const styles = StyleSheet.create({
     shadowRadius: 2,
     elevation: 1,
   },
-  bubbleMe: { backgroundColor: '#6366F1', borderBottomRightRadius: 4 },
+  bubbleMe: { backgroundColor: '#2D1A10', borderBottomRightRadius: 4 },
   bubbleOther: { borderBottomLeftRadius: 4, borderWidth: 1 },
   msgText: { fontSize: 15, lineHeight: 21, marginTop: 2 },
   bubbleFooter: {
@@ -3517,7 +3797,7 @@ const styles = StyleSheet.create({
   imageBubbleTouch: { position: 'relative', borderRadius: 14, overflow: 'hidden', minHeight: 180 },
   chatImageBubble: { width: 230, height: 210, borderRadius: 14 },
   mediaCenterOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 10,
@@ -3533,7 +3813,7 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(37, 211, 102, 0.6)',
   },
   mediaCancelBtn: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -4016,7 +4296,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   mapGridPattern: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -4384,6 +4664,86 @@ const styles = StyleSheet.create({
   reportSubmitBtnText: {
     color: '#FFF',
     fontSize: 14,
+    fontWeight: '700',
+  },
+  splitGroupBadge: {
+    backgroundColor: 'rgba(99, 102, 241, 0.15)',
+    borderColor: 'rgba(99, 102, 241, 0.3)',
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+  },
+  splitGroupBadgeText: {
+    color: '#818CF8',
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  pinnedExpenseBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+  },
+  pinnedExpenseIconBox: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  pinnedExpenseTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  pinnedExpenseSub: {
+    fontSize: 11,
+  },
+  pinnedExpenseAction: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  systemMsgContainer: {
+    alignItems: 'center',
+    marginVertical: 8,
+    paddingHorizontal: 16,
+  },
+  systemMsgPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    maxWidth: '92%',
+  },
+  systemMsgText: {
+    fontSize: 12,
+    fontWeight: '500',
+    flex: 1,
+  },
+  systemMsgTap: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  expenseModalCard: {
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    borderWidth: 1,
+    maxHeight: '85%',
+    padding: 16,
+    width: '100%',
+  },
+  expenseModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  expenseModalTitle: {
+    fontSize: 18,
     fontWeight: '700',
   },
 });

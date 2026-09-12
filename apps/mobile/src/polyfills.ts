@@ -121,3 +121,21 @@ if (typeof global !== 'undefined') {
   // Assign to global
   (global as any).TextDecoder = SafeTextDecoder;
 }
+
+// MediaStream toURL polyfill for web/React Native environments
+if (typeof (globalThis as any).MediaStream !== 'undefined') {
+  const MS = (globalThis as any).MediaStream;
+  if (MS && MS.prototype && !MS.prototype.toURL) {
+    MS.prototype.toURL = function () {
+      return '';
+    };
+  }
+}
+if (typeof window !== 'undefined' && (window as any).MediaStream) {
+  const WMS = (window as any).MediaStream;
+  if (WMS && WMS.prototype && !WMS.prototype.toURL) {
+    WMS.prototype.toURL = function () {
+      return '';
+    };
+  }
+}

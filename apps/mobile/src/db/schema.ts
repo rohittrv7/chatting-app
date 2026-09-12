@@ -9,9 +9,10 @@
  * MIGRATION_STEPS when you add columns or tables:
  *
  *   v1 (initial) — conversations, messages, reactions tables
+ *   v2 (split-group) — is_split_group, split_expense_id, auto_delete_at columns on conversations
  */
 
-export const DB_SCHEMA_VERSION = 1;
+export const DB_SCHEMA_VERSION = 2;
 
 /**
  * Full schema DDL — executed on fresh install (no existing DB).
@@ -38,7 +39,10 @@ CREATE TABLE IF NOT EXISTS conversations (
   is_muted         INTEGER NOT NULL DEFAULT 0,
   cleared_history_at INTEGER,
   created_at_ms    INTEGER NOT NULL DEFAULT 0,
-  updated_at_ms    INTEGER NOT NULL DEFAULT 0
+  updated_at_ms    INTEGER NOT NULL DEFAULT 0,
+  is_split_group   INTEGER NOT NULL DEFAULT 0,
+  split_expense_id TEXT,
+  auto_delete_at   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_conv_server_id      ON conversations(server_id);
 CREATE INDEX IF NOT EXISTS idx_conv_recipient_db_id ON conversations(recipient_db_id);
@@ -95,10 +99,11 @@ CREATE INDEX IF NOT EXISTS idx_reaction_message_id ON reactions(message_id);
  * Per-version migration steps.
  * Key = target version number; value = SQL to run when upgrading FROM (version-1) TO version.
  * Add a new entry here (and bump DB_SCHEMA_VERSION) whenever you change the schema.
- *
- * Example for v2:
- *   2: `ALTER TABLE messages ADD COLUMN forwarded_from TEXT;`
  */
 export const MIGRATION_STEPS: Record<number, string> = {
-  // v1 is the full schema — no prior version to migrate from
+  2: `
+    ALTER TABLE conversations ADD COLUMN is_split_group INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE conversations ADD COLUMN split_expense_id TEXT;
+    ALTER TABLE conversations ADD COLUMN auto_delete_at TEXT;
+  `,
 };

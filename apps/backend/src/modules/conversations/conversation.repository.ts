@@ -21,7 +21,14 @@ export class ConversationRepository {
         members: {
           include: {
             user: {
-              select: { id: true, phoneNumber: true, displayName: true, avatarUrl: true },
+              select: {
+                id: true,
+                phoneNumber: true,
+                displayName: true,
+                username: true,
+                avatarUrl: true,
+                about: true,
+              },
             },
           },
         },
@@ -46,7 +53,14 @@ export class ConversationRepository {
         members: {
           include: {
             user: {
-              select: { id: true, phoneNumber: true, displayName: true, avatarUrl: true },
+              select: {
+                id: true,
+                phoneNumber: true,
+                displayName: true,
+                username: true,
+                avatarUrl: true,
+                about: true,
+              },
             },
           },
         },
@@ -75,7 +89,14 @@ export class ConversationRepository {
         members: {
           include: {
             user: {
-              select: { id: true, phoneNumber: true, displayName: true, avatarUrl: true },
+              select: {
+                id: true,
+                phoneNumber: true,
+                displayName: true,
+                username: true,
+                avatarUrl: true,
+                about: true,
+              },
             },
           },
         },
@@ -107,7 +128,7 @@ export class ConversationRepository {
 
     const targetUserId = dbUser?.id || userId;
 
-    return this.prisma.conversation.findMany({
+    const rows = await this.prisma.conversation.findMany({
       where: {
         members: {
           some: { userId: targetUserId },
@@ -143,6 +164,21 @@ export class ConversationRepository {
       },
       orderBy: { updatedAt: 'desc' },
     });
+
+    // For DIRECT conversations, derive a human-readable title from the other member's
+    // displayName or username so the mobile never shows the raw enum string "DIRECT".
+    return rows.map((conv) => {
+      if (conv.type !== 'DIRECT' || (conv.title && conv.title !== 'DIRECT')) return conv;
+
+      const otherMember = conv.members.find((m) => m.userId !== targetUserId);
+      const derivedTitle =
+        otherMember?.user?.displayName ||
+        otherMember?.user?.username ||
+        otherMember?.user?.phoneNumber ||
+        null;
+
+      return { ...conv, title: derivedTitle };
+    });
   }
 
   async findConversationById(conversationId: string) {
@@ -152,7 +188,14 @@ export class ConversationRepository {
         members: {
           include: {
             user: {
-              select: { id: true, phoneNumber: true, displayName: true, avatarUrl: true },
+              select: {
+                id: true,
+                phoneNumber: true,
+                displayName: true,
+                username: true,
+                avatarUrl: true,
+                about: true,
+              },
             },
           },
         },

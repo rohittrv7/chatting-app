@@ -34,18 +34,55 @@ import {
   MoreVertical,
 } from 'lucide-react-native';
 // Safe dynamic RTCView component
-const SafeRTCView: React.FC<any> = (props) => {
+const SafeRTCView: React.FC<any> = ({
+  streamURL,
+  style,
+  mirror,
+  objectFit = 'cover',
+  ...props
+}) => {
+  if (Platform.OS === 'web') {
+    const videoRef = React.useRef<any>(null);
+    React.useEffect(() => {
+      if (videoRef.current && streamURL && typeof streamURL === 'object') {
+        videoRef.current.srcObject = streamURL;
+      }
+    }, [streamURL]);
+    return React.createElement('video', {
+      ref: videoRef,
+      autoPlay: true,
+      playsInline: true,
+      muted: true,
+      style: {
+        width: '100%',
+        height: '100%',
+        objectFit,
+        transform: mirror ? 'scaleX(-1)' : undefined,
+        ...style,
+      },
+      ...props,
+    });
+  }
   try {
     const webrtc = require('react-native-webrtc');
     const NativeRTCView = webrtc?.RTCView;
     if (NativeRTCView) {
-      return <NativeRTCView {...props} />;
+      const urlStr = typeof streamURL === 'string' ? streamURL : (streamURL?.toURL?.() ?? '');
+      return (
+        <NativeRTCView
+          streamURL={urlStr}
+          style={style}
+          mirror={mirror}
+          objectFit={objectFit}
+          {...props}
+        />
+      );
     }
   } catch (_) {}
   return (
     <View
       style={[
-        props.style,
+        style,
         { backgroundColor: '#0B1014', justifyContent: 'center', alignItems: 'center' },
       ]}
     >
@@ -510,8 +547,8 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
               <View style={styles.remoteVideoWrapper}>
                 <SafeRTCView
                   key={`remote-stream-${remoteStreamVersion}`}
-                  streamURL={remoteStream!.toURL()}
-                  style={StyleSheet.absoluteFillObject}
+                  streamURL={remoteStream?.toURL?.() ?? ''}
+                  style={StyleSheet.absoluteFill}
                   objectFit="cover"
                   zOrder={0}
                   mirror={false}
@@ -544,7 +581,7 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
             <View style={styles.pipContainer}>
               <SafeRTCView
                 key={`local-stream-${localStreamVersion}`}
-                streamURL={localStream!.toURL()}
+                streamURL={localStream?.toURL?.() ?? ''}
                 style={styles.pipCamera}
                 objectFit="cover"
                 zOrder={1}
@@ -673,18 +710,18 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
             {renderAudioRouteIcon(
               22,
               audioStatus.selectedDevice === 'BLUETOOTH'
-                ? '#3B82F6'
+                ? '#2ABCB0'
                 : isSpeakerOn
-                  ? '#10B981'
+                  ? '#2ABCB0'
                   : '#F8FAFC',
             )}
             <Text
               style={[
                 styles.controlLabel,
                 audioStatus.selectedDevice === 'BLUETOOTH'
-                  ? { color: '#3B82F6' }
+                  ? { color: '#2ABCB0' }
                   : isSpeakerOn
-                    ? { color: '#10B981' }
+                    ? { color: '#2ABCB0' }
                     : null,
               ]}
             >
@@ -699,11 +736,11 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
             activeOpacity={0.7}
           >
             {isVideo ? (
-              <VideoIcon size={22} color="#3B82F6" />
+              <VideoIcon size={22} color="#2ABCB0" />
             ) : (
               <VideoOff size={22} color="#94A3B8" />
             )}
-            <Text style={[styles.controlLabel, isVideo && { color: '#3B82F6' }]}>
+            <Text style={[styles.controlLabel, isVideo && { color: '#2ABCB0' }]}>
               {isVideo ? 'Video On' : 'Video'}
             </Text>
           </TouchableOpacity>
@@ -1065,14 +1102,14 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(239, 68, 68, 0.4)',
   },
   controlBtnActiveGreen: {
-    backgroundColor: 'rgba(16, 185, 129, 0.2)',
+    backgroundColor: 'rgba(42, 188, 176, 0.2)',
     borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.4)',
+    borderColor: 'rgba(42, 188, 176, 0.4)',
   },
   controlBtnActiveBlue: {
-    backgroundColor: 'rgba(59, 130, 246, 0.2)',
+    backgroundColor: 'rgba(42, 188, 176, 0.2)',
     borderWidth: 1,
-    borderColor: 'rgba(59, 130, 246, 0.4)',
+    borderColor: 'rgba(42, 188, 176, 0.4)',
   },
   controlLabel: {
     fontSize: 10,
@@ -1127,7 +1164,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   remoteOverlayDuration: {
-    color: '#10B981',
+    color: '#2ABCB0',
     fontSize: 11,
     fontWeight: '600',
     marginTop: 2,

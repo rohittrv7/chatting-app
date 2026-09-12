@@ -43,6 +43,8 @@ import {
 } from '../store/authSlice';
 import { safeStorage } from '../services/storageHelper';
 import { ConversationItem, ChatMessage, UserProfile } from '../types';
+import { deleteLocalConversation } from '../db/localDb';
+import { useToast } from './ToastContext';
 import { soundService } from '../services/soundService';
 import * as FileSystem from 'expo-file-system/legacy';
 import {
@@ -262,6 +264,7 @@ export const TypingContext = createContext<TypingContextType>({
 
 export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const dispatch = useDispatch();
+  const { showToast } = useToast();
   const { conversations, messagesMap, activeConversationId } = useSelector(
     (state: RootState) => state.chat,
   );
@@ -299,6 +302,25 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const lastConvsSyncTimeRef = useRef(0);
   const loadedHistoricalConvsRef = useRef<Set<string>>(new Set());
   const loadingHistoricalConvsRef = useRef<Set<string>>(new Set());
+  /**
+   * Guards to prevent the [token] useEffect storm on every token rotation.
+   *
+   * - hasInitializedRef: true once the first login sync (conversations + contacts +
+   *   notifications) has been completed. Subsequent token updates (e.g. silent refresh
+   *   every 15 min) MUST NOT repeat these calls — they flood the backend with
+   *   simultaneous GET /conversations + POST /keys/register + GET /auth/users/blocked
+   *   which triggers 429 ThrottlerException.
+   *
+   * - hasRegisteredKeysRef: true once E2EE nacl.box public key has been successfully
+   *   uploaded to /keys/register. Key material doesn't change during a session —
+   *   re-registering on every token refresh is wasted bandwidth and causes 422/429.
+   *
+   * - prevTokenRef: stores the previous token to detect true login (null→value)
+   *   vs. silent refresh (value→different-value). Only null→value should trigger full init.
+   */
+  const hasInitializedRef = useRef(false);
+  const hasRegisteredKeysRef = useRef(false);
+  const prevTokenRef = useRef<string | null>(null);
 
   conversationsRef.current = conversations;
   activeConvIdRef.current = activeConversationId;
@@ -308,8 +330,23 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
   authUserIdRef.current = effectiveUserId;
 
   // ─── Fetch initial Blocked Users list from server on login ───────────────
+  // Only fetch once per login session (null → value token transition).
+  // Subsequent blocked/unblocked changes arrive via socket events (user:blocked,
+  // user:unblocked) which are already handled below — no need to re-fetch on
+  // every silent token refresh.
   useEffect(() => {
-    if (!token) return;
+    if (!token) {
+      // Token cleared = logout → reset guard so next login re-fetches
+      hasInitializedRef.current = false;
+      hasRegisteredKeysRef.current = false;
+      prevTokenRef.current = null;
+      return;
+    }
+    // Only fire on true login (previous token was null/empty)
+    const isFirstLogin = !prevTokenRef.current;
+    prevTokenRef.current = token;
+    if (!isFirstLogin) return;
+
     apiService
       .getBlockedUsers(token)
       .then((users) => {
@@ -346,16 +383,46 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const onDeviceAdded = (_data: { userId: string; deviceId: number }) => {};
 
+    const onConversationDeleted = async (data: {
+      conversationId?: string;
+      reason?: string;
+      expenseTitle?: string;
+    }) => {
+      if (data?.conversationId) {
+        await deleteLocalConversation(data.conversationId);
+        dispatch(removeConversation({ conversationId: data.conversationId }));
+        showToast(
+          data.expenseTitle
+            ? `Split group "${data.expenseTitle}" settled and auto-removed.`
+            : 'Temporary split group was removed.',
+          'info',
+          4000,
+        );
+      }
+    };
+
+    const onExpenseSettled = (_data: {
+      expenseId?: string;
+      conversationId?: string;
+      autoDeleteAt?: string;
+    }) => {
+      showToast('This split is settled — the group will auto-delete in 24 hours', 'success', 5000);
+    };
+
     socketService.on('user:blocked', onUserBlocked);
     socketService.on('user:unblocked', onUserUnblocked);
     socketService.on('device:added' as any, onDeviceAdded);
+    socketService.on('conversation:deleted' as any, onConversationDeleted);
+    socketService.on('expense:settled' as any, onExpenseSettled);
 
     return () => {
       socketService.off('user:blocked', onUserBlocked);
       socketService.off('user:unblocked', onUserUnblocked);
       socketService.off('device:added' as any, onDeviceAdded);
+      socketService.off('conversation:deleted' as any, onConversationDeleted);
+      socketService.off('expense:settled' as any, onExpenseSettled);
     };
-  }, []);
+  }, [dispatch, showToast]);
 
   // ─── Register tokensRefreshed callback ONCE so any refreshAuthToken() call
   //     automatically updates Redux → triggers socket reconnect via [token] dep
@@ -417,9 +484,26 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   // ─── On login: sync server conversations, contacts + register E2EE keys ──
+  // GUARD: hasInitializedRef ensures this only runs on true login (token goes
+  // from null/undefined → a real value). Silent token refreshes (value → new value)
+  // must NOT re-trigger this — that causes a 429 storm of simultaneous API calls
+  // to /conversations, /keys/register, /auth/users/blocked within milliseconds.
 
   useEffect(() => {
     if (!token) return;
+
+    // prevTokenRef tracks the previous value. If it was already a non-empty string,
+    // this is a token rotation not a fresh login — skip expensive init calls.
+    const wasAlreadyLoggedIn = hasInitializedRef.current;
+    if (wasAlreadyLoggedIn) {
+      // On token rotation we only need to ensure the socket reconnects (handled
+      // by the [token, effectiveUserId] effect below). Nothing else needed.
+      return;
+    }
+
+    // Mark initialized so subsequent token changes skip this block.
+    hasInitializedRef.current = true;
+
     syncServerConversations();
     syncContactsWithBackend(token)
       .then((res) => {
@@ -443,8 +527,12 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       })
       .catch(() => {});
 
-    // Register / refresh E2EE nacl.box public key with backend once per login
-    e2eCryptoService.registerPublicKeyWithBackend(token).catch(() => {});
+    // Register E2EE nacl.box public key once per app session — key material doesn't
+    // change during a session so re-registering on every token refresh is wasteful.
+    if (!hasRegisteredKeysRef.current) {
+      hasRegisteredKeysRef.current = true;
+      e2eCryptoService.registerPublicKeyWithBackend(token).catch(() => {});
+    }
 
     // Initialize push notifications — request permission, get FCM token, upload to backend
     notificationService.init(token).catch(() => {});
@@ -559,7 +647,27 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (pending.length === 0) continue;
 
       const conv = convs.find((c) => c.id === cId);
-      const receiverId = conv?.recipientDbId;
+      let receiverId = conv?.recipientDbId;
+      if (!receiverId || !UUID_RE.test(receiverId)) {
+        const handle = (conv?.username || conv?.title || '').replace(/^@+/, '');
+        const tok = tokenRef.current;
+        if (handle && tok) {
+          try {
+            const results = await apiService.searchUsers(tok, handle);
+            const match =
+              results.find(
+                (u: any) =>
+                  (u.username &&
+                    u.username.toLowerCase().replace(/^@+/, '') === handle.toLowerCase()) ||
+                  (u.name && u.name.toLowerCase() === handle.toLowerCase()),
+              ) || results[0];
+            if (match?.id && UUID_RE.test(match.id)) {
+              receiverId = match.id;
+              if (conv) conv.recipientDbId = match.id;
+            }
+          } catch (_) {}
+        }
+      }
       if (!receiverId || !UUID_RE.test(receiverId)) continue;
 
       for (const msg of pending) {
@@ -721,17 +829,22 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       status: 'DELIVERED',
       createdAtMs: payload.createdAt ? new Date(payload.createdAt).getTime() : Date.now(),
       createdAt: payload.createdAt || now.toISOString(),
-      type: isAudioMsg
-        ? 'AUDIO'
-        : payload.imagePath
-          ? 'IMAGE'
-          : payload.location
-            ? 'LOCATION'
-            : payload.document
-              ? 'DOCUMENT'
-              : payload.contact
-                ? 'CONTACT'
-                : 'TEXT',
+      type:
+        payload.type === 'SYSTEM'
+          ? 'SYSTEM'
+          : payload.type === 'EXPENSE'
+            ? 'EXPENSE'
+            : isAudioMsg
+              ? 'AUDIO'
+              : payload.imagePath
+                ? 'IMAGE'
+                : payload.location
+                  ? 'LOCATION'
+                  : payload.document
+                    ? 'DOCUMENT'
+                    : payload.contact
+                      ? 'CONTACT'
+                      : 'TEXT',
       imagePath: isAudioMsg ? undefined : payload.imagePath,
       audioPath: audioUrl,
       audioDurationSeconds: audioDuration,
@@ -1080,7 +1193,13 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
 
         const otherName =
-          otherMember?.user?.displayName || otherMember?.user?.username || sc.title || 'Chat';
+          otherMember?.user?.displayName ||
+          otherMember?.user?.username ||
+          // Never use sc.title for DIRECT conversations — the DB stores the enum
+          // string 'DIRECT' in the title column for 1:1 chats (title is only
+          // meaningful for GROUP conversations). Falling through to 'Chat' is safer.
+          (sc.type !== 'DIRECT' ? sc.title : null) ||
+          'Chat';
         const otherUsername = otherMember?.user?.username
           ? `@${otherMember.user.username.replace(/^@+/, '')}`
           : undefined;
@@ -1202,6 +1321,23 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
           avatar: resolvedTitle[0]?.toUpperCase() ?? 'C',
           isOnline: isUserOnline(otherDbId),
         } as ConversationItem);
+
+        // Also persist clean title & recipient details to local DB
+        dbUpsertConversation({
+          serverId: sc.id,
+          type: sc.type || 'DIRECT',
+          title: resolvedTitle && resolvedTitle !== 'DIRECT' ? resolvedTitle : undefined,
+          avatarUrl: otherAvatar || matchedContact?.avatarUrl,
+          recipientDbId: otherDbId,
+          recipientUsername: otherUsername,
+          recipientPhone: otherPhone,
+          lastMessageText: lastMsgObj ? lastMsgText : existing?.lastMessage,
+          lastMessageAt: lastMsgObj?.createdAt
+            ? new Date(lastMsgObj.createdAt).getTime()
+            : undefined,
+          lastMessageIsMe: finalLastMsgIsMe,
+          lastMessageStatus: finalLastMsgStatus,
+        }).catch(() => {});
       }
 
       dispatch(setConversations(Array.from(currentMap.values())));
@@ -1462,6 +1598,10 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         await dbUpsertConversation({
           serverId: conversationId,
           type: 'DIRECT',
+          title:
+            resolvedTitle && resolvedTitle !== 'DIRECT'
+              ? resolvedTitle
+              : contactTitle || contactUsername || undefined,
           recipientDbId: receiverId,
           recipientUsername: contactUsername,
           lastMessageText: snippet || text,
@@ -1519,31 +1659,91 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       );
     }
 
-    // Async: resolve real UUID conversationId then emit over socket
-    if (isMe && receiverId) {
-      const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-      if (!UUID_RE.test(receiverId)) {
-        // receiverId is not a UUID — cannot send
-        dispatch(
-          updateMessageStatus({
-            messageId: clientMessageId,
-            clientMessageId,
-            status: 'FAILED',
-          }),
-        );
-        return;
-      }
+    // Async: resolve real receiverId & conversation UUID, then emit over socket
+    if (isMe) {
+      (async () => {
+        const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        let effectiveReceiverId = receiverId && UUID_RE.test(receiverId) ? receiverId : undefined;
 
-      _resolveConvId(conversationId, receiverId).then(async (realConvId) => {
+        // 1. Check if recipientDbId is already known on this conversation
+        if (!effectiveReceiverId) {
+          const conv = conversationsRef.current.find((c) => c.id === conversationId);
+          if (conv?.recipientDbId && UUID_RE.test(conv.recipientDbId)) {
+            effectiveReceiverId = conv.recipientDbId;
+          }
+        }
+
+        // 2. If conversationId is a server UUID, fetch conversation members to find recipient
+        const tok = tokenRef.current;
+        if (!effectiveReceiverId && tok) {
+          if (UUID_RE.test(conversationId)) {
+            try {
+              const details = await apiService.fetchConversationById(tok, conversationId);
+              const myUid = (authUserIdRef.current || '').toLowerCase();
+              const other = details?.members?.find(
+                (m: any) => (m.userId || m.user?.id || '').toLowerCase() !== myUid,
+              );
+              const foundId = other?.userId || other?.user?.id;
+              if (foundId && UUID_RE.test(foundId)) {
+                effectiveReceiverId = foundId;
+              }
+            } catch (_) {}
+          }
+
+          // 3. Fallback: Search user by username, name, or handle
+          if (!effectiveReceiverId) {
+            const handle = (contactUsername || contactTitle || receiverId || '').replace(/^@+/, '');
+            if (handle) {
+              try {
+                const results = await apiService.searchUsers(tok, handle);
+                const match =
+                  results.find(
+                    (u: any) =>
+                      (u.username &&
+                        u.username.toLowerCase().replace(/^@+/, '') === handle.toLowerCase()) ||
+                      (u.phoneNumber &&
+                        u.phoneNumber.replace(/\D/g, '') === handle.replace(/\D/g, '')) ||
+                      (u.name && u.name.toLowerCase() === handle.toLowerCase()),
+                  ) || results[0];
+                if (match?.id && UUID_RE.test(match.id)) {
+                  effectiveReceiverId = match.id;
+                }
+              } catch (_) {}
+            }
+          }
+        }
+
+        if (!effectiveReceiverId || !UUID_RE.test(effectiveReceiverId)) {
+          console.warn('⚠️ [ChatContext] Could not resolve receiverId UUID for:', clientMessageId);
+          dispatch(
+            updateMessageStatus({
+              conversationId,
+              messageId: clientMessageId,
+              clientMessageId,
+              status: 'FAILED',
+            }),
+          );
+          return;
+        }
+
+        // Cache recipientDbId back to local conversation so subsequent messages don't need re-lookup
+        const conv = conversationsRef.current.find((c) => c.id === conversationId);
+        if (conv && !conv.recipientDbId) {
+          conv.recipientDbId = effectiveReceiverId;
+          dbUpsertConversation({
+            serverId: conversationId,
+            recipientDbId: effectiveReceiverId,
+          }).catch(() => {});
+        }
+
+        const realConvId = await _resolveConvId(conversationId, effectiveReceiverId);
         if (!realConvId) {
-          // Could not resolve conversation UUID — mark message failed
           dispatch(
             updateMessageStatus({ messageId: clientMessageId, clientMessageId, status: 'FAILED' }),
           );
           return;
         }
 
-        // If the conv was migrated to a new UUID, re-attach the message
         if (realConvId !== conversationId) {
           dispatch(
             appendMessage({
@@ -1553,14 +1753,12 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
           );
         }
 
-        // ── E2EE: Encrypt text with recipient's nacl.box public key ─────
-        // Fetch recipient's public key (cached after first fetch — ~0ms on subsequent messages).
-        // Falls back to plaintext if key not available (graceful degradation).
+        // E2EE encryption with recipient public key
         let msgCiphertexts: any = { text: text ?? '' };
         try {
           const myPubKey = await e2eCryptoService.getMyPublicKey();
           const recipientPubKey = await e2eCryptoService.getRecipientPublicKey(
-            receiverId,
+            effectiveReceiverId,
             tokenRef.current || undefined,
           );
           if (recipientPubKey && myPubKey) {
@@ -1574,14 +1772,13 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
             }
           }
         } catch (_encErr) {
-          // Encryption failed — send as plaintext, never drop the message
           msgCiphertexts = { text: text ?? '' };
         }
 
         socketService.sendMessage({
           clientMessageId,
           conversationId: realConvId,
-          receiverId,
+          receiverId: effectiveReceiverId,
           text: text ?? '',
           ciphertexts: msgCiphertexts,
           imagePath,
@@ -1589,9 +1786,11 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
           document,
           contact: contactPayload,
         });
+      })().catch((err) => {
+        console.warn('⚠️ [ChatContext] Error sending message:', err);
       });
 
-      // Timeout: if message is still SENDING after 12s, mark it FAILED so user sees Retry button
+      // Timeout: if message is still SENDING after 15s, mark it FAILED so user sees Retry button
       setTimeout(() => {
         const curMsgs = messagesMapRef.current[conversationId] || [];
         const cur = curMsgs.find((m) => m.id === clientMessageId);
@@ -1605,7 +1804,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
             }),
           );
         }
-      }, 12000);
+      }, 15000);
     }
   };
 

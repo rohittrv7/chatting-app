@@ -13,6 +13,12 @@ const MediaStream =
 const MediaStreamTrack =
   typeof window !== 'undefined' && window.MediaStreamTrack ? window.MediaStreamTrack : class {};
 
+if (typeof window !== 'undefined' && window.MediaStream && !window.MediaStream.prototype.toURL) {
+  window.MediaStream.prototype.toURL = function () {
+    return '';
+  };
+}
+
 const mediaDevices =
   typeof navigator !== 'undefined' && navigator.mediaDevices
     ? navigator.mediaDevices

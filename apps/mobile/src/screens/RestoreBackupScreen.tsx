@@ -22,6 +22,7 @@ import {
   Alert,
   ActivityIndicator,
   Animated,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -60,6 +61,14 @@ export const RestoreBackupScreen: React.FC<Props> = ({ navigation, route }) => {
 
   const [hasCompleted, setHasCompleted] = useState(false);
 
+  const executeSkip = () => {
+    showToast('Started fresh without restoring backup', 'info', 2000);
+    navigation.reset({
+      index: 0,
+      routes: [{ name: 'MainTabs' }],
+    });
+  };
+
   const handleStartRestore = async () => {
     const success = await startRestore();
     if (success) {
@@ -75,6 +84,12 @@ export const RestoreBackupScreen: React.FC<Props> = ({ navigation, route }) => {
   };
 
   const handleSkipPrompt = () => {
+    if (Platform.OS === 'web') {
+      // React Native Web Alert.alert button callbacks are unsupported stubs
+      executeSkip();
+      return;
+    }
+
     Alert.alert(
       'Skip chat restore?',
       'If you skip restoring your chat history now, your messages and media will not be restored and you cannot restore them later.',
@@ -83,13 +98,7 @@ export const RestoreBackupScreen: React.FC<Props> = ({ navigation, route }) => {
         {
           text: 'Skip',
           style: 'destructive',
-          onPress: () => {
-            showToast('Started fresh without restoring backup', 'info', 2000);
-            navigation.reset({
-              index: 0,
-              routes: [{ name: 'MainTabs' }],
-            });
-          },
+          onPress: executeSkip,
         },
       ],
       { cancelable: true },

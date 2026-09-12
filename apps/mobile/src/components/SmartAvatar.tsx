@@ -63,7 +63,7 @@ const SmartAvatarComponent: React.FC<SmartAvatarProps> = ({
   username,
   size = 48,
   groupBg,
-  textColor = '#6366F1',
+  textColor = '#E8622A',
   style,
   textStyle,
   borderRadius,
@@ -156,7 +156,7 @@ const SmartAvatarComponent: React.FC<SmartAvatarProps> = ({
   }
 
   // Fallback: stylish text letter avatar
-  const defaultBg = groupBg || 'rgba(99, 102, 241, 0.16)';
+  const defaultBg = groupBg || 'rgba(232, 98, 42, 0.16)';
   const fontSize = Math.max(12, Math.round(size * 0.42));
 
   return (
@@ -168,7 +168,7 @@ const SmartAvatarComponent: React.FC<SmartAvatarProps> = ({
           height: size,
           borderRadius: radius,
           backgroundColor: defaultBg,
-          borderColor: 'rgba(99, 102, 241, 0.25)',
+          borderColor: 'rgba(232, 98, 42, 0.25)',
         },
         style as ViewStyle,
       ]}

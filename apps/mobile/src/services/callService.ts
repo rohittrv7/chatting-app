@@ -444,6 +444,11 @@ class CallService {
       conversationId: params.conversationId,
     });
 
+    // Start outgoing ringback tone so caller has immediate auditory feedback
+    soundService
+      .startOutgoingRingbackTone()
+      .catch((e) => console.warn('⚠️ [CallService] Outgoing ringback failed:', e));
+
     // Initialize WebRTC and create SDP Offer in background, sending offer via follow-up EVT_WEBRTC_OFFER
     (async () => {
       try {

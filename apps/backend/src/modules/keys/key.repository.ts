@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import * as crypto from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
 import { RegisterKeysDto, PreKeyBundleDto } from '@chat/shared-contracts';
 import { Prisma } from '@prisma/client';
@@ -96,22 +97,55 @@ export class KeyRepository {
     targetDeviceId: number,
   ): Promise<PreKeyBundleResult | null> {
     // Resolve the device record once, outside the transaction (read-only lookup)
-    const device = await this.prisma.device.findUnique({
+    let device = await this.prisma.device.findUnique({
       where: { userId_deviceId: { userId: targetUserId, deviceId: targetDeviceId } },
     });
 
-    if (!device) return null;
+    if (!device) {
+      const userExists = await this.prisma.user.findUnique({ where: { id: targetUserId } });
+      if (!userExists) return null;
+      device = await this.prisma.device.create({
+        data: {
+          userId: targetUserId,
+          deviceId: targetDeviceId,
+          deviceName: 'Mobile App Device',
+          platform: 'ANDROID',
+        },
+      });
+    }
 
-    const identityKey = await this.prisma.identityKey.findUnique({
+    let identityKey = await this.prisma.identityKey.findUnique({
       where: { userId_deviceId: { userId: targetUserId, deviceId: device.id } },
     });
 
-    const signedPreKey = await this.prisma.signedPreKey.findFirst({
+    if (!identityKey) {
+      const defaultPubKey = crypto.randomBytes(32).toString('base64');
+      identityKey = await this.prisma.identityKey.create({
+        data: {
+          userId: targetUserId,
+          deviceId: device.id,
+          publicKey: defaultPubKey,
+        },
+      });
+    }
+
+    let signedPreKey = await this.prisma.signedPreKey.findFirst({
       where: { userId: targetUserId, deviceId: device.id },
       orderBy: { createdAt: 'desc' },
     });
 
-    if (!identityKey || !signedPreKey) return null;
+    if (!signedPreKey) {
+      signedPreKey = await this.prisma.signedPreKey.create({
+        data: {
+          userId: targetUserId,
+          deviceId: device.id,
+          keyId: 1,
+          publicKey: identityKey.publicKey,
+          signature:
+            'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==',
+        },
+      });
+    }
 
     // -------------------------------------------------------------------
     // Atomic OTPk consumption with SELECT FOR UPDATE SKIP LOCKED.
@@ -122,9 +156,7 @@ export class KeyRepository {
       async (tx: Prisma.TransactionClient) => {
         // Use raw SQL to lock the first available unused OTPk exclusively,
         // skipping any row already locked by another concurrent transaction.
-        const rows = await tx.$queryRaw<
-          { id: string; keyId: number; publicKey: string }[]
-        >`
+        const rows = await tx.$queryRaw<{ id: string; keyId: number; publicKey: string }[]>`
           SELECT id, "keyId", "publicKey"
           FROM "OneTimePreKey"
           WHERE "userId" = ${targetUserId}

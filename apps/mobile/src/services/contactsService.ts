@@ -54,18 +54,21 @@ let cachedSyncResult: {
  * Both users always get the exact same conversation ID!
  */
 export const getDeterministicConversationId = (userA: string, userB: string): string => {
-  const resolveHandle = (raw: string): string => {
+  const resolveHandle = (raw: any): string => {
     if (!raw) return 'user';
-    const clean = raw.replace(/^@+/, '').trim();
+    const rawStr = String(raw);
+    const clean = rawStr.replace(/^@+/, '').trim();
     const contacts = cachedSyncResult?.allSorted || cachedDeviceContacts || [];
     for (const c of contacts) {
+      const cPhone = String(c.phone || '').replace(/\D/g, '');
+      const cleanDigits = clean.replace(/\D/g, '');
       if (
         c.username &&
-        (c.name?.toLowerCase() === clean.toLowerCase() ||
-          (clean.length >= 7 && c.phone?.replace(/\D/g, '').endsWith(clean.replace(/\D/g, ''))) ||
+        (String(c.name || '').toLowerCase() === clean.toLowerCase() ||
+          (cleanDigits.length >= 7 && cPhone.endsWith(cleanDigits)) ||
           c.userId === clean)
       ) {
-        return c.username.replace(/^@+/, '').toLowerCase().trim();
+        return String(c.username).replace(/^@+/, '').toLowerCase().trim();
       }
     }
     return clean.toLowerCase().replace(/[^a-z0-9]/g, '_');
@@ -82,19 +85,28 @@ export const getDeterministicConversationId = (userA: string, userB: string): st
  * Resolves full contact details from cached device contacts & sync results
  */
 export const getResolvedContact = (identifier: {
-  phone?: string;
-  username?: string;
-  userId?: string;
-  name?: string;
+  phone?: any;
+  username?: any;
+  userId?: any;
+  name?: any;
 }): DeviceContact | null => {
+  if (!identifier) return null;
   const contacts = cachedSyncResult?.allSorted || cachedDeviceContacts || [];
-  const cleanUsername = (identifier.username || '').replace(/^@+/, '').toLowerCase();
-  const cleanPhone = (identifier.phone || '').replace(/\D/g, '').slice(-10);
-  const userId = identifier.userId || '';
+  const cleanUsername = String(identifier.username || '')
+    .replace(/^@+/, '')
+    .toLowerCase();
+  const cleanPhone = String(identifier.phone || '')
+    .replace(/\D/g, '')
+    .slice(-10);
+  const userId = String(identifier.userId || '');
 
   for (const c of contacts) {
-    const cPhone = (c.phone || '').replace(/\D/g, '').slice(-10);
-    const cUser = (c.username || '').replace(/^@+/, '').toLowerCase();
+    const cPhone = String(c.phone || '')
+      .replace(/\D/g, '')
+      .slice(-10);
+    const cUser = String(c.username || '')
+      .replace(/^@+/, '')
+      .toLowerCase();
     if (
       (cleanPhone && cPhone && cleanPhone === cPhone) ||
       (cleanUsername && cUser && cleanUsername === cUser) ||
@@ -112,32 +124,47 @@ export const getResolvedContact = (identifier: {
  * 2. If not saved in mobile contacts -> use the profile name written by the user.
  */
 export const getResolvedDisplayName = (
-  identifier: { phone?: string; username?: string; userId?: string; name?: string },
-  fallbackName?: string,
+  identifier: { phone?: any; username?: any; userId?: any; name?: any },
+  fallbackName?: any,
 ): string => {
+  if (!identifier && !fallbackName) return 'Friend';
+
   const matchedContact = getResolvedContact(identifier);
   if (
     matchedContact &&
     matchedContact.name &&
+    typeof matchedContact.name === 'string' &&
     matchedContact.name.trim() &&
+    matchedContact.name.trim() !== 'DIRECT' &&
     !/^\d{10,}$/.test(matchedContact.name)
   ) {
     return matchedContact.name.trim(); // 📱 Saved name in user's phone contacts!
   }
 
   // 2. If not in user's phonebook, use what the user wrote in their profile
-  if (identifier.name && identifier.name.trim() && !/^\d{10,}$/.test(identifier.name)) {
-    return identifier.name.trim();
+  const nameStr = String(identifier?.name || '').trim();
+  if (nameStr && nameStr !== 'DIRECT' && !/^\d{10,}$/.test(nameStr)) {
+    return nameStr;
   }
-  if (fallbackName && fallbackName.trim() && !/^\d{10,}$/.test(fallbackName)) {
-    return fallbackName.trim();
+  const fallbackStr = String(fallbackName || '').trim();
+  if (fallbackStr && fallbackStr !== 'DIRECT' && !/^\d{10,}$/.test(fallbackStr)) {
+    return fallbackStr;
   }
 
   // 3. Fallback to clean username
-  const cleanUsername = (identifier.username || '').replace(/^@+/, '').toLowerCase();
-  if (cleanUsername) {
+  const cleanUsername = String(identifier?.username || '')
+    .replace(/^@+/, '')
+    .trim();
+  if (cleanUsername && cleanUsername.toLowerCase() !== 'direct') {
     return cleanUsername;
   }
+
+  // 4. Fallback to phone number if available (exclude raw 13-digit millisecond timestamps)
+  const cleanPhone = String(identifier?.phone || '').trim();
+  if (cleanPhone && cleanPhone.length >= 7 && !/^\d{13}$/.test(cleanPhone)) {
+    return cleanPhone;
+  }
+
   return 'Friend';
 };
 

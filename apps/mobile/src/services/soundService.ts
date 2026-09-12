@@ -242,6 +242,9 @@ class SoundService {
   private activeLoopingSound: any = null;
   private activeSounds: Set<any> = new Set();
   private currentSoundGeneration = 0;
+  private webRingbackTimer: any = null;
+  private webIncomingTimer: any = null;
+  private activeWebOscillators: any[] = [];
 
   constructor() {
     if (Platform.OS === 'web' && typeof window !== 'undefined') {
@@ -312,6 +315,17 @@ class SoundService {
   }
 
   private _ensureWebAudioContext() {
+    if (typeof window !== 'undefined') {
+      if (!this.audioCtx) {
+        try {
+          const AudioContextClass =
+            (window as any).AudioContext || (window as any).webkitAudioContext;
+          if (AudioContextClass) {
+            this.audioCtx = new AudioContextClass();
+          }
+        } catch (_) {}
+      }
+    }
     if (this.audioCtx && this.audioCtx.state === 'suspended') {
       this.audioCtx.resume().catch(() => {});
     }
@@ -345,31 +359,33 @@ class SoundService {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
       }
 
-      if (Platform.OS === 'web' && this.audioCtx) {
+      if (Platform.OS === 'web') {
         this._ensureWebAudioContext();
-        const now = this.audioCtx.currentTime;
-        const osc1 = this.audioCtx.createOscillator();
-        const gain1 = this.audioCtx.createGain();
-        osc1.type = 'sine';
-        osc1.frequency.setValueAtTime(1174, now);
-        gain1.gain.setValueAtTime(0.3, now);
-        gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.05);
-        osc1.connect(gain1);
-        gain1.connect(this.audioCtx.destination);
-        osc1.start(now);
-        osc1.stop(now + 0.05);
+        if (this.audioCtx) {
+          const now = this.audioCtx.currentTime;
+          const osc1 = this.audioCtx.createOscillator();
+          const gain1 = this.audioCtx.createGain();
+          osc1.type = 'sine';
+          osc1.frequency.setValueAtTime(1174, now);
+          gain1.gain.setValueAtTime(0.3, now);
+          gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.05);
+          osc1.connect(gain1);
+          gain1.connect(this.audioCtx.destination);
+          osc1.start(now);
+          osc1.stop(now + 0.05);
 
-        const osc2 = this.audioCtx.createOscillator();
-        const gain2 = this.audioCtx.createGain();
-        osc2.type = 'sine';
-        osc2.frequency.setValueAtTime(1567, now + 0.05);
-        gain2.gain.setValueAtTime(0.35, now + 0.05);
-        gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
-        osc2.connect(gain2);
-        gain2.connect(this.audioCtx.destination);
-        osc2.start(now + 0.05);
-        osc2.stop(now + 0.12);
-        return;
+          const osc2 = this.audioCtx.createOscillator();
+          const gain2 = this.audioCtx.createGain();
+          osc2.type = 'sine';
+          osc2.frequency.setValueAtTime(1567, now + 0.05);
+          gain2.gain.setValueAtTime(0.35, now + 0.05);
+          gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+          osc2.connect(gain2);
+          gain2.connect(this.audioCtx.destination);
+          osc2.start(now + 0.05);
+          osc2.stop(now + 0.12);
+          return;
+        }
       }
 
       await this._playNativeFile(this.popFileUri, 0.85);
@@ -386,27 +402,29 @@ class SoundService {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       }
 
-      if (Platform.OS === 'web' && this.audioCtx) {
+      if (Platform.OS === 'web') {
         this._ensureWebAudioContext();
-        const now = this.audioCtx.currentTime;
-        const notes = [
-          { freq: 659.25, time: 0, dur: 0.12, vol: 0.45 },
-          { freq: 880.0, time: 0.09, dur: 0.14, vol: 0.5 },
-          { freq: 1318.51, time: 0.18, dur: 0.35, vol: 0.6 },
-        ];
-        for (const n of notes) {
-          const osc = this.audioCtx.createOscillator();
-          const gain = this.audioCtx.createGain();
-          osc.type = 'triangle';
-          osc.frequency.setValueAtTime(n.freq, now + n.time);
-          gain.gain.setValueAtTime(n.vol, now + n.time);
-          gain.gain.exponentialRampToValueAtTime(0.001, now + n.time + n.dur);
-          osc.connect(gain);
-          gain.connect(this.audioCtx.destination);
-          osc.start(now + n.time);
-          osc.stop(now + n.time + n.dur);
+        if (this.audioCtx) {
+          const now = this.audioCtx.currentTime;
+          const notes = [
+            { freq: 659.25, time: 0, dur: 0.12, vol: 0.45 },
+            { freq: 880.0, time: 0.09, dur: 0.14, vol: 0.5 },
+            { freq: 1318.51, time: 0.18, dur: 0.35, vol: 0.6 },
+          ];
+          for (const n of notes) {
+            const osc = this.audioCtx.createOscillator();
+            const gain = this.audioCtx.createGain();
+            osc.type = 'triangle';
+            osc.frequency.setValueAtTime(n.freq, now + n.time);
+            gain.gain.setValueAtTime(n.vol, now + n.time);
+            gain.gain.exponentialRampToValueAtTime(0.001, now + n.time + n.dur);
+            osc.connect(gain);
+            gain.connect(this.audioCtx.destination);
+            osc.start(now + n.time);
+            osc.stop(now + n.time + n.dur);
+          }
+          return;
         }
-        return;
       }
 
       await this._playNativeFile(this.chimeFileUri, 1.0);
@@ -418,21 +436,23 @@ class SoundService {
    */
   public async playMessageSentSound() {
     try {
-      if (Platform.OS === 'web' && this.audioCtx) {
+      if (Platform.OS === 'web') {
         this._ensureWebAudioContext();
-        const now = this.audioCtx.currentTime;
-        const osc = this.audioCtx.createOscillator();
-        const gain = this.audioCtx.createGain();
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(1200, now);
-        osc.frequency.exponentialRampToValueAtTime(450, now + 0.05);
-        gain.gain.setValueAtTime(0.2, now);
-        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.05);
-        osc.connect(gain);
-        gain.connect(this.audioCtx.destination);
-        osc.start(now);
-        osc.stop(now + 0.05);
-        return;
+        if (this.audioCtx) {
+          const now = this.audioCtx.currentTime;
+          const osc = this.audioCtx.createOscillator();
+          const gain = this.audioCtx.createGain();
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(1200, now);
+          osc.frequency.exponentialRampToValueAtTime(450, now + 0.05);
+          gain.gain.setValueAtTime(0.2, now);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.05);
+          osc.connect(gain);
+          gain.connect(this.audioCtx.destination);
+          osc.start(now);
+          osc.stop(now + 0.05);
+          return;
+        }
       }
 
       await this._playNativeFile(this.sentFileUri, 0.6);
@@ -441,15 +461,63 @@ class SoundService {
 
   /**
    * 4. Outgoing Call Ringback Tone (Looped dial tone: tring... tring...)
-   * Awaits audio init promise before playing — ensures first-call ring is instant.
+   * Standard 440Hz + 480Hz dual frequency pulse tone.
    */
   public async startOutgoingRingbackTone() {
-    const gen = ++this.currentSoundGeneration;
+    await this.stopCallSounds();
+    const genAfterStop = ++this.currentSoundGeneration;
+
+    // Web Audio implementation
+    if (Platform.OS === 'web') {
+      try {
+        this._ensureWebAudioContext();
+        if (this.audioCtx) {
+          const playPulse = () => {
+            if (this.currentSoundGeneration !== genAfterStop || !this.audioCtx) return;
+            try {
+              this._ensureWebAudioContext();
+              const now = this.audioCtx.currentTime;
+              const osc1 = this.audioCtx.createOscillator();
+              const osc2 = this.audioCtx.createOscillator();
+              const gain = this.audioCtx.createGain();
+
+              osc1.type = 'sine';
+              osc1.frequency.setValueAtTime(440, now);
+              osc2.type = 'sine';
+              osc2.frequency.setValueAtTime(480, now);
+
+              gain.gain.setValueAtTime(0, now);
+              gain.gain.linearRampToValueAtTime(0.18, now + 0.04);
+              gain.gain.setValueAtTime(0.18, now + 1.2);
+              gain.gain.linearRampToValueAtTime(0.001, now + 1.3);
+
+              osc1.connect(gain);
+              osc2.connect(gain);
+              gain.connect(this.audioCtx.destination);
+
+              osc1.start(now);
+              osc2.start(now);
+              osc1.stop(now + 1.3);
+              osc2.stop(now + 1.3);
+
+              this.activeWebOscillators.push(osc1, osc2);
+            } catch (_) {}
+          };
+
+          playPulse();
+          this.webRingbackTimer = setInterval(playPulse, 3200);
+          console.log('🔔 [SoundService] Outgoing ringback tone playing (Web Audio)');
+          return;
+        }
+      } catch (e) {
+        console.warn('Could not start web ringback tone:', e);
+      }
+      return;
+    }
+
+    // Native expo-av implementation
     try {
       if (this._initPromise) await this._initPromise;
-      // stopCallSounds() bumps generation internally — capture gen AFTER stop
-      await this.stopCallSounds();
-      const genAfterStop = ++this.currentSoundGeneration;
       await this._initNativeAudio();
       if (this.currentSoundGeneration !== genAfterStop || !Audio) return;
 
@@ -469,18 +537,68 @@ class SoundService {
       }
       this.activeLoopingSound = sound;
       this.activeSounds.add(sound);
-      console.log('🔔 [SoundService] Outgoing ringback tone playing');
+      console.log('🔔 [SoundService] Outgoing ringback tone playing (Native)');
     } catch (e) {
       console.warn('Could not start ringback tone:', e);
     }
   }
 
+  /**
+   * 5. Incoming Call Ringtone
+   * Melodic WhatsApp-style ringing pattern.
+   */
   public async startIncomingRingtone() {
-    const gen = ++this.currentSoundGeneration;
+    await this.stopCallSounds();
+    const genAfterStop = ++this.currentSoundGeneration;
+
+    // Web Audio implementation
+    if (Platform.OS === 'web') {
+      try {
+        this._ensureWebAudioContext();
+        if (this.audioCtx) {
+          const playMelody = () => {
+            if (this.currentSoundGeneration !== genAfterStop || !this.audioCtx) return;
+            try {
+              this._ensureWebAudioContext();
+              const now = this.audioCtx.currentTime;
+              const notes = [
+                { freq: 659.25, time: 0, dur: 0.14, vol: 0.35 },
+                { freq: 783.99, time: 0.14, dur: 0.14, vol: 0.35 },
+                { freq: 987.77, time: 0.28, dur: 0.16, vol: 0.4 },
+                { freq: 1318.51, time: 0.46, dur: 0.38, vol: 0.45 },
+                { freq: 987.77, time: 0.98, dur: 0.14, vol: 0.38 },
+                { freq: 1318.51, time: 1.14, dur: 0.48, vol: 0.45 },
+              ];
+              for (const n of notes) {
+                const osc = this.audioCtx.createOscillator();
+                const gain = this.audioCtx.createGain();
+                osc.type = 'triangle';
+                osc.frequency.setValueAtTime(n.freq, now + n.time);
+                gain.gain.setValueAtTime(n.vol, now + n.time);
+                gain.gain.exponentialRampToValueAtTime(0.001, now + n.time + n.dur);
+                osc.connect(gain);
+                gain.connect(this.audioCtx.destination);
+                osc.start(now + n.time);
+                osc.stop(now + n.time + n.dur);
+                this.activeWebOscillators.push(osc);
+              }
+            } catch (_) {}
+          };
+
+          playMelody();
+          this.webIncomingTimer = setInterval(playMelody, 2600);
+          console.log('🔔 [SoundService] Incoming call ringtone playing (Web Audio)');
+          return;
+        }
+      } catch (e) {
+        console.warn('Could not start web incoming ringtone:', e);
+      }
+      return;
+    }
+
+    // Native expo-av implementation
     try {
       if (this._initPromise) await this._initPromise;
-      await this.stopCallSounds();
-      const genAfterStop = ++this.currentSoundGeneration;
       await this._initNativeAudio();
       if (this.currentSoundGeneration !== genAfterStop || !Audio) return;
 
@@ -500,7 +618,7 @@ class SoundService {
       }
       this.activeLoopingSound = sound;
       this.activeSounds.add(sound);
-      console.log('🔔 [SoundService] Incoming call ringtone playing');
+      console.log('🔔 [SoundService] Incoming call ringtone playing (Native)');
     } catch (e) {
       console.warn('Could not start incoming ringtone:', e);
     }
@@ -508,12 +626,30 @@ class SoundService {
 
   /**
    * Stop and completely unload any active looping call sound (dial tone or ringtone).
-   * Guaranteed to await complete unloading before resolving.
+   * Guaranteed to clear web timers and oscillators and await complete native sound unloading.
    */
   public async stopCallSounds(): Promise<void> {
     this.currentSoundGeneration++;
-    const unloadPromises: Promise<any>[] = [];
 
+    // Clear Web intervals and active oscillators
+    if (this.webRingbackTimer) {
+      clearInterval(this.webRingbackTimer);
+      this.webRingbackTimer = null;
+    }
+    if (this.webIncomingTimer) {
+      clearInterval(this.webIncomingTimer);
+      this.webIncomingTimer = null;
+    }
+    for (const osc of this.activeWebOscillators) {
+      try {
+        osc.stop();
+        osc.disconnect();
+      } catch (_) {}
+    }
+    this.activeWebOscillators = [];
+
+    // Stop and unload native sounds
+    const unloadPromises: Promise<any>[] = [];
     for (const snd of this.activeSounds) {
       try {
         unloadPromises.push(
@@ -548,6 +684,30 @@ class SoundService {
   public async playCallConnectedSound() {
     try {
       await this.stopCallSounds();
+      if (Platform.OS === 'web') {
+        this._ensureWebAudioContext();
+        if (this.audioCtx) {
+          const now = this.audioCtx.currentTime;
+          const notes = [
+            { freq: 523.25, time: 0, dur: 0.08, vol: 0.4 },
+            { freq: 659.25, time: 0.08, dur: 0.08, vol: 0.45 },
+            { freq: 1046.5, time: 0.16, dur: 0.22, vol: 0.5 },
+          ];
+          for (const n of notes) {
+            const osc = this.audioCtx.createOscillator();
+            const gain = this.audioCtx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(n.freq, now + n.time);
+            gain.gain.setValueAtTime(n.vol, now + n.time);
+            gain.gain.exponentialRampToValueAtTime(0.001, now + n.time + n.dur);
+            osc.connect(gain);
+            gain.connect(this.audioCtx.destination);
+            osc.start(now + n.time);
+            osc.stop(now + n.time + n.dur);
+          }
+          return;
+        }
+      }
       await this._playNativeFile(this.connectedChimeFileUri, 0.85);
     } catch (_) {}
   }
@@ -558,6 +718,26 @@ class SoundService {
   public async playCallEndedSound() {
     try {
       await this.stopCallSounds();
+      if (Platform.OS === 'web') {
+        this._ensureWebAudioContext();
+        if (this.audioCtx) {
+          const now = this.audioCtx.currentTime;
+          const beeps = [0, 0.2, 0.4];
+          for (const t of beeps) {
+            const osc = this.audioCtx.createOscillator();
+            const gain = this.audioCtx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(480, now + t);
+            gain.gain.setValueAtTime(0.35, now + t);
+            gain.gain.exponentialRampToValueAtTime(0.001, now + t + 0.12);
+            osc.connect(gain);
+            gain.connect(this.audioCtx.destination);
+            osc.start(now + t);
+            osc.stop(now + t + 0.12);
+          }
+          return;
+        }
+      }
       await this._playNativeFile(this.callEndedFileUri, 0.85);
     } catch (_) {}
   }

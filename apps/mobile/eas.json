@@ -14,18 +14,16 @@
     },
     "preview": {
       "distribution": "internal",
-      "android": {
-        "buildType": "apk"
-      },
+      "android": { "buildType": "apk" },
+      "ios": { "simulator": true },
       "env": {
         "EXPO_PUBLIC_API_URL": "https://chatting-app-rme6.onrender.com/api/v1",
         "EXPO_PUBLIC_SOCKET_URL": "https://chatting-app-rme6.onrender.com"
       }
     },
     "production": {
-      "android": {
-        "buildType": "apk"
-      },
+      "android": { "buildType": "apk" },
+      "ios": { "buildConfiguration": "Release" },
       "env": {
         "EXPO_PUBLIC_API_URL": "https://chatting-app-rme6.onrender.com/api/v1",
         "EXPO_PUBLIC_SOCKET_URL": "https://chatting-app-rme6.onrender.com"

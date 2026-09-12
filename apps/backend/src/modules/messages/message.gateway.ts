@@ -192,7 +192,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
         .catch(() => null);
       const broadcastLastSeen = userSetting?.lastSeenVisibility === 'NOBODY' ? null : lastSeen;
 
-      const connectedSockets = Array.from(this.server.sockets.sockets.values());
+      const connectedSockets = Array.from(this.server?.sockets?.sockets?.values() || []);
       const recipientUserIds = Array.from(
         new Set(connectedSockets.map((s: any) => s._userId).filter(Boolean)),
       );
@@ -583,7 +583,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
               conversationId,
               senderId,
               senderName: senderProfile?.displayName || 'Contact',
-              senderAvatar: senderProfile?.avatarUrl || undefined,
+              senderAvatar: effectiveSenderAvatar || undefined,
               messagePreview: preview,
               messageType: msgType,
             })
@@ -1618,5 +1618,19 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       sdp: payload.sdp,
       senderId,
     });
+  }
+
+  public emitToUser(userId: string, event: string, payload: any) {
+    if (this.server) {
+      this.server.to(`user:${userId}`).emit(event, payload);
+    }
+  }
+
+  public broadcastToUsers(userIds: string[], event: string, payload: any) {
+    if (this.server) {
+      for (const uid of userIds) {
+        this.server.to(`user:${uid}`).emit(event, payload);
+      }
+    }
   }
 }

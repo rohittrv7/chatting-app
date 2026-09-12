@@ -1055,6 +1055,21 @@ export const apiService = {
   },
 
   /**
+   * Fetch details of a single conversation by ID.
+   */
+  async fetchConversationById(token: string, conversationId: string): Promise<any> {
+    const url = `${getApiBaseUrl()}/conversations/${encodeURIComponent(conversationId)}`;
+    try {
+      const response = await this.fetchWithAuth(url, { method: 'GET' }, token);
+      if (response.ok) {
+        const json = await response.json();
+        return json.data || json;
+      }
+    } catch (_) {}
+    return null;
+  },
+
+  /**
    * Delete conversation on the backend database for the current user.
    */
   async deleteConversation(
@@ -1307,8 +1322,11 @@ export const apiService = {
           // Minimal 32-byte placeholder for signedPreKey (backend stores identity key regardless)
           signedPreKeyId: 1,
           signedPrePublicKey: publicKey,
+          // 64 zero-bytes encoded as base64 = exactly 86 base64 chars + '==' padding.
+          // Previous value was 88 'A's (no padding) which decoded to 66 bytes → 422.
+          // 64 bytes → ceil(64/3)*4 = 88 chars with '==' padding; 86 data chars + '=='.
           signedPreKeySignature:
-            'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+            'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==',
           oneTimePreKeys: [],
         }),
       });
@@ -1402,7 +1420,7 @@ export const apiService = {
       if (response.ok) {
         const json = await response.json();
         const data = json.data || json;
-        const publicKey = data.identityPublicKey || data.publicKey || null;
+        const publicKey = data.identityPublicKey || data.publicKey || data.identityKey || null;
         return { userId: targetUserId, publicKey };
       }
     } catch (e) {
@@ -1465,6 +1483,228 @@ export const apiService = {
       return response.ok;
     } catch {
       return false;
+    }
+  },
+
+  /**
+   * Bill Splitting & Expense Management API
+   */
+  async createExpenseSplit(
+    token: string,
+    payload: {
+      title: string;
+      totalAmount: number;
+      currency?: string;
+      conversationId?: string;
+      participantIds: string[];
+      paidByUserId?: string;
+      splitType?: 'EQUAL' | 'CUSTOM' | 'EXACT' | 'PERCENT' | 'SHARES';
+      customAmounts?: Record<string, number>;
+      shares?: Record<string, number>;
+      category?: string;
+      isOngoingGroup?: boolean;
+      autoCreateGroup?: boolean;
+    },
+  ): Promise<{ success: boolean; data?: any; error?: string }> {
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/expenses/split`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(payload),
+      });
+      const json = await response.json();
+      if (response.ok) {
+        return { success: true, data: json.data || json };
+      }
+      return { success: false, error: json.message || 'Failed to create expense split' };
+    } catch (e: any) {
+      return { success: false, error: e.message || 'Network error' };
+    }
+  },
+
+  async getExpenseHistory(
+    token: string,
+    params?: { status?: string; conversationId?: string; category?: string },
+  ): Promise<{ success: boolean; data?: any; error?: string }> {
+    try {
+      const query = new URLSearchParams();
+      if (params?.status) query.append('status', params.status);
+      if (params?.conversationId) query.append('conversationId', params.conversationId);
+      if (params?.category && params.category !== 'ALL') query.append('category', params.category);
+      const url = `${getApiBaseUrl()}/expenses/history${query.toString() ? `?${query.toString()}` : ''}`;
+      const response = await fetch(url, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const json = await response.json();
+      if (response.ok) {
+        return { success: true, data: json.data || json };
+      }
+      return { success: false, error: json.message };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  },
+
+  async getNetBalances(token: string): Promise<{
+    success: boolean;
+    data?: {
+      balances: Array<{
+        user: {
+          id: string;
+          displayName: string | null;
+          phoneNumber: string;
+          avatarUrl: string | null;
+        };
+        netBalance: number;
+        status: 'OWES_YOU' | 'YOU_OWE' | 'SETTLED';
+        amount: number;
+        owedToUser: number;
+        userOwes: number;
+        activeSplitsCount: number;
+      }>;
+      summary: {
+        totalYouAreOwed: number;
+        totalYouOwe: number;
+        netTotal: number;
+      };
+      recentSettlements: any[];
+    };
+    error?: string;
+  }> {
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/expenses/net-balances`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const json = await response.json();
+      if (response.ok) {
+        return { success: true, data: json.data || json };
+      }
+      return { success: false, error: json.message || 'Failed to fetch net balances' };
+    } catch (e: any) {
+      return { success: false, error: e.message || 'Network error' };
+    }
+  },
+
+  async settleUp(
+    token: string,
+    payload: {
+      targetUserId: string;
+      amount: number;
+      notes?: string;
+      currency?: string;
+    },
+  ): Promise<{ success: boolean; data?: any; error?: string }> {
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/expenses/settle-up`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(payload),
+      });
+      const json = await response.json();
+      if (response.ok) {
+        return { success: true, data: json.data || json };
+      }
+      return { success: false, error: json.message || 'Failed to settle up' };
+    } catch (e: any) {
+      return { success: false, error: e.message || 'Network error' };
+    }
+  },
+
+  async getExpenseById(
+    token: string,
+    id: string,
+  ): Promise<{ success: boolean; data?: any; error?: string }> {
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/expenses/${encodeURIComponent(id)}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const json = await response.json();
+      if (response.ok) {
+        return { success: true, data: json.data || json };
+      }
+      return { success: false, error: json.message };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  },
+
+  async markExpensePaid(
+    token: string,
+    id: string,
+    targetUserId?: string,
+  ): Promise<{ success: boolean; data?: any; error?: string }> {
+    try {
+      const url = targetUserId
+        ? `${getApiBaseUrl()}/expenses/${encodeURIComponent(id)}/participants/${encodeURIComponent(targetUserId)}/paid`
+        : `${getApiBaseUrl()}/expenses/${encodeURIComponent(id)}/pay`;
+      const response = await fetch(url, {
+        method: targetUserId ? 'PATCH' : 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(targetUserId ? {} : {}),
+      });
+      const json = await response.json();
+      if (response.ok) {
+        return { success: true, data: json.data || json };
+      }
+      return { success: false, error: json.message };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  },
+
+  async remindExpenseUnpaid(
+    token: string,
+    id: string,
+  ): Promise<{ success: boolean; message?: string; error?: string }> {
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/expenses/${encodeURIComponent(id)}/remind`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      const json = await response.json();
+      if (response.ok) {
+        return { success: true, message: json.message };
+      }
+      return { success: false, error: json.message };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  },
+
+  async forceDeleteExpenseGroup(
+    token: string,
+    id: string,
+  ): Promise<{ success: boolean; data?: any; error?: string }> {
+    try {
+      const response = await fetch(
+        `${getApiBaseUrl()}/expenses/${encodeURIComponent(id)}/force-cleanup`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+        },
+      );
+      const json = await response.json();
+      if (response.ok) {
+        return { success: true, data: json.data || json };
+      }
+      return { success: false, error: json.message };
+    } catch (e: any) {
+      return { success: false, error: e.message };
     }
   },
 };

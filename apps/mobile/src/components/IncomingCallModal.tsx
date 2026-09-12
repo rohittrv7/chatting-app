@@ -253,7 +253,7 @@ export const IncomingCallModal: React.FC<Props> = ({ navigationRef }) => {
 
 const styles = StyleSheet.create({
   modalOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     zIndex: 999999,
     elevation: 999999,
     backgroundColor: '#070A12',
