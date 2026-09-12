@@ -34,5 +34,11 @@
     "**/*.{ts,tsx,js,jsx,json,md,yaml,yml}": [
       "prettier --write"
     ]
+  },
+  "dependencies": {
+    "expo": "~57.0.21",
+    "inquirer": "^14.2.2",
+    "react": "19.2.3",
+    "react-native": "0.86.3"
   }
 }
