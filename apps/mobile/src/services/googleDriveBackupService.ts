@@ -110,7 +110,7 @@ export interface BackupMetadata {
   accountEmail: string;
 }
 
-export type BackupFrequency = 'daily' | 'weekly' | 'monthly' | 'manual';
+export type BackupFrequency = 'daily' | 'weekly' | 'monthly' | 'manual' | 'never';
 export type BackupNetworkType = 'wifi' | 'cellular';
 
 export interface BackupSettings {
@@ -162,9 +162,11 @@ export const MOCK_GOOGLE_ACCOUNTS: GoogleAccount[] = [];
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
 
 function getClientId(): string {
-  if (Platform.OS === 'ios') return GOOGLE_CLIENT_ID_IOS;
-  if (Platform.OS === 'android') return GOOGLE_CLIENT_ID_ANDROID;
-  return GOOGLE_CLIENT_ID_WEB; // Expo Go / web
+  if (Platform.OS === 'ios' && GOOGLE_CLIENT_ID_IOS) return GOOGLE_CLIENT_ID_IOS;
+  // For Expo AuthSession browser redirect flow, Google requires Web Client ID
+  if (GOOGLE_CLIENT_ID_WEB) return GOOGLE_CLIENT_ID_WEB;
+  if (Platform.OS === 'android' && GOOGLE_CLIENT_ID_ANDROID) return GOOGLE_CLIENT_ID_ANDROID;
+  return GOOGLE_CLIENT_ID_WEB;
 }
 
 function getRedirectUri(): string {
@@ -625,7 +627,7 @@ async function importLocalDatabase(
 
 const DEFAULT_SETTINGS: BackupSettings = {
   account: null,
-  frequency: 'daily',
+  frequency: 'never',
   networkType: 'wifi',
   includeImages: true,
   includeVideos: false,
@@ -642,7 +644,11 @@ class GoogleDriveBackupService {
   async getSettings(): Promise<BackupSettings> {
     try {
       const raw = await safeStorage.getItem(STORAGE_KEY_SETTINGS);
-      if (raw) return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        const freq: BackupFrequency = !parsed.account ? 'never' : parsed.frequency || 'never';
+        return { ...DEFAULT_SETTINGS, ...parsed, frequency: freq };
+      }
     } catch {}
     return DEFAULT_SETTINGS;
   }
@@ -687,14 +693,22 @@ class GoogleDriveBackupService {
 
     await request.makeAuthUrlAsync(GOOGLE_DISCOVERY);
 
+    console.log(
+      '🔑 [GoogleDrive] Initiating OAuth with clientId:',
+      clientId,
+      'redirectUri:',
+      redirectUri,
+    );
     const result = await request.promptAsync(GOOGLE_DISCOVERY);
+    console.log('🔑 [GoogleDrive] OAuth prompt result:', JSON.stringify(result));
 
     if (result.type !== 'success') {
-      throw new Error(
+      const errDetail =
         result.type === 'cancel'
-          ? 'Google Sign-In was cancelled.'
-          : `Google Sign-In failed: ${result.type}`,
-      );
+          ? 'Google Sign-In was cancelled by user.'
+          : `Google Sign-In failed/blocked (${result.type}): ${JSON.stringify((result as any).params || (result as any).error || {})}`;
+      console.error('❌ [GoogleDrive] Sign-In error:', errDetail);
+      throw new Error(errDetail);
     }
 
     // Exchange auth code for tokens
@@ -785,6 +799,13 @@ class GoogleDriveBackupService {
     if (forceNoBackup === 'false') return { exists: false };
 
     try {
+      // Check if user has authenticated token
+      const token = await loadTokenState();
+      if (!token?.accessToken) {
+        // No connected Google account = new user without cloud backup
+        return { exists: false };
+      }
+
       // Check Drive directly (most authoritative source)
       const accessToken = await getValidAccessToken();
       const files = await driveListFiles(accessToken, BACKUP_META_FILE);
@@ -792,10 +813,9 @@ class GoogleDriveBackupService {
 
       const meta = await this._fetchMetadataFromDrive();
       return { exists: !!meta, metadata: meta ?? undefined };
-    } catch {
-      // If we can't reach Drive (no auth / offline), fall back to local cache
-      const meta = await this.getBackupMetadata();
-      return { exists: !!meta, metadata: meta ?? undefined };
+    } catch (err) {
+      console.log('ℹ️ [GoogleDrive] No genuine backup found for user:', err);
+      return { exists: false };
     }
   }
 

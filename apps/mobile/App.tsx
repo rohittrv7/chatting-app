@@ -109,43 +109,68 @@ function AppNavigator() {
   }, []);
 
   useEffect(() => {
+    let isMounted = true;
+    const fallbackTimer = setTimeout(() => {
+      if (isMounted) {
+        setInitialRoute((prev) => prev || 'PhoneAuth');
+      }
+    }, 2500);
+
     async function checkAuthSession() {
-      const session = await apiService.loadStoredSession();
-      if (
-        session.token &&
-        session.userProfile &&
-        session.userProfile.name &&
-        session.userProfile.username
-      ) {
-        dispatch(
-          restoreSession({
-            token: session.token,
-            refreshToken: session.refreshToken,
-            phoneNumber: session.phoneNumber || '',
-            userId: session.userId,
-            userProfile: session.userProfile,
-            isNewUser: false,
-          }),
-        );
-        setInitialRoute('MainTabs');
-      } else if (session.token && session.isNewUser) {
-        dispatch(
-          restoreSession({
-            token: session.token,
-            refreshToken: session.refreshToken,
-            phoneNumber: session.phoneNumber || '',
-            userId: session.userId,
-            userProfile: session.userProfile,
-            isNewUser: true,
-          }),
-        );
-        setInitialRoute('NewUserProfileSetup');
-      } else {
-        setInitialRoute('PhoneAuth');
+      try {
+        // Proactively verify / refresh token before restoring session to prevent 401 storm
+        await apiService.ensureValidToken().catch(() => {});
+        const session = await apiService.loadStoredSession();
+        if (!isMounted) return;
+
+        if (
+          session.token &&
+          session.userProfile &&
+          session.userProfile.name &&
+          session.userProfile.username
+        ) {
+          dispatch(
+            restoreSession({
+              token: session.token,
+              refreshToken: session.refreshToken,
+              phoneNumber: session.phoneNumber || '',
+              userId: session.userId,
+              userProfile: session.userProfile,
+              isNewUser: false,
+            }),
+          );
+          setInitialRoute('MainTabs');
+        } else if (session.token && session.isNewUser) {
+          dispatch(
+            restoreSession({
+              token: session.token,
+              refreshToken: session.refreshToken,
+              phoneNumber: session.phoneNumber || '',
+              userId: session.userId,
+              userProfile: session.userProfile,
+              isNewUser: true,
+            }),
+          );
+          setInitialRoute('NewUserProfileSetup');
+        } else {
+          setInitialRoute('PhoneAuth');
+        }
+      } catch (err) {
+        console.warn('⚠️ [App] Failed to check stored session:', err);
+        if (isMounted) {
+          setInitialRoute('PhoneAuth');
+        }
+      } finally {
+        clearTimeout(fallbackTimer);
       }
     }
 
     checkAuthSession();
+
+    return () => {
+      isMounted = false;
+      clearTimeout(fallbackTimer);
+    };
   }, [dispatch]);
 
   if (!initialRoute) {

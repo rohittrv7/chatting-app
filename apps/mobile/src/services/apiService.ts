@@ -129,9 +129,62 @@ export const handleSessionExpired = async () => {
   }
 };
 
+/**
+ * Check if JWT token is expired or expiring within marginSeconds (default 60s)
+ */
+export function isTokenExpiredOrExpiring(token?: string | null, marginSeconds = 60): boolean {
+  if (!token || typeof token !== 'string') return true;
+  try {
+    const parts = token.split('.');
+    if (parts.length >= 2) {
+      let b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+      while (b64.length % 4) b64 += '=';
+      let jsonStr = '';
+      if (typeof atob === 'function') {
+        jsonStr = atob(b64);
+      } else if (typeof Buffer !== 'undefined') {
+        jsonStr = Buffer.from(b64, 'base64').toString('utf8');
+      }
+      if (jsonStr) {
+        const payload = JSON.parse(jsonStr);
+        if (typeof payload.exp === 'number') {
+          const expiresAtMs = payload.exp * 1000;
+          return Date.now() + marginSeconds * 1000 >= expiresAtMs;
+        }
+      }
+    }
+  } catch {}
+  return false;
+}
+
 let refreshInFlight: Promise<{ accessToken: string; refreshToken: string } | null> | null = null;
 
 export const apiService = {
+  /**
+   * Proactively verifies stored token. If expired or expiring within 60s,
+   * performs a single coordinated refresh to prevent 401 storm races.
+   */
+  async ensureValidToken(): Promise<string | null> {
+    if (refreshInFlight) {
+      try {
+        const res = await refreshInFlight;
+        if (res?.accessToken) return res.accessToken;
+      } catch (_) {}
+    }
+
+    const storedToken = await safeStorage.getItem(AUTH_STORAGE_KEYS.TOKEN);
+    if (!storedToken) return null;
+
+    if (isTokenExpiredOrExpiring(storedToken, 60)) {
+      console.log(
+        '⏳ [ApiService] Access token expired or expiring soon — proactively refreshing before request',
+      );
+      const refreshed = await this.refreshAuthToken();
+      return refreshed?.accessToken || null;
+    }
+
+    return storedToken;
+  },
   /**
    * Rotate Refresh Token and get a new Access Token seamlessly.
    * Concurrent-safe: multiple callers await the same in-flight promise.
@@ -226,7 +279,11 @@ export const apiService = {
       } catch (_) {}
     }
 
-    let token = tokenOverride || (await safeStorage.getItem(AUTH_STORAGE_KEYS.TOKEN));
+    let token = tokenOverride;
+    if (!token) {
+      token =
+        (await this.ensureValidToken()) || (await safeStorage.getItem(AUTH_STORAGE_KEYS.TOKEN));
+    }
     const customHeaders: Record<string, string> = {};
     if (options.headers) {
       if (typeof (options.headers as any).forEach === 'function') {

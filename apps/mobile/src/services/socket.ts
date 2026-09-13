@@ -310,6 +310,13 @@ class RealtimeSocketService {
     };
     document?: { uri: string; name: string; size?: number | string; mimeType?: string };
     contact?: { name: string; phone: string; username?: string };
+    replyTo?: {
+      id: string;
+      text?: string;
+      isMe?: boolean;
+      imagePath?: string;
+      senderName?: string;
+    };
     mediaSize?: string;
     type?: string;
   }): void {

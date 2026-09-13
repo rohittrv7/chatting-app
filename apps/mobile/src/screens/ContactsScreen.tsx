@@ -64,43 +64,64 @@ export const ContactsScreen: React.FC<Props> = ({ navigation }) => {
     const result = await fetchDeviceContacts(forceRefresh);
     setHasPermission(result.granted);
 
+    let registeredFromSync: DeviceContact[] = [];
+    let unregisteredFromSync: DeviceContact[] = [];
+
     if (result.granted && result.contacts.length > 0) {
       const syncRes = await syncContactsWithServer(
         result.contacts,
         token || undefined,
         forceRefresh,
       );
-      const myDigits = (userProfile.phone || '').replace(/\D/g, '').slice(-10);
-      const myUsername = (userProfile.username || '').toLowerCase().replace(/^@+/, '');
-
-      const isMe = (c: DeviceContact) => {
-        const cDigits = (c.phone || '').replace(/\D/g, '').slice(-10);
-        const cUsername = (c.username || '').toLowerCase().replace(/^@+/, '');
-        if (myDigits && cDigits && myDigits === cDigits) {
-          return true;
-        }
-        if (myUsername && cUsername && myUsername === cUsername) {
-          return true;
-        }
-        return false;
-      };
-
-      const dedupe = (list: DeviceContact[]) => {
-        const seen = new Set<string>();
-        return list.filter((c) => {
-          const key = c.userId || (c.phone ? c.phone.replace(/\D/g, '').slice(-10) : c.name);
-          if (!key || seen.has(key)) return false;
-          seen.add(key);
-          return true;
-        });
-      };
-
-      setRegisteredContacts(dedupe(syncRes.registered.filter((c) => !isMe(c))));
-      setUnregisteredContacts(dedupe(syncRes.unregistered.filter((c) => !isMe(c))));
-    } else {
-      setRegisteredContacts([]);
-      setUnregisteredContacts([]);
+      registeredFromSync = syncRes.registered;
+      unregisteredFromSync = syncRes.unregistered;
     }
+
+    const myDigits = (userProfile.phone || '').replace(/\D/g, '').slice(-10);
+    const myUsername = (userProfile.username || '').toLowerCase().replace(/^@+/, '');
+
+    const isMe = (c: DeviceContact) => {
+      const cDigits = (c.phone || '').replace(/\D/g, '').slice(-10);
+      const cUsername = (c.username || '').toLowerCase().replace(/^@+/, '');
+      if (myDigits && cDigits && myDigits === cDigits) {
+        return true;
+      }
+      if (myUsername && cUsername && myUsername === cUsername) {
+        return true;
+      }
+      return false;
+    };
+
+    const dedupe = (list: DeviceContact[]) => {
+      const seen = new Set<string>();
+      return list.filter((c) => {
+        const key = c.userId || (c.phone ? c.phone.replace(/\D/g, '').slice(-10) : c.name);
+        if (!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    };
+
+    // Include contacts from existing conversations so chat partners are always visible
+    const conversationContacts: DeviceContact[] = (conversations || [])
+      .filter((c: any) => (c.recipientDbId || c.username) && !c.isGroup)
+      .map((c: any) => ({
+        id: c.recipientDbId || c.id,
+        name: c.title || c.username || 'Contact',
+        username: c.username ? `@${c.username.replace(/^@+/, '')}` : '',
+        phone: c.phone || '',
+        isRegistered: true,
+        userId: c.recipientDbId || c.id,
+        avatarUrl: c.avatarUrl,
+        about: c.about || 'Available | Ready to connect',
+      }));
+
+    const combinedRegistered = dedupe([...registeredFromSync, ...conversationContacts]).filter(
+      (c) => !isMe(c),
+    );
+
+    setRegisteredContacts(combinedRegistered);
+    setUnregisteredContacts(dedupe(unregisteredFromSync).filter((c) => !isMe(c)));
     setIsLoading(false);
   };
 

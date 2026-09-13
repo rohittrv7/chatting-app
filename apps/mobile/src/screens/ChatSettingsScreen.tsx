@@ -7,42 +7,71 @@
  * - Chat Wallpaper placeholder
  */
 
-import React, { useState, useEffect } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, StatusBar, ScrollView } from 'react-native';
+import React from 'react';
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  StyleSheet,
+  StatusBar,
+  ScrollView,
+  Alert,
+  Image,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types';
-import { useTheme } from '../context/ThemeContext';
+import { useTheme, ChatFontSize } from '../context/ThemeContext';
 import { useSelector } from 'react-redux';
 import { RootState } from '../store';
 import { apiService } from '../services/apiService';
-import { safeStorage } from '../services/storageHelper';
 import { useBackup } from '../context/BackupContext';
-import { ArrowLeft, Check, Moon, Sun, Type, CloudUpload, ChevronRight } from 'lucide-react-native';
+import * as ImagePicker from 'expo-image-picker';
+import {
+  ArrowLeft,
+  Check,
+  Moon,
+  Sun,
+  Type,
+  CloudUpload,
+  ChevronRight,
+  Palette,
+  ImagePlus,
+  RotateCcw,
+} from 'lucide-react-native';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'ChatSettings'>;
 
-type FontSizeOption = 'small' | 'normal' | 'large';
-const FONT_SIZE_KEY = '@chat_font_size';
-
-const FONT_SIZES: { label: string; value: FontSizeOption; size: number }[] = [
+const FONT_SIZES: { label: string; value: ChatFontSize; size: number }[] = [
   { label: 'Small', value: 'small', size: 13 },
   { label: 'Normal', value: 'normal', size: 15 },
   { label: 'Large', value: 'large', size: 18 },
 ];
 
+const WALLPAPER_PRESETS = [
+  { name: 'Default', color: null },
+  { name: 'Midnight', color: '#0B1014' },
+  { name: 'Slate', color: '#0F172A' },
+  { name: 'Charcoal', color: '#18181B' },
+  { name: 'Emerald', color: '#064E3B' },
+  { name: 'Navy', color: '#1E1B4B' },
+  { name: 'Wine', color: '#3B0764' },
+  { name: 'Espresso', color: '#1C1917' },
+  { name: 'Forest', color: '#022C22' },
+];
+
 export const ChatSettingsScreen: React.FC<Props> = ({ navigation }) => {
-  const { themeMode, colors, setThemeMode } = useTheme();
+  const {
+    themeMode,
+    colors,
+    setThemeMode,
+    chatWallpaper,
+    setChatWallpaper,
+    chatFontSize,
+    setChatFontSize,
+  } = useTheme();
   const { lastBackup } = useBackup();
   const token = useSelector((state: RootState) => state.auth.token);
-  const [fontSize, setFontSizeState] = useState<FontSizeOption>('normal');
-
-  // Load persisted font size
-  useEffect(() => {
-    safeStorage.getItem(FONT_SIZE_KEY).then((v) => {
-      if (v === 'small' || v === 'normal' || v === 'large') setFontSizeState(v);
-    });
-  }, []);
 
   const handleThemeChange = (mode: 'dark' | 'light') => {
     setThemeMode(mode);
@@ -52,10 +81,27 @@ export const ChatSettingsScreen: React.FC<Props> = ({ navigation }) => {
     }
   };
 
-  const handleFontSize = (value: FontSizeOption) => {
-    setFontSizeState(value);
-    safeStorage.setItem(FONT_SIZE_KEY, value);
-    // Font size is a local-only preference — no backend sync needed
+  const handlePickGalleryWallpaper = async () => {
+    try {
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert(
+          'Permission Needed',
+          'Please allow photo library access to select a custom chat wallpaper.',
+        );
+        return;
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: true,
+        quality: 0.85,
+      });
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        setChatWallpaper(result.assets[0].uri);
+      }
+    } catch (err) {
+      console.warn('[ChatSettings] Failed to pick image', err);
+    }
   };
 
   return (
@@ -171,7 +217,7 @@ export const ChatSettingsScreen: React.FC<Props> = ({ navigation }) => {
           >
             <Text
               style={{
-                fontSize: FONT_SIZES.find((f) => f.value === fontSize)?.size ?? 15,
+                fontSize: FONT_SIZES.find((f) => f.value === chatFontSize)?.size ?? 15,
                 color: colors.textPrimary,
                 fontWeight: '500',
               }}
@@ -189,23 +235,156 @@ export const ChatSettingsScreen: React.FC<Props> = ({ navigation }) => {
                   styles.fontChip,
                   {
                     backgroundColor:
-                      fontSize === opt.value ? colors.primaryIndigo : colors.cardBorder,
-                    borderColor: fontSize === opt.value ? colors.primaryIndigo : colors.cardBorder,
+                      chatFontSize === opt.value ? colors.primaryIndigo : colors.cardBorder,
+                    borderColor:
+                      chatFontSize === opt.value ? colors.primaryIndigo : colors.cardBorder,
                   },
                 ]}
-                onPress={() => handleFontSize(opt.value)}
+                onPress={() => setChatFontSize(opt.value)}
                 activeOpacity={0.7}
               >
                 <Text
                   style={[
                     styles.fontChipText,
-                    { color: fontSize === opt.value ? '#FFF' : colors.textSecondary },
+                    { color: chatFontSize === opt.value ? '#FFF' : colors.textSecondary },
                   ]}
                 >
                   {opt.label}
                 </Text>
               </TouchableOpacity>
             ))}
+          </View>
+        </View>
+
+        {/* ── Chat Wallpaper ───────────────────────────────────────── */}
+        <Text style={[styles.sectionHeader, { color: colors.textSecondary, marginTop: 24 }]}>
+          CHAT WALLPAPER
+        </Text>
+
+        <View
+          style={[
+            styles.wallpaperCard,
+            { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+          ]}
+        >
+          <View style={styles.wallpaperHeader}>
+            <View style={[styles.iconBox, { backgroundColor: 'rgba(99,102,241,0.12)' }]}>
+              <Palette size={20} color={colors.primaryIndigo} />
+            </View>
+            <View style={{ marginLeft: 12, flex: 1 }}>
+              <Text style={[styles.cardTitle, { color: colors.textPrimary }]}>Wallpaper Theme</Text>
+              <Text style={[styles.cardDesc, { color: colors.textSecondary }]}>
+                Choose a color preset or select a custom image
+              </Text>
+            </View>
+          </View>
+
+          {/* Current Wallpaper Preview / Status */}
+          <View
+            style={[
+              styles.wallpaperPreviewBox,
+              {
+                backgroundColor: chatWallpaper
+                  ? chatWallpaper.startsWith('#')
+                    ? chatWallpaper
+                    : 'transparent'
+                  : colors.bg,
+                borderColor: colors.cardBorder,
+              },
+            ]}
+          >
+            {chatWallpaper && !chatWallpaper.startsWith('#') ? (
+              <Image
+                source={{ uri: chatWallpaper }}
+                style={StyleSheet.absoluteFill}
+                resizeMode="cover"
+              />
+            ) : null}
+            <View style={styles.wallpaperPreviewOverlay}>
+              <Text style={styles.wallpaperPreviewText}>
+                {chatWallpaper
+                  ? chatWallpaper.startsWith('#')
+                    ? `Preset: ${WALLPAPER_PRESETS.find((p) => p.color === chatWallpaper)?.name || chatWallpaper}`
+                    : 'Custom Image Wallpaper'
+                  : 'Default Dark Background'}
+              </Text>
+            </View>
+          </View>
+
+          {/* Color Presets Palette */}
+          <Text style={[styles.presetSubtitle, { color: colors.textSecondary }]}>
+            CURATED COLOR PRESETS
+          </Text>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.presetsRow}
+          >
+            {WALLPAPER_PRESETS.map((preset) => {
+              const isSelected = chatWallpaper === preset.color;
+              return (
+                <TouchableOpacity
+                  key={preset.name}
+                  style={[
+                    styles.presetItem,
+                    isSelected && { borderColor: colors.primaryIndigo, borderWidth: 2 },
+                  ]}
+                  onPress={() => setChatWallpaper(preset.color)}
+                  activeOpacity={0.8}
+                >
+                  <View
+                    style={[
+                      styles.presetCircle,
+                      {
+                        backgroundColor:
+                          preset.color || (themeMode === 'dark' ? '#0B1014' : '#F8FAFC'),
+                        borderColor: colors.cardBorder,
+                      },
+                    ]}
+                  >
+                    {isSelected && (
+                      <Check size={14} color={preset.color === '#F8FAFC' ? '#000' : '#FFF'} />
+                    )}
+                  </View>
+                  <Text
+                    style={[
+                      styles.presetName,
+                      { color: isSelected ? colors.primaryIndigo : colors.textSecondary },
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {preset.name}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+
+          {/* Gallery Button & Reset Action */}
+          <View style={styles.wallpaperActionsRow}>
+            <TouchableOpacity
+              style={[styles.galleryPickBtn, { borderColor: colors.primaryIndigo }]}
+              onPress={handlePickGalleryWallpaper}
+              activeOpacity={0.7}
+            >
+              <ImagePlus size={18} color={colors.primaryIndigo} />
+              <Text style={[styles.galleryPickText, { color: colors.primaryIndigo }]}>
+                Choose from Gallery
+              </Text>
+            </TouchableOpacity>
+
+            {chatWallpaper !== null && (
+              <TouchableOpacity
+                style={[styles.resetWallpaperBtn, { borderColor: colors.cardBorder }]}
+                onPress={() => setChatWallpaper(null)}
+                activeOpacity={0.7}
+              >
+                <RotateCcw size={16} color={colors.textSecondary} />
+                <Text style={[styles.resetWallpaperText, { color: colors.textSecondary }]}>
+                  Reset
+                </Text>
+              </TouchableOpacity>
+            )}
           </View>
         </View>
 
@@ -298,6 +477,90 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   fontChipText: { fontSize: 14, fontWeight: '700' },
+  wallpaperCard: { borderRadius: 18, padding: 16, borderWidth: 1, gap: 14 },
+  wallpaperHeader: { flexDirection: 'row', alignItems: 'center' },
+  wallpaperPreviewBox: {
+    height: 70,
+    borderRadius: 14,
+    borderWidth: 1,
+    overflow: 'hidden',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  wallpaperPreviewOverlay: {
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 12,
+  },
+  wallpaperPreviewText: {
+    color: '#FFF',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  presetSubtitle: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+  },
+  presetsRow: {
+    flexDirection: 'row',
+    gap: 12,
+    paddingVertical: 4,
+  },
+  presetItem: {
+    alignItems: 'center',
+    padding: 4,
+    borderRadius: 12,
+  },
+  presetCircle: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    borderWidth: 1.5,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  presetName: {
+    fontSize: 11,
+    fontWeight: '600',
+    marginTop: 4,
+  },
+  wallpaperActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginTop: 6,
+  },
+  galleryPickBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    backgroundColor: 'rgba(99,102,241,0.06)',
+    gap: 8,
+  },
+  galleryPickText: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  resetWallpaperBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    borderWidth: 1,
+    gap: 6,
+  },
+  resetWallpaperText: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
   backupCard: {
     flexDirection: 'row',
     alignItems: 'center',

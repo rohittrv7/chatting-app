@@ -12,6 +12,7 @@
  * (allowsRecordingIOS, playsInSilentModeIOS).
  */
 import { Platform, DeviceEventEmitter } from 'react-native';
+import { ensureBluetoothPermission } from './permissionsService';
 
 let Audio: any = null;
 try {
@@ -39,6 +40,7 @@ export interface AudioDeviceStatus {
   selectedDevice: AudioRoute;
   hasBluetooth: boolean;
   hasWiredHeadset: boolean;
+  bluetoothDeviceName?: string;
 }
 
 type RouteChangeListener = (status: AudioDeviceStatus) => void;
@@ -100,12 +102,18 @@ class AudioRoutingService {
     const selected = (data.selectedAudioDevice as AudioRoute) || this.currentStatus.selectedDevice;
     const hasBluetooth = available.includes('BLUETOOTH');
     const hasWiredHeadset = available.includes('WIRED_HEADSET');
+    const bluetoothDeviceName =
+      data.bluetoothDeviceName ||
+      data.name ||
+      data.bluetoothName ||
+      (hasBluetooth ? 'Bluetooth Headset' : undefined);
 
     this.currentStatus = {
       availableDevices: available.length > 0 ? available : ['EARPIECE', 'SPEAKER_PHONE'],
       selectedDevice: selected,
       hasBluetooth,
       hasWiredHeadset,
+      bluetoothDeviceName,
     };
     console.log('🎧 [AudioRoutingService] Route changed:', this.currentStatus);
     this._notify();
@@ -124,6 +132,16 @@ class AudioRoutingService {
     this.isStarted = true;
 
     this._setupEventListener();
+
+    // Android 12+: ensure runtime BLUETOOTH_CONNECT permission is granted
+    // so InCallManager can query and route audio to Bluetooth devices
+    if (Platform.OS === 'android') {
+      try {
+        await ensureBluetoothPermission();
+      } catch (btErr) {
+        console.warn('[AudioRoutingService] ensureBluetoothPermission error:', btErr);
+      }
+    }
 
     // expo-av: configure iOS audio session for recording + playback
     try {

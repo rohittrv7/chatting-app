@@ -27,7 +27,7 @@ import {
 } from 'lucide-react-native';
 import { useSelector } from 'react-redux';
 import { RootState } from '../store';
-import { apiService } from '../services/apiService';
+import { apiService, extractUserIdFromToken } from '../services/apiService';
 
 export interface SplitContact {
   id: string;
@@ -87,51 +87,58 @@ export const SplitBillModal: React.FC<SplitBillModalProps> = ({
 }) => {
   const c = { ...fallbackColors, ...colors };
   const token = useSelector((state: RootState) => state.auth.token);
-  const currentUserId = useSelector(
+  const rawAuthUserId = useSelector(
     (state: RootState) => (state.auth as any).userId || (state.auth as any).userProfile?.id || '',
   );
+  const currentUserId = rawAuthUserId || (token ? extractUserIdFromToken(token) : '') || 'me';
   const currentUserName = useSelector(
     (state: RootState) => (state.auth as any).userProfile?.name || 'You',
   );
+  const conversations = useSelector((state: RootState) => (state.chat as any)?.conversations || []);
 
   const [title, setTitle] = useState('');
   const [totalAmountStr, setTotalAmountStr] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('FOOD');
   const [splitMode, setSplitMode] = useState<SplitMode>('EQUAL');
-  const [paidByUserId, setPaidByUserId] = useState<string>('me');
+  const [paidByUserId, setPaidByUserId] = useState<string>(currentUserId);
   const [isOngoingGroup, setIsOngoingGroup] = useState<boolean>(false);
   const [participants, setParticipants] = useState<SplitContact[]>([]);
   const [customShares, setCustomShares] = useState<Record<string, string>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // Contact picker modal state
+  // Contact picker modal state & server search
   const [showContactPicker, setShowContactPicker] = useState(false);
   const [contactSearchQuery, setContactSearchQuery] = useState('');
+  const [serverSearchResults, setServerSearchResults] = useState<SplitContact[]>([]);
+  const [isSearchingServer, setIsSearchingServer] = useState(false);
 
-  // Initialize participants
+  // Initialize participants & default paidBy to current user
   useEffect(() => {
     if (visible) {
       setTitle('');
       setTotalAmountStr('');
       setSelectedCategory('FOOD');
       setSplitMode('EQUAL');
-      setPaidByUserId('me');
+      setPaidByUserId(currentUserId);
       setIsOngoingGroup(false);
       setErrorMsg(null);
       setCustomShares({});
       setShowContactPicker(false);
       setContactSearchQuery('');
+      setServerSearchResults([]);
 
       const meContact: SplitContact = {
-        id: currentUserId || 'me',
+        id: currentUserId,
         name: `${currentUserName} (You)`,
       };
 
-      const others = defaultParticipants.filter((p) => p.id !== currentUserId && p.id !== 'me');
+      const others = defaultParticipants.filter(
+        (p) => p.id !== currentUserId && p.id !== 'me' && p.id !== rawAuthUserId,
+      );
       setParticipants([meContact, ...others]);
     }
-  }, [visible, defaultParticipants, currentUserId, currentUserName]);
+  }, [visible, defaultParticipants, currentUserId, currentUserName, rawAuthUserId]);
 
   const totalAmount = parseFloat(totalAmountStr) || 0;
   const participantCount = participants.length;
@@ -180,7 +187,7 @@ export const SplitBillModal: React.FC<SplitBillModalProps> = ({
     if (contactId === currentUserId || contactId === 'me') return;
     setParticipants((prev) => prev.filter((p) => p.id !== contactId));
     if (paidByUserId === contactId) {
-      setPaidByUserId('me');
+      setPaidByUserId(currentUserId);
     }
     setCustomShares((prev) => {
       const copy = { ...prev };
@@ -192,8 +199,36 @@ export const SplitBillModal: React.FC<SplitBillModalProps> = ({
   const getPayerDisplayName = () => {
     if (paidByUserId === 'me' || paidByUserId === currentUserId) return `${currentUserName} (You)`;
     const found = participants.find((p) => p.id === paidByUserId);
-    return found?.name || 'Someone';
+    return found?.name || `${currentUserName} (You)`;
   };
+
+  // Debounced live backend user search for adding participants
+  useEffect(() => {
+    const q = contactSearchQuery.trim();
+    if (q.length < 2 || !token) {
+      setServerSearchResults([]);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      setIsSearchingServer(true);
+      try {
+        const results = await apiService.searchUsers(token, q);
+        if (Array.isArray(results)) {
+          const mapped: SplitContact[] = results.map((u: any) => ({
+            id: u.id,
+            name: u.displayName || u.name || u.username || 'User',
+            phone: u.phoneNumber || u.phone,
+            username: u.username,
+          }));
+          setServerSearchResults(mapped);
+        }
+      } catch (_) {
+      } finally {
+        setIsSearchingServer(false);
+      }
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [contactSearchQuery, token]);
 
   const handleCreateSplit = async () => {
     setErrorMsg(null);
@@ -213,12 +248,22 @@ export const SplitBillModal: React.FC<SplitBillModalProps> = ({
     let customAmountsPayload: Record<string, number> | undefined;
     let sharesPayload: Record<string, number> | undefined;
 
+    const cleanMyId =
+      currentUserId && currentUserId !== 'me'
+        ? currentUserId
+        : (token ? extractUserIdFromToken(token) : '') || '';
+
+    if (!cleanMyId) {
+      setErrorMsg('Authentication error. Could not resolve user identity.');
+      return;
+    }
+
     if (splitMode === 'EXACT') {
       customAmountsPayload = {};
       let sum = 0;
       for (const p of participants) {
         const val = parseFloat(customShares[p.id] || '0') || 0;
-        const actualId = p.id === 'me' ? currentUserId || '' : p.id;
+        const actualId = p.id === 'me' || p.id === currentUserId ? cleanMyId : p.id;
         customAmountsPayload[actualId] = val;
         sum += val;
       }
@@ -233,7 +278,7 @@ export const SplitBillModal: React.FC<SplitBillModalProps> = ({
       let pSum = 0;
       for (const p of participants) {
         const val = parseFloat(customShares[p.id] || '0') || 0;
-        const actualId = p.id === 'me' ? currentUserId || '' : p.id;
+        const actualId = p.id === 'me' || p.id === currentUserId ? cleanMyId : p.id;
         sharesPayload[actualId] = val;
         pSum += val;
       }
@@ -245,10 +290,27 @@ export const SplitBillModal: React.FC<SplitBillModalProps> = ({
       sharesPayload = {};
       for (const p of participants) {
         const val = parseFloat(customShares[p.id] || '1') || 1;
-        const actualId = p.id === 'me' ? currentUserId || '' : p.id;
+        const actualId = p.id === 'me' || p.id === currentUserId ? cleanMyId : p.id;
         sharesPayload[actualId] = val;
       }
     }
+
+    const cleanParticipantIds = Array.from(
+      new Set(
+        participants.map((p) => (p.id === 'me' || p.id === currentUserId ? cleanMyId : p.id)),
+      ),
+    );
+
+    const hasInvalidParticipant = cleanParticipantIds.some(
+      (id) => !id || id === 'recipient' || id === 'me',
+    );
+    if (hasInvalidParticipant) {
+      setErrorMsg('All participants must be registered users with valid accounts.');
+      return;
+    }
+
+    const resolvedPayerId =
+      paidByUserId === 'me' || paidByUserId === currentUserId ? cleanMyId : paidByUserId;
 
     setIsSubmitting(true);
     try {
@@ -257,12 +319,6 @@ export const SplitBillModal: React.FC<SplitBillModalProps> = ({
         setIsSubmitting(false);
         return;
       }
-
-      const cleanParticipantIds = participants.map((p) =>
-        p.id === 'me' ? currentUserId || '' : p.id,
-      );
-
-      const resolvedPayerId = paidByUserId === 'me' ? currentUserId || '' : paidByUserId;
 
       const res = await apiService.createExpenseSplit(token, {
         title: title.trim(),
@@ -283,16 +339,44 @@ export const SplitBillModal: React.FC<SplitBillModalProps> = ({
         onSuccess(res.data);
         onClose();
       } else {
-        setErrorMsg(res.error || 'Failed to create bill split');
+        setErrorMsg(res.error || 'Failed to create bill split. Please verify participants.');
       }
     } catch (e: any) {
-      setErrorMsg(e.message || 'Something went wrong');
+      setErrorMsg(e.message || 'Something went wrong while creating split');
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  const filteredAvailable = availableContacts.filter((c) => {
+  // Merge available contacts from props, active conversation participants, and server search
+  const conversationContacts: SplitContact[] = conversations
+    .filter((conv: any) => conv.recipientDbId && conv.recipientDbId !== currentUserId)
+    .map((conv: any) => ({
+      id: conv.recipientDbId,
+      name: conv.title || conv.username || 'Friend',
+      phone: conv.phone,
+      username: conv.username,
+    }));
+
+  const combinedAvailableMap = new Map<string, SplitContact>();
+  for (const c of availableContacts) {
+    if (c.id && c.id !== currentUserId && c.id !== 'me') {
+      combinedAvailableMap.set(c.id, c);
+    }
+  }
+  for (const c of conversationContacts) {
+    if (c.id && c.id !== currentUserId && c.id !== 'me') {
+      combinedAvailableMap.set(c.id, c);
+    }
+  }
+  for (const c of serverSearchResults) {
+    if (c.id && c.id !== currentUserId && c.id !== 'me') {
+      combinedAvailableMap.set(c.id, c);
+    }
+  }
+
+  const allAvailable = Array.from(combinedAvailableMap.values());
+  const filteredAvailable = allAvailable.filter((c) => {
     if (participants.some((p) => p.id === c.id)) return false;
     if (c.id === currentUserId) return false;
     if (!contactSearchQuery.trim()) return true;
@@ -401,13 +485,14 @@ export const SplitBillModal: React.FC<SplitBillModalProps> = ({
               style={styles.payerScroll}
             >
               {participants.map((p) => {
+                const isCurrentMe = p.id === currentUserId || p.id === 'me';
                 const isPayer =
                   paidByUserId === p.id ||
-                  (paidByUserId === 'me' && (p.id === currentUserId || p.id === 'me'));
+                  ((paidByUserId === 'me' || paidByUserId === currentUserId) && isCurrentMe);
                 return (
                   <TouchableOpacity
                     key={`payer-${p.id}`}
-                    onPress={() => setPaidByUserId(p.id)}
+                    onPress={() => setPaidByUserId(isCurrentMe ? currentUserId : p.id)}
                     style={[
                       styles.payerChip,
                       { borderColor: isPayer ? c.primaryIndigo : c.cardBorder },
@@ -424,7 +509,7 @@ export const SplitBillModal: React.FC<SplitBillModalProps> = ({
                         },
                       ]}
                     >
-                      {p.name}
+                      {isCurrentMe ? `${currentUserName} (You)` : p.name}
                     </Text>
                   </TouchableOpacity>
                 );
@@ -739,9 +824,18 @@ export const SplitBillModal: React.FC<SplitBillModalProps> = ({
                   <Text style={[styles.contactPickerTitle, { color: c.textPrimary }]}>
                     Select Contact to Add
                   </Text>
-                  <TouchableOpacity onPress={() => setShowContactPicker(false)}>
-                    <X size={16} color={c.textSecondary} />
-                  </TouchableOpacity>
+                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                    {isSearchingServer && (
+                      <ActivityIndicator
+                        size="small"
+                        color={c.primaryIndigo}
+                        style={{ marginRight: 8 }}
+                      />
+                    )}
+                    <TouchableOpacity onPress={() => setShowContactPicker(false)}>
+                      <X size={16} color={c.textSecondary} />
+                    </TouchableOpacity>
+                  </View>
                 </View>
                 <TextInput
                   style={[

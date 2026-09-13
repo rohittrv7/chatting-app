@@ -34,7 +34,7 @@ export interface BackupMetadata {
   accountEmail: string;
 }
 
-export type BackupFrequency = 'daily' | 'weekly' | 'monthly' | 'manual';
+export type BackupFrequency = 'daily' | 'weekly' | 'monthly' | 'manual' | 'never';
 export type BackupNetworkType = 'wifi' | 'cellular';
 
 export interface BackupSettings {
@@ -191,11 +191,9 @@ class MockBackupService {
       if (raw) {
         return JSON.parse(raw);
       }
-      // Provide default initial mock backup so user immediately sees WhatsApp-like stats
-      await safeStorage.setItem(STORAGE_KEY_METADATA, JSON.stringify(DEFAULT_INITIAL_METADATA));
-      return DEFAULT_INITIAL_METADATA;
+      return null;
     } catch {
-      return DEFAULT_INITIAL_METADATA;
+      return null;
     }
   }
 

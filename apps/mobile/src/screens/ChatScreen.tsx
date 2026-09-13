@@ -97,6 +97,7 @@ import {
   Ban,
   ArrowDown,
   Upload,
+  AlertCircle,
 } from 'lucide-react-native';
 import { ensureMediaLibraryPermission } from '../services/permissionsService';
 
@@ -326,8 +327,7 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
   // cause a full ChatScreen re-render, only the specific sub-tree that reads them.
   const { isUserOnline, getLastSeen } = usePresence();
   const { isUserTyping } = useTyping();
-
-  const { themeMode, colors } = useTheme();
+  const { themeMode, colors, chatWallpaper, chatFontSizeValue } = useTheme();
   const { showToast } = useToast();
   const authUserId = useSelector(
     (state: RootState) => (state.auth as any).userId as string | undefined,
@@ -485,6 +485,7 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
     accuracy?: number;
   } | null>(null);
   const [isLoadingGps, setIsLoadingGps] = useState(false);
+  const [gpsError, setGpsError] = useState<string | null>(null);
   const [stoppedLiveMsgIds, setStoppedLiveMsgIds] = useState<Record<string, boolean>>({});
   const [showContactPickerModal, setShowContactPickerModal] = useState(false);
   const [availablePhoneContacts, setAvailablePhoneContacts] = useState<
@@ -772,12 +773,23 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
         targetId,
         resolvedDisplayName,
         currentConv?.username || (route.params as any)?.username,
+        undefined,
+        undefined,
+        replyTo
+          ? {
+              id: replyTo.id,
+              text: replyTo.text,
+              isMe: replyTo.isMe,
+              imagePath: replyTo.imagePath,
+              senderName: replyTo.isMe ? 'You' : resolvedDisplayName,
+            }
+          : undefined,
       );
       setReplyTo(null);
       setShowEmojiPicker(false);
       setShowAttachMenu(false);
     },
-    // FIX: Added resolvedRecipientId to dependency array — was missing, causing stale closure
+    // FIX: Added resolvedRecipientId and replyTo to dependency array
     [
       recipientDbId,
       resolvedRecipientId,
@@ -788,6 +800,7 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
       resolvedDisplayName,
       route.params,
       addMessage,
+      replyTo,
     ],
   );
 
@@ -1134,6 +1147,69 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
     showToast('Contact shared 👤', 'success', 1500);
   };
 
+  const fetchLocationData = async () => {
+    setIsLoadingGps(true);
+    setGpsError(null);
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        showToast('Location permission required', 'warning');
+        setGpsError('Location permission denied');
+        setIsLoadingGps(false);
+        return;
+      }
+
+      let loc: any = null;
+      try {
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('GPS timeout')), 8000),
+        );
+        const positionPromise = Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy?.Balanced ?? 3,
+        });
+        loc = await Promise.race([positionPromise, timeoutPromise]);
+      } catch (_) {
+        console.log('GPS satellite lock timed out — falling back to last known location');
+        loc = await Location.getLastKnownPositionAsync();
+      }
+
+      if (!loc || !loc.coords) {
+        setGpsError('Unable to acquire GPS fix. Please ensure device location is enabled.');
+        return;
+      }
+
+      const lat = loc.coords.latitude;
+      const lng = loc.coords.longitude;
+      let label = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+      try {
+        const geoPromise = Location.reverseGeocodeAsync({ latitude: lat, longitude: lng });
+        const geoTimeout = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Geo timeout')), 3000),
+        );
+        const [geo]: any = await Promise.race([geoPromise, geoTimeout]);
+        if (geo) {
+          label = [geo.name, geo.street, geo.subregion || geo.city, geo.region]
+            .filter(Boolean)
+            .slice(0, 3)
+            .join(', ');
+        }
+      } catch (_) {}
+
+      setCurrentGpsData({
+        lat,
+        lng,
+        label,
+        accuracy: loc.coords.accuracy ? Math.round(loc.coords.accuracy) : undefined,
+      });
+      setGpsError(null);
+    } catch (e: any) {
+      setGpsError(e?.message || 'Could not fetch GPS coordinates');
+      showToast('Could not fetch GPS coordinates', 'error');
+    } finally {
+      setIsLoadingGps(false);
+    }
+  };
+
   const handleOpenLocationPicker = async () => {
     setShowAttachMenu(false);
     if (!Location) {
@@ -1145,40 +1221,7 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
       return;
     }
     setShowLocationPickerModal(true);
-    setIsLoadingGps(true);
-    try {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') {
-        showToast('Location permission required', 'warning');
-        setIsLoadingGps(false);
-        return;
-      }
-      const loc = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy?.Balanced ?? 4,
-      });
-      const lat = loc.coords.latitude;
-      const lng = loc.coords.longitude;
-      let label = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
-      try {
-        const [geo] = await Location.reverseGeocodeAsync({ latitude: lat, longitude: lng });
-        if (geo) {
-          label = [geo.name, geo.street, geo.subregion || geo.city, geo.region]
-            .filter(Boolean)
-            .slice(0, 3)
-            .join(', ');
-        }
-      } catch {}
-      setCurrentGpsData({
-        lat,
-        lng,
-        label,
-        accuracy: loc.coords.accuracy ? Math.round(loc.coords.accuracy) : undefined,
-      });
-    } catch {
-      showToast('Could not fetch GPS coordinates', 'error');
-    } finally {
-      setIsLoadingGps(false);
-    }
+    await fetchLocationData();
   };
 
   const handleSendCurrentLocation = () => {
@@ -1335,49 +1378,62 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
             await FileSystem.writeAsStringAsync(decPath, decB64, {
               encoding: FileSystem.EncodingType.Base64,
             });
-            localUri = `file://${decPath}`;
+            localUri = decPath;
           }
         } catch (decErr) {
           console.warn('⚠️ [Signal] Failed decrypting attachment file:', decErr);
         }
       }
 
+      // 🧹 Normalize localUri to ensure valid file:// format without duplicates
+      let cleanUri = localUri;
+      while (cleanUri.startsWith('file://file://')) {
+        cleanUri = cleanUri.replace('file://file://', 'file://');
+      }
+      if (!cleanUri.startsWith('file://') && !cleanUri.startsWith('content://')) {
+        cleanUri = `file://${cleanUri}`;
+      }
+
       let permissionGranted = false;
       try {
-        const { status } = await MediaLibrary.requestPermissionsAsync(false);
-        permissionGranted = status === 'granted';
+        const perm = await MediaLibrary.requestPermissionsAsync();
+        permissionGranted = perm.granted || perm.status === 'granted';
       } catch (_) {
         permissionGranted = await ensureMediaLibraryPermission();
       }
 
-      if (permissionGranted) {
-        try {
-          const asset = await MediaLibrary.createAssetAsync(localUri);
-          if (asset) {
-            try {
-              let album = await MediaLibrary.getAlbumAsync('WhatsApp');
-              if (!album) album = await MediaLibrary.getAlbumAsync('Pictures');
-              if (!album) {
-                await MediaLibrary.createAlbumAsync('WhatsApp', asset, false);
-              } else {
-                await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
-              }
-            } catch (_) {}
-            showToast('Saved to gallery 📸', 'success', 2500);
-            return;
-          }
-        } catch (mlErr: any) {
-          console.warn('MediaLibrary save error:', mlErr?.message || mlErr);
-        }
+      if (!permissionGranted) {
+        showToast('Photo library permission required to save', 'warning', 2500);
+        return;
       }
 
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(localUri, {
-          mimeType: 'image/jpeg',
-          dialogTitle: 'Save Photo to Device',
-        });
-      } else {
-        showToast('Could not save photo to gallery', 'error');
+      try {
+        const asset = await MediaLibrary.createAssetAsync(cleanUri);
+        if (asset && asset.id) {
+          try {
+            let album = await MediaLibrary.getAlbumAsync('WhatsApp');
+            if (!album) album = await MediaLibrary.getAlbumAsync('Pictures');
+            if (!album) {
+              await MediaLibrary.createAlbumAsync('WhatsApp', asset, false);
+            } else {
+              await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
+            }
+          } catch (_) {}
+          showToast('Saved to gallery 📸', 'success', 2500);
+          return;
+        } else {
+          throw new Error('createAssetAsync returned null');
+        }
+      } catch (mlErr: any) {
+        console.error('MediaLibrary save error:', mlErr?.message || mlErr);
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(cleanUri, {
+            mimeType: 'image/jpeg',
+            dialogTitle: 'Save Photo to Device',
+          });
+        } else {
+          showToast('Could not save photo to gallery', 'error');
+        }
       }
     } catch {
       showToast('Could not save photo', 'error');
@@ -1571,9 +1627,27 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
                       ],
                 ]}
               >
-                {/* Reply quote */}
+                {/* Reply quote with scroll-to on tap */}
                 {msg.replyTo && (
-                  <View
+                  <TouchableOpacity
+                    activeOpacity={0.75}
+                    onPress={() => {
+                      const targetId = msg.replyTo?.id;
+                      if (targetId && flatListRef.current) {
+                        const targetIdx = roomMessages.findIndex((m) => m.id === targetId);
+                        if (targetIdx >= 0) {
+                          try {
+                            flatListRef.current.scrollToIndex({
+                              index: targetIdx,
+                              animated: true,
+                              viewPosition: 0.5,
+                            });
+                          } catch (_) {
+                            flatListRef.current.scrollToOffset({ offset: 0, animated: true });
+                          }
+                        }
+                      }
+                    }}
                     style={[
                       styles.replyQuote,
                       { borderLeftColor: isMe ? 'rgba(255,255,255,0.6)' : colors.primaryIndigo },
@@ -1586,7 +1660,7 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
                       ]}
                       numberOfLines={1}
                     >
-                      {msg.replyTo.isMe ? 'You' : resolvedDisplayName}
+                      {msg.replyTo.senderName || (msg.replyTo.isMe ? 'You' : resolvedDisplayName)}
                     </Text>
                     <Text
                       style={[
@@ -1597,7 +1671,7 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
                     >
                       {msg.replyTo.imagePath ? '📷 Photo' : msg.replyTo.text}
                     </Text>
-                  </View>
+                  </TouchableOpacity>
                 )}
 
                 {/* 📞 WhatsApp-Style In-Chat Call Log Item */}
@@ -2112,7 +2186,16 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
 
                 {/* Message text */}
                 {msg.text?.trim() ? (
-                  <Text style={[styles.msgText, { color: isMe ? '#F5DDD0' : colors.textPrimary }]}>
+                  <Text
+                    style={[
+                      styles.msgText,
+                      {
+                        color: isMe ? '#F5DDD0' : colors.textPrimary,
+                        fontSize: chatFontSizeValue,
+                        lineHeight: Math.round(chatFontSizeValue * 1.4),
+                      },
+                    ]}
+                  >
                     {msg.text}
                   </Text>
                 ) : null}
@@ -2175,19 +2258,34 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
       recipientDbId,
       reactToMessage,
       resendMessage,
+      chatFontSizeValue,
     ],
   );
 
   // ══════════════════════════════════════════════════════════════════════════
   return (
     <SafeAreaView
-      style={[styles.container, { backgroundColor: colors.bg }]}
+      style={[
+        styles.container,
+        {
+          backgroundColor:
+            chatWallpaper && chatWallpaper.startsWith('#') ? chatWallpaper : colors.bg,
+        },
+      ]}
       edges={['top', 'bottom', 'left', 'right']}
     >
       <StatusBar
         barStyle={themeMode === 'dark' ? 'light-content' : 'dark-content'}
         backgroundColor={colors.bg}
       />
+
+      {/* ── Custom Chat Wallpaper Background (Image or color preset) ── */}
+      {chatWallpaper && !chatWallpaper.startsWith('#') && (
+        <Image source={{ uri: chatWallpaper }} style={StyleSheet.absoluteFill} resizeMode="cover" />
+      )}
+      {chatWallpaper && chatWallpaper.startsWith('#') && (
+        <View style={[StyleSheet.absoluteFill, { backgroundColor: chatWallpaper }]} />
+      )}
 
       {/* Persistent call banner — shows when navigating to chat during an active call */}
       <ActiveCallBanner navigation={navigation} />
@@ -3347,12 +3445,17 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
         conversationId={isSplitGroup ? undefined : conversationId}
         defaultParticipants={[
           {
-            id: effectiveRecipientId || recipientDbId || 'recipient',
+            id:
+              effectiveRecipientId ||
+              recipientDbId ||
+              (route.params as any)?.recipientDbId ||
+              (route.params as any)?.recipientId ||
+              '',
             name: resolvedDisplayName,
             phone: route.params?.phone,
             username: route.params?.username,
           },
-        ]}
+        ].filter((p) => Boolean(p.id))}
         availableContacts={availablePhoneContacts}
         onSuccess={(createdData) => {
           showToast('Expense split created! 💰', 'success');
@@ -3474,27 +3577,35 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
                   {
                     backgroundColor: isLoadingGps
                       ? 'rgba(245,158,11,0.12)'
-                      : 'rgba(16,185,129,0.12)',
+                      : gpsError
+                        ? 'rgba(239,68,68,0.12)'
+                        : 'rgba(16,185,129,0.12)',
                   },
                 ]}
               >
                 {isLoadingGps ? (
                   <ActivityIndicator size="small" color="#F59E0B" />
+                ) : gpsError ? (
+                  <AlertCircle size={24} color="#EF4444" />
                 ) : (
                   <Compass size={24} color="#10B981" />
                 )}
               </View>
               <View style={{ flex: 1, marginLeft: 12 }}>
                 <Text style={[styles.gpsStatusTitle, { color: colors.textPrimary }]}>
-                  {isLoadingGps ? 'Locating device...' : 'GPS Signal Ready'}
+                  {isLoadingGps
+                    ? 'Locating device...'
+                    : gpsError
+                      ? 'GPS Fix Unavailable'
+                      : 'GPS Signal Ready'}
                 </Text>
                 <Text
                   style={[styles.gpsStatusSubtitle, { color: colors.textSecondary }]}
                   numberOfLines={2}
                 >
                   {isLoadingGps
-                    ? 'Acquiring satellite coordinates...'
-                    : currentGpsData?.label || 'GPS coordinates detected'}
+                    ? 'Acquiring coordinates...'
+                    : gpsError || currentGpsData?.label || 'GPS coordinates detected'}
                 </Text>
                 {currentGpsData?.accuracy ? (
                   <Text style={[styles.gpsAccuracyText, { color: '#10B981' }]}>
@@ -3502,6 +3613,21 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
                   </Text>
                 ) : null}
               </View>
+              {gpsError && !isLoadingGps ? (
+                <TouchableOpacity
+                  onPress={fetchLocationData}
+                  style={{
+                    backgroundColor: colors.primaryIndigo,
+                    paddingHorizontal: 12,
+                    paddingVertical: 6,
+                    borderRadius: 8,
+                    alignSelf: 'center',
+                    marginLeft: 8,
+                  }}
+                >
+                  <Text style={{ color: '#FFF', fontSize: 12, fontWeight: '600' }}>Retry</Text>
+                </TouchableOpacity>
+              ) : null}
             </View>
 
             {/* Option 1: Share Current Location */}

@@ -16,6 +16,7 @@ import {
   RefreshControl,
   Modal,
   Image,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -975,16 +976,6 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                   {formatChatTime(item.time)}
                 </Text>
                 <TouchableOpacity
-                  style={[styles.cardMenuBtn, { marginRight: 2 }]}
-                  hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}
-                  onPress={(e) => {
-                    e.stopPropagation();
-                    handleStartCallFromChat(item);
-                  }}
-                >
-                  <Phone size={15} color={colors.accent} />
-                </TouchableOpacity>
-                <TouchableOpacity
                   style={styles.cardMenuBtn}
                   hitSlop={{ top: 12, bottom: 12, left: 10, right: 10 }}
                   onPress={() => setSelectedChatForAction(item)}
@@ -1891,9 +1882,23 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                   },
                 ]}
                 onPress={() => {
-                  callHistoryService.clearHistory();
-                  showToast('Call history cleared', 'info');
+                  Alert.alert(
+                    'Clear Call History',
+                    'Are you sure you want to clear your entire call log history? This action cannot be undone.',
+                    [
+                      { text: 'Cancel', style: 'cancel' },
+                      {
+                        text: 'Clear All',
+                        style: 'destructive',
+                        onPress: () => {
+                          callHistoryService.clearHistory();
+                          showToast('Call history cleared', 'info', 2000);
+                        },
+                      },
+                    ],
+                  );
                 }}
+                activeOpacity={0.7}
               >
                 <Trash2 size={18} color="#EF4444" />
               </TouchableOpacity>
@@ -1939,7 +1944,7 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
           <FlatList
             data={callLogs}
             keyExtractor={(item) => item.id}
-            contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 100 }}
+            contentContainerStyle={{ paddingHorizontal: 10, paddingBottom: 100 }}
             showsVerticalScrollIndicator={false}
             renderItem={({ item: log }) => {
               const isMissed = log.direction === 'missed' || log.status === 'missed';
@@ -1948,64 +1953,98 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
 
               return (
                 <TouchableOpacity
-                  activeOpacity={0.7}
+                  activeOpacity={1}
+                  delayLongPress={2000}
+                  onLongPress={() => {
+                    Alert.alert(
+                      'Delete Call Entry',
+                      `Do you want to delete the call record with ${log.targetUserName || 'this contact'}?`,
+                      [
+                        { text: 'Cancel', style: 'cancel' },
+                        {
+                          text: 'Delete',
+                          style: 'destructive',
+                          onPress: () => {
+                            callHistoryService.deleteLog(log.id);
+                            showToast('Call entry deleted', 'info', 2000);
+                          },
+                        },
+                      ],
+                    );
+                  }}
                   style={[
                     styles.chatCard,
                     {
                       backgroundColor: colors.surface,
                       borderColor: colors.cardBorder,
-                      marginBottom: 8,
-                      paddingVertical: 12,
-                      paddingHorizontal: 14,
-                      borderRadius: 18,
+                      marginBottom: 6,
+                      paddingVertical: 10,
+                      paddingHorizontal: 12,
+                      borderRadius: 16,
                     },
                   ]}
-                  onPress={() => {
-                    isNavigatedToChatRef.current = true;
-                    const existingConv = conversations.find(
-                      (c) => c.recipientDbId === log.targetUserId || c.id === log.targetUserId,
-                    );
-                    navigation.navigate('Chat', {
-                      conversationId: existingConv ? existingConv.id : log.targetUserId,
-                      title: log.targetUserName,
-                      avatarUrl: log.targetUserAvatar,
-                      recipientDbId: log.targetUserId,
-                    });
-                  }}
                 >
-                  {/* Left Avatar */}
-                  <View style={{ marginRight: 12 }}>
+                  {/* Left Avatar — ONLY tapping avatar opens profile info */}
+                  <TouchableOpacity
+                    activeOpacity={0.7}
+                    style={{ marginRight: 12 }}
+                    onPress={() => {
+                      Alert.alert(
+                        log.targetUserName || 'Contact Details',
+                        `User ID: ${log.targetUserId}\nType: ${log.callType === 'video' ? 'Video' : 'Voice'} Call`,
+                        [
+                          { text: 'Close', style: 'cancel' },
+                          {
+                            text: 'Message',
+                            onPress: () => {
+                              isNavigatedToChatRef.current = true;
+                              const existingConv = conversations.find(
+                                (c) =>
+                                  c.recipientDbId === log.targetUserId || c.id === log.targetUserId,
+                              );
+                              navigation.navigate('Chat', {
+                                conversationId: existingConv ? existingConv.id : log.targetUserId,
+                                title: log.targetUserName,
+                                avatarUrl: log.targetUserAvatar,
+                                recipientDbId: log.targetUserId,
+                              });
+                            },
+                          },
+                        ],
+                      );
+                    }}
+                  >
                     {log.targetUserAvatar ? (
                       <SmartAvatar
                         avatarUrl={log.targetUserAvatar}
-                        size={48}
+                        size={46}
                         name={log.targetUserName}
                       />
                     ) : (
                       <View
                         style={{
-                          width: 48,
-                          height: 48,
-                          borderRadius: 24,
+                          width: 46,
+                          height: 46,
+                          borderRadius: 23,
                           backgroundColor: isMissed ? '#EF4444' : '#4F46E5',
                           justifyContent: 'center',
                           alignItems: 'center',
                         }}
                       >
-                        <Text style={{ color: '#FFF', fontSize: 18, fontWeight: '800' }}>
+                        <Text style={{ color: '#FFF', fontSize: 17, fontWeight: '800' }}>
                           {nameInitial}
                         </Text>
                       </View>
                     )}
-                  </View>
+                  </TouchableOpacity>
 
-                  {/* Center Details */}
+                  {/* Center Details — Strict NO-OP on tap */}
                   <View style={{ flex: 1, justifyContent: 'center' }}>
                     <Text
                       style={[
                         {
                           color: isMissed ? '#EF4444' : colors.textPrimary,
-                          fontSize: 16,
+                          fontSize: 15,
                           fontWeight: '700',
                         },
                       ]}
@@ -2030,7 +2069,7 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                     </View>
                   </View>
 
-                  {/* Right Action Call Button */}
+                  {/* Right Action Call Button — ONLY specific tap here initiates the call */}
                   <TouchableOpacity
                     style={{
                       padding: 10,
@@ -2038,6 +2077,7 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
                       backgroundColor: colors.cardBorder,
                       marginLeft: 8,
                     }}
+                    activeOpacity={0.7}
                     onPress={() => handleStartCallFromLog(log)}
                   >
                     {log.callType === 'video' ? (
@@ -2536,101 +2576,131 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
         </View>
 
         {/* Organized Setting Categories List */}
-        <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>PREFERENCES</Text>
+        <Text
+          style={[
+            styles.sectionTitle,
+            {
+              color: colors.textSecondary,
+              marginTop: 24,
+              marginBottom: 12,
+              letterSpacing: 0.8,
+            },
+          ]}
+        >
+          PREFERENCES
+        </Text>
 
-        {[
-          {
-            title: 'Hisaab / My Splits',
-            subtitle: 'Track shared expenses, settled & pending bills',
-            icon: Receipt,
-            iconBg: 'rgba(16, 185, 129, 0.12)',
-            screen: 'ExpenseHistory',
-          },
-          {
-            title: 'Account',
-            subtitle: 'Security, 2-step verification, change number',
-            icon: User,
-            iconBg: 'rgba(99, 102, 241, 0.12)',
-            screen: 'AccountSettings',
-          },
-          {
-            title: 'Privacy',
-            subtitle: 'Block contacts, last seen, read receipts',
-            icon: Lock,
-            iconBg: 'rgba(16, 185, 129, 0.12)',
-            screen: 'PrivacySettings',
-          },
-          {
-            title: 'Chats & Theme',
-            subtitle: 'Wallpaper, chat history, theme mode',
-            icon: MessageSquare,
-            iconBg: 'rgba(168, 85, 247, 0.12)',
-            screen: 'ChatSettings',
-          },
-          {
-            title: 'Call Settings',
-            subtitle: 'Silence unknown callers, data usage',
-            icon: PhoneCall,
-            iconBg: 'rgba(59, 130, 246, 0.12)',
-            screen: 'CallSettings',
-          },
-          {
-            title: 'Notifications',
-            subtitle: 'Message, group & call tones',
-            icon: Bell,
-            iconBg: 'rgba(245, 158, 11, 0.12)',
-            screen: 'NotificationSettings',
-          },
-          {
-            title: 'Storage & Data',
-            subtitle: 'Network usage, auto-download',
-            icon: HardDrive,
-            iconBg: 'rgba(236, 72, 153, 0.12)',
-            screen: 'StorageSettings',
-          },
-          {
-            title: 'Help & Support',
-            subtitle: 'Help center, contact us, privacy policy',
-            icon: HelpCircle,
-            iconBg: 'rgba(14, 165, 233, 0.12)',
-            screen: 'HelpSettings',
-          },
-        ].map((setting: any, idx) => {
-          const IconComp = setting.icon;
-          return (
-            <TouchableOpacity
-              key={idx}
-              style={[
-                styles.settingRowItem,
-                { backgroundColor: colors.surface, borderColor: colors.cardBorder },
-              ]}
-              activeOpacity={0.8}
-              onPress={() => {
-                if (setting.onPress) {
-                  setting.onPress();
-                } else if (setting.screen) {
-                  navigation.navigate(setting.screen as any);
-                }
-              }}
-            >
-              <View style={[styles.settingIconBadge, { backgroundColor: setting.iconBg }]}>
-                <IconComp size={20} color={colors.primaryIndigo} />
-              </View>
-              <View style={{ flex: 1, marginLeft: 14 }}>
-                <Text style={[styles.settingItemTitle, { color: colors.textPrimary }]}>
-                  {setting.title}
-                </Text>
-                <Text
-                  style={[styles.settingItemSubtitle, { color: colors.textSecondary }]}
-                  numberOfLines={1}
-                >
-                  {setting.subtitle}
-                </Text>
-              </View>
-              <ChevronRight size={18} color={colors.textSecondary} />
-            </TouchableOpacity>
-          );
-        })}
+        <View
+          style={{
+            backgroundColor: colors.surface,
+            borderRadius: 18,
+            borderWidth: 1,
+            borderColor: colors.cardBorder,
+            overflow: 'hidden',
+            marginBottom: 16,
+          }}
+        >
+          {[
+            {
+              title: 'Hisaab / My Splits',
+              subtitle: 'Track shared expenses, settled & pending bills',
+              icon: Receipt,
+              iconBg: 'rgba(16, 185, 129, 0.12)',
+              screen: 'ExpenseHistory',
+            },
+            {
+              title: 'Account',
+              subtitle: 'Security, 2-step verification, change number',
+              icon: User,
+              iconBg: 'rgba(99, 102, 241, 0.12)',
+              screen: 'AccountSettings',
+            },
+            {
+              title: 'Privacy',
+              subtitle: 'Block contacts, last seen, read receipts',
+              icon: Lock,
+              iconBg: 'rgba(16, 185, 129, 0.12)',
+              screen: 'PrivacySettings',
+            },
+            {
+              title: 'Chats & Theme',
+              subtitle: 'Wallpaper, chat history, theme mode',
+              icon: MessageSquare,
+              iconBg: 'rgba(168, 85, 247, 0.12)',
+              screen: 'ChatSettings',
+            },
+            {
+              title: 'Call Settings',
+              subtitle: 'Silence unknown callers, data usage',
+              icon: PhoneCall,
+              iconBg: 'rgba(59, 130, 246, 0.12)',
+              screen: 'CallSettings',
+            },
+            {
+              title: 'Notifications',
+              subtitle: 'Message, group & call tones',
+              icon: Bell,
+              iconBg: 'rgba(245, 158, 11, 0.12)',
+              screen: 'NotificationSettings',
+            },
+            {
+              title: 'Storage & Data',
+              subtitle: 'Network usage, auto-download',
+              icon: HardDrive,
+              iconBg: 'rgba(236, 72, 153, 0.12)',
+              screen: 'StorageSettings',
+            },
+            {
+              title: 'Help & Support',
+              subtitle: 'Help center, contact us, privacy policy',
+              icon: HelpCircle,
+              iconBg: 'rgba(14, 165, 233, 0.12)',
+              screen: 'HelpSettings',
+            },
+          ].map((setting: any, idx, arr) => {
+            const IconComp = setting.icon;
+            const isLast = idx === arr.length - 1;
+            return (
+              <TouchableOpacity
+                key={idx}
+                style={[
+                  styles.settingRowItem,
+                  {
+                    paddingHorizontal: 16,
+                    paddingVertical: 14,
+                    borderBottomWidth: isLast ? 0 : StyleSheet.hairlineWidth,
+                    borderBottomColor: colors.cardBorder,
+                    backgroundColor: 'transparent',
+                  },
+                ]}
+                activeOpacity={0.8}
+                onPress={() => {
+                  if (setting.onPress) {
+                    setting.onPress();
+                  } else if (setting.screen) {
+                    navigation.navigate(setting.screen as any);
+                  }
+                }}
+              >
+                <View style={[styles.settingIconBadge, { backgroundColor: setting.iconBg }]}>
+                  <IconComp size={20} color={colors.primaryIndigo} />
+                </View>
+                <View style={{ flex: 1, marginLeft: 14 }}>
+                  <Text style={[styles.settingItemTitle, { color: colors.textPrimary }]}>
+                    {setting.title}
+                  </Text>
+                  <Text
+                    style={[styles.settingItemSubtitle, { color: colors.textSecondary }]}
+                    numberOfLines={1}
+                  >
+                    {setting.subtitle}
+                  </Text>
+                </View>
+                <ChevronRight size={18} color={colors.textSecondary} />
+              </TouchableOpacity>
+            );
+          })}
+        </View>
 
         {/* Log Out Option Card */}
         <TouchableOpacity

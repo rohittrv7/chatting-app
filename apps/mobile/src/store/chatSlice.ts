@@ -122,7 +122,13 @@ export const chatSlice = createSlice({
       }
 
       // Update lastMessage in conversation list and MOVE TO THE TOP OF THE LIST
-      const convIdx = state.conversations.findIndex((c) => c.id === conversationId);
+      const convIdx = state.conversations.findIndex(
+        (c) =>
+          c.id === conversationId ||
+          (conversationId.includes('_') &&
+            c.id.includes('_') &&
+            c.id.split('_').sort().join('_') === conversationId.split('_').sort().join('_')),
+      );
       if (convIdx >= 0) {
         const conv = { ...state.conversations[convIdx] };
         conv.lastMessage =
@@ -131,6 +137,12 @@ export const chatSlice = createSlice({
         conv.time = message.time;
         conv.lastMessageStatus = message.status;
         conv.lastMessageIsMe = message.isMe;
+
+        // If message is from other participant and this conversation is not currently open, increment unread count
+        if (!message.isMe && state.activeConversationId !== conversationId) {
+          const currentCount = parseInt(conv.unread, 10) || 0;
+          conv.unread = String(currentCount + 1);
+        }
 
         state.conversations.splice(convIdx, 1);
         state.conversations.unshift(conv);
@@ -145,7 +157,7 @@ export const chatSlice = createSlice({
         status: 'SENDING' | 'SENT' | 'DELIVERED' | 'READ' | 'SERVER_RECEIVED' | 'FAILED';
       }>,
     ) => {
-      const { messageId, clientMessageId, status } = action.payload;
+      const { conversationId, messageId, clientMessageId, status } = action.payload;
 
       for (const cId of Object.keys(state.messagesMap)) {
         const msgs = state.messagesMap[cId];
@@ -165,11 +177,22 @@ export const chatSlice = createSlice({
       }
 
       for (const c of state.conversations) {
-        const msgs = state.messagesMap[c.id];
-        if (!msgs || msgs.length === 0) continue;
-        const lastMsg = msgs[msgs.length - 1];
-        if (lastMsg.id === messageId || (clientMessageId && lastMsg.id === clientMessageId)) {
+        if (
+          conversationId &&
+          (c.id === conversationId ||
+            (c.id.includes('_') &&
+              conversationId.includes('_') &&
+              c.id.split('_').sort().join('_') === conversationId.split('_').sort().join('_')))
+        ) {
           c.lastMessageStatus = status;
+        } else {
+          const msgs = state.messagesMap[c.id];
+          if (msgs && msgs.length > 0) {
+            const lastMsg = msgs[msgs.length - 1];
+            if (lastMsg.id === messageId || (clientMessageId && lastMsg.id === clientMessageId)) {
+              c.lastMessageStatus = status;
+            }
+          }
         }
       }
     },
@@ -229,7 +252,13 @@ export const chatSlice = createSlice({
           }
         }
       }
-      const conv = state.conversations.find((c) => c.id === conversationId);
+      const conv = state.conversations.find(
+        (c) =>
+          c.id === conversationId ||
+          (conversationId.includes('_') &&
+            c.id.includes('_') &&
+            c.id.split('_').sort().join('_') === conversationId.split('_').sort().join('_')),
+      );
       if (conv) {
         conv.unread = '0';
       }

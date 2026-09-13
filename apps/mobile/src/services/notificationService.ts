@@ -94,11 +94,12 @@ export const notificationService = {
   async init(token: string): Promise<string | null> {
     if (!Notifications) return null;
 
-    // Configure how notifications appear when the app is in the foreground
+    // Configure how notifications appear when the app is in the foreground.
+    // In foreground, in-app UI handles messages, preventing unwanted OS floating overlay windows.
     Notifications.setNotificationHandler({
       handleNotification: async () => ({
-        shouldShowAlert: true,
-        shouldPlaySound: true,
+        shouldShowAlert: false,
+        shouldPlaySound: false,
         shouldSetBadge: true,
       }),
     });

@@ -127,14 +127,8 @@ const SmartAvatarComponent: React.FC<SmartAvatarProps> = ({
   const effectiveUri = !imageError && !isFailed ? resolvedUri : null;
 
   if (effectiveUri) {
-    const token = getAuthToken();
     const source = {
       uri: effectiveUri,
-      headers:
-        token && (effectiveUri.startsWith('http://') || effectiveUri.startsWith('https://'))
-          ? { Authorization: `Bearer ${token}` }
-          : undefined,
-      cache: 'force-cache' as const,
     };
 
     return (
@@ -150,7 +144,7 @@ const SmartAvatarComponent: React.FC<SmartAvatarProps> = ({
           style as ImageStyle,
         ]}
         resizeMode="cover"
-        onError={handleImageError}
+        onError={() => setImageError(true)}
       />
     );
   }

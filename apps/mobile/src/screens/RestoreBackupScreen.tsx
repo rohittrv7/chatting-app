@@ -221,39 +221,70 @@ export const RestoreBackupScreen: React.FC<Props> = ({ navigation, route }) => {
           <View
             style={[
               styles.cardContainer,
-              { backgroundColor: colors.surface, borderColor: colors.cardBorder },
+              {
+                backgroundColor: colors.surface,
+                borderColor: colors.cardBorder,
+                shadowColor: '#000',
+                shadowOffset: { width: 0, height: 8 },
+                shadowOpacity: 0.15,
+                shadowRadius: 16,
+                elevation: 4,
+              },
             ]}
           >
             {/* Top row: Drive brand & Account */}
             <View style={styles.accountHeaderRow}>
-              <View style={[styles.driveLogoBox, { backgroundColor: '#EA4335' }]}>
-                <HardDrive size={20} color="#FFF" />
+              <View style={[styles.driveLogoBox, { backgroundColor: '#4285F4' }]}>
+                <HardDrive size={22} color="#FFF" />
               </View>
-              <View style={{ flex: 1, marginLeft: 12 }}>
-                <Text style={[styles.foundTitle, { color: colors.textPrimary }]}>Backup found</Text>
+              <View style={{ flex: 1, marginLeft: 14 }}>
+                <Text style={[styles.foundTitle, { color: colors.textPrimary }]}>
+                  Cloud Backup Found
+                </Text>
                 <Text
                   style={[styles.foundAccount, { color: colors.textSecondary }]}
                   numberOfLines={1}
                 >
-                  {account?.email || 'rohit.sharma@gmail.com'}
+                  {account?.email || 'Google Drive connected'}
                   {phoneNumber ? ` • ${phoneNumber}` : ''}
                 </Text>
               </View>
             </View>
 
-            <View style={[styles.separator, { backgroundColor: colors.cardBorder }]} />
+            {/* Prominent Last Backup Info Strip */}
+            <View
+              style={[
+                styles.lastBackupPill,
+                {
+                  backgroundColor:
+                    themeMode === 'dark' ? 'rgba(99, 102, 241, 0.1)' : 'rgba(99, 102, 241, 0.08)',
+                  borderColor:
+                    themeMode === 'dark' ? 'rgba(99, 102, 241, 0.25)' : 'rgba(99, 102, 241, 0.2)',
+                },
+              ]}
+            >
+              <Database size={16} color={colors.primaryIndigo} style={{ marginRight: 8 }} />
+              <Text style={[styles.lastBackupPillText, { color: colors.textPrimary }]}>
+                Last backup: {lastBackup?.formattedDate || 'Recently'} •{' '}
+                {lastBackup?.sizeFormatted || 'Standard'}
+              </Text>
+            </View>
 
-            {/* Details row: Last backup time and size */}
+            {/* Details row: Chats and Messages stats */}
             <View style={styles.metaRow}>
               <View style={styles.metaCol}>
-                <Text style={[styles.metaLabel, { color: colors.textSecondary }]}>Last backup</Text>
+                <Text style={[styles.metaLabel, { color: colors.textSecondary }]}>
+                  CHATS & MESSAGES
+                </Text>
                 <Text style={[styles.metaValue, { color: colors.textPrimary }]}>
-                  {lastBackup?.formattedDate || 'Today at 8:15 AM'}
+                  {lastBackup?.messagesCount
+                    ? `${lastBackup.messagesCount.toLocaleString()} messages`
+                    : '1,420 messages'}
                 </Text>
               </View>
               <View style={[styles.verticalDivider, { backgroundColor: colors.cardBorder }]} />
               <View style={styles.metaCol}>
-                <Text style={[styles.metaLabel, { color: colors.textSecondary }]}>Size</Text>
+                <Text style={[styles.metaLabel, { color: colors.textSecondary }]}>BACKUP SIZE</Text>
                 <Text style={[styles.metaValue, { color: colors.textPrimary }]}>
                   {lastBackup?.sizeFormatted || '342 MB'}
                 </Text>
@@ -261,10 +292,18 @@ export const RestoreBackupScreen: React.FC<Props> = ({ navigation, route }) => {
             </View>
 
             {/* Cloud encrypted info pill */}
-            <View style={[styles.securityPill, { backgroundColor: colors.bg }]}>
-              <ShieldCheck size={14} color="#22C55E" />
-              <Text style={[styles.securityPillText, { color: colors.textSecondary }]}>
-                Safe & private restore directly into your device
+            <View
+              style={[
+                styles.securityPill,
+                {
+                  backgroundColor:
+                    themeMode === 'dark' ? 'rgba(34, 197, 94, 0.08)' : 'rgba(34, 197, 94, 0.1)',
+                },
+              ]}
+            >
+              <ShieldCheck size={16} color="#22C55E" />
+              <Text style={[styles.securityPillText, { color: colors.textPrimary }]}>
+                End-to-end encrypted backup • Decrypted locally on your phone
               </Text>
             </View>
           </View>
@@ -282,7 +321,7 @@ export const RestoreBackupScreen: React.FC<Props> = ({ navigation, route }) => {
               activeOpacity={0.85}
             >
               <CloudDownload size={20} color="#FFFFFF" style={{ marginRight: 8 }} />
-              <Text style={styles.primaryBtnText}>Restore</Text>
+              <Text style={styles.primaryBtnText}>Restore Chat History</Text>
             </TouchableOpacity>
 
             {/* Secondary: Skip */}
@@ -292,7 +331,7 @@ export const RestoreBackupScreen: React.FC<Props> = ({ navigation, route }) => {
               activeOpacity={0.7}
             >
               <Text style={[styles.skipBtnText, { color: colors.textSecondary }]}>
-                Skip this step
+                Skip this step & start fresh
               </Text>
             </TouchableOpacity>
           </View>
@@ -373,6 +412,20 @@ const styles = StyleSheet.create({
   },
   foundTitle: { fontSize: 16, fontWeight: '800' },
   foundAccount: { fontSize: 13, marginTop: 2 },
+  lastBackupPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    marginTop: 14,
+  },
+  lastBackupPillText: {
+    fontSize: 13,
+    fontWeight: '700',
+    flex: 1,
+  },
   separator: {
     height: StyleSheet.hairlineWidth,
     marginVertical: 14,

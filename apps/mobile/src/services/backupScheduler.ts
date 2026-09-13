@@ -47,6 +47,7 @@ const FREQUENCY_INTERVALS_MS: Record<BackupFrequency, number> = {
   weekly: 7 * 24 * 60 * 60 * 1000, // 7 days
   monthly: 30 * 24 * 60 * 60 * 1000, // 30 days
   manual: Infinity, // never auto-backup
+  never: Infinity, // never auto-backup
 };
 
 // Minimum interval passed to BackgroundFetch — 15 min is the minimum iOS allows
@@ -76,7 +77,7 @@ async function isNetworkSuitable(networkType: BackupNetworkType): Promise<boolea
  * for the configured frequency.
  */
 async function isBackupDue(frequency: BackupFrequency): Promise<boolean> {
-  if (frequency === 'manual') return false;
+  if (frequency === 'manual' || frequency === 'never') return false;
 
   const minInterval = FREQUENCY_INTERVALS_MS[frequency];
   const lastBackupStr = await safeStorage.getItem(KEY_LAST_BACKUP_TIME);

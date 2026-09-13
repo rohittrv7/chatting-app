@@ -223,11 +223,27 @@ export const shadow = {
 
 // ─── Context ─────────────────────────────────────────────────────────────────
 
+export type ChatFontSize = 'small' | 'normal' | 'large';
+
+const CHAT_WALLPAPER_KEY = '@whatsapp_chat_wallpaper';
+const CHAT_FONT_SIZE_KEY = '@chat_font_size';
+
+export const CHAT_FONT_SIZES: Record<ChatFontSize, number> = {
+  small: 13,
+  normal: 15,
+  large: 18,
+};
+
 interface ThemeContextType {
   themeMode: ThemeMode;
   colors: ThemeColors;
   setThemeMode: (mode: ThemeMode) => void;
   toggleTheme: () => void;
+  chatWallpaper: string | null;
+  setChatWallpaper: (wallpaper: string | null) => void;
+  chatFontSize: ChatFontSize;
+  setChatFontSize: (size: ChatFontSize) => void;
+  chatFontSizeValue: number;
 }
 
 const ThemeContext = createContext<ThemeContextType>({
@@ -235,14 +251,29 @@ const ThemeContext = createContext<ThemeContextType>({
   colors: darkThemeColors,
   setThemeMode: () => {},
   toggleTheme: () => {},
+  chatWallpaper: null,
+  setChatWallpaper: () => {},
+  chatFontSize: 'normal',
+  setChatFontSize: () => {},
+  chatFontSizeValue: 15,
 });
 
 export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [themeMode, setThemeModeState] = useState<ThemeMode>('dark');
+  const [chatWallpaper, setChatWallpaperState] = useState<string | null>(null);
+  const [chatFontSize, setChatFontSizeState] = useState<ChatFontSize>('normal');
 
   useEffect(() => {
     safeStorage.getItem(THEME_STORAGE_KEY).then((saved) => {
       if (saved === 'light' || saved === 'dark') setThemeModeState(saved);
+    });
+    safeStorage.getItem(CHAT_WALLPAPER_KEY).then((saved) => {
+      if (saved) setChatWallpaperState(saved);
+    });
+    safeStorage.getItem(CHAT_FONT_SIZE_KEY).then((saved) => {
+      if (saved === 'small' || saved === 'normal' || saved === 'large') {
+        setChatFontSizeState(saved);
+      }
     });
   }, []);
 
@@ -259,10 +290,37 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     });
   };
 
+  const setChatWallpaper = (wallpaper: string | null) => {
+    setChatWallpaperState(wallpaper);
+    if (wallpaper) {
+      safeStorage.setItem(CHAT_WALLPAPER_KEY, wallpaper);
+    } else {
+      safeStorage.removeItem(CHAT_WALLPAPER_KEY);
+    }
+  };
+
+  const setChatFontSize = (size: ChatFontSize) => {
+    setChatFontSizeState(size);
+    safeStorage.setItem(CHAT_FONT_SIZE_KEY, size);
+  };
+
+  const chatFontSizeValue = CHAT_FONT_SIZES[chatFontSize] || 15;
   const colors = themeMode === 'dark' ? darkThemeColors : lightThemeColors;
 
   return (
-    <ThemeContext.Provider value={{ themeMode, colors, setThemeMode, toggleTheme }}>
+    <ThemeContext.Provider
+      value={{
+        themeMode,
+        colors,
+        setThemeMode,
+        toggleTheme,
+        chatWallpaper,
+        setChatWallpaper,
+        chatFontSize,
+        setChatFontSize,
+        chatFontSizeValue,
+      }}
+    >
       {children}
     </ThemeContext.Provider>
   );

@@ -8,7 +8,9 @@ import {
   Animated,
   Platform,
   Modal,
+  PanResponder,
   useWindowDimensions,
+  TouchableWithoutFeedback,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -313,6 +315,92 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
     }
   }, [callSession?.state, safeGoBack]);
 
+  // Controls auto-hide (4.5s) & tap toggle for fullscreen video call
+  const [controlsVisible, setControlsVisible] = useState(true);
+  const controlsOpacity = useRef(new Animated.Value(1)).current;
+  const hideTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  const resetHideTimer = useCallback(() => {
+    if (hideTimerRef.current) {
+      clearTimeout(hideTimerRef.current);
+      hideTimerRef.current = null;
+    }
+    if (isVideo) {
+      hideTimerRef.current = setTimeout(() => {
+        setControlsVisible(false);
+        Animated.timing(controlsOpacity, {
+          toValue: 0,
+          duration: 250,
+          useNativeDriver: true,
+        }).start();
+      }, 4500);
+    }
+  }, [isVideo, controlsOpacity]);
+
+  const handleToggleControls = useCallback(() => {
+    if (!isVideo) return;
+    if (controlsVisible) {
+      if (hideTimerRef.current) {
+        clearTimeout(hideTimerRef.current);
+        hideTimerRef.current = null;
+      }
+      setControlsVisible(false);
+      Animated.timing(controlsOpacity, {
+        toValue: 0,
+        duration: 250,
+        useNativeDriver: true,
+      }).start();
+    } else {
+      setControlsVisible(true);
+      Animated.timing(controlsOpacity, {
+        toValue: 1,
+        duration: 250,
+        useNativeDriver: true,
+      }).start();
+      resetHideTimer();
+    }
+  }, [isVideo, controlsVisible, controlsOpacity, resetHideTimer]);
+
+  useEffect(() => {
+    if (isVideo) {
+      resetHideTimer();
+    } else {
+      if (hideTimerRef.current) {
+        clearTimeout(hideTimerRef.current);
+        hideTimerRef.current = null;
+      }
+      setControlsVisible(true);
+      controlsOpacity.setValue(1);
+    }
+    return () => {
+      if (hideTimerRef.current) {
+        clearTimeout(hideTimerRef.current);
+      }
+    };
+  }, [isVideo, resetHideTimer, controlsOpacity]);
+
+  // Picture-in-Picture (PiP) draggable pan responder
+  const pipPan = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
+  const pipPanResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: (_, gestureState) => {
+        return Math.abs(gestureState.dx) > 3 || Math.abs(gestureState.dy) > 3;
+      },
+      onPanResponderGrant: () => {
+        // @ts-ignore
+        pipPan.setOffset({ x: pipPan.x._value, y: pipPan.y._value });
+        pipPan.setValue({ x: 0, y: 0 });
+      },
+      onPanResponderMove: Animated.event([null, { dx: pipPan.x, dy: pipPan.y }], {
+        useNativeDriver: false,
+      }),
+      onPanResponderRelease: () => {
+        pipPan.flattenOffset();
+      },
+    }),
+  ).current;
+
   const handleToggleMute = () => {
     callService.toggleMute();
   };
@@ -492,8 +580,77 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
         </Animated.View>
       )}
 
-      {/* Top Header matching WhatsApp Layout */}
-      <View style={styles.topHeader}>
+      {/* 📹 TRUE WEBRTC VIDEO CALL FULLSCREEN BACKDROP */}
+      {isVideo && (
+        <TouchableWithoutFeedback onPress={handleToggleControls}>
+          <View style={StyleSheet.absoluteFill}>
+            {hasRemoteVideo ? (
+              <View style={StyleSheet.absoluteFill}>
+                <SafeRTCView
+                  key={`remote-stream-${remoteStreamVersion}`}
+                  streamURL={remoteStream?.toURL?.() ?? ''}
+                  style={StyleSheet.absoluteFill}
+                  objectFit="cover"
+                  zOrder={0}
+                  mirror={false}
+                />
+              </View>
+            ) : (
+              <View style={styles.remoteVideoAvatarContainer}>
+                <SmartAvatar
+                  avatarUrl={avatarUrl}
+                  name={displayName}
+                  size={120}
+                  style={styles.remoteVideoAvatar}
+                />
+                <Text style={styles.remoteVideoName} numberOfLines={1}>
+                  {displayName}
+                </Text>
+                <Text style={styles.statusSubText}>{statusText}</Text>
+              </View>
+            )}
+          </View>
+        </TouchableWithoutFeedback>
+      )}
+
+      {/* Picture-in-Picture (PiP) Floating Local Video Tile */}
+      {isVideo && hasLocalVideo && (
+        <Animated.View
+          style={[
+            styles.pipContainer,
+            {
+              transform: [{ translateX: pipPan.x }, { translateY: pipPan.y }],
+            },
+          ]}
+          {...pipPanResponder.panHandlers}
+        >
+          <SafeRTCView
+            key={`local-stream-${localStreamVersion}`}
+            streamURL={localStream?.toURL?.() ?? ''}
+            style={styles.pipCamera}
+            objectFit="cover"
+            zOrder={2}
+            mirror={cameraFacing === 'front'}
+          />
+          <TouchableOpacity
+            style={styles.pipFlipBtn}
+            onPress={handleFlipCamera}
+            activeOpacity={0.8}
+          >
+            <RefreshCw size={14} color="#FFF" />
+          </TouchableOpacity>
+        </Animated.View>
+      )}
+
+      {/* Top Header matching WhatsApp Layout with animated fade */}
+      <Animated.View
+        style={[
+          styles.topHeader,
+          isVideo && styles.topHeaderOverlay,
+          isVideo && { opacity: controlsOpacity },
+        ]}
+        pointerEvents={!isVideo || controlsVisible ? 'auto' : 'none'}
+      >
         {/* Left: Signal / Audio indicator pill */}
         <TouchableOpacity style={styles.headerPillBtn} onPress={safeGoBack} activeOpacity={0.7}>
           <Activity size={18} color="#10B981" />
@@ -511,7 +668,7 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
         <View style={styles.headerPillBtn}>
           <Lock size={16} color="#FFFFFF" />
         </View>
-      </View>
+      </Animated.View>
 
       {/* Video Switch Request Banner */}
       {callSession?.videoSwitchPending && (
@@ -537,68 +694,8 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
         </View>
       )}
 
-      {/* Main Body */}
-      {isVideo ? (
-        // 📹 TRUE WEBRTC VIDEO CALL LAYOUT
-        <View style={styles.videoMainContainer}>
-          {/* Remote Video Stream Area */}
-          <View style={styles.remoteVideoBackdrop}>
-            {hasRemoteVideo ? (
-              <View style={styles.remoteVideoWrapper}>
-                <SafeRTCView
-                  key={`remote-stream-${remoteStreamVersion}`}
-                  streamURL={remoteStream?.toURL?.() ?? ''}
-                  style={StyleSheet.absoluteFill}
-                  objectFit="cover"
-                  zOrder={0}
-                  mirror={false}
-                />
-                <View style={styles.remoteOverlayInfo}>
-                  <Text style={styles.remoteOverlayName} numberOfLines={1}>
-                    {displayName}
-                  </Text>
-                  <Text style={styles.remoteOverlayDuration}>{formatDuration(secondsElapsed)}</Text>
-                </View>
-              </View>
-            ) : (
-              <View style={styles.remoteVideoAvatarContainer}>
-                <SmartAvatar
-                  avatarUrl={avatarUrl}
-                  name={displayName}
-                  size={120}
-                  style={styles.remoteVideoAvatar}
-                />
-                <Text style={styles.remoteVideoName} numberOfLines={1}>
-                  {displayName}
-                </Text>
-                <Text style={styles.statusSubText}>{statusText}</Text>
-              </View>
-            )}
-          </View>
-
-          {/* Picture-in-Picture (PiP) Local Video Tile */}
-          {hasLocalVideo && (
-            <View style={styles.pipContainer}>
-              <SafeRTCView
-                key={`local-stream-${localStreamVersion}`}
-                streamURL={localStream?.toURL?.() ?? ''}
-                style={styles.pipCamera}
-                objectFit="cover"
-                zOrder={1}
-                mirror={cameraFacing === 'front'}
-              />
-              <TouchableOpacity
-                style={styles.pipFlipBtn}
-                onPress={handleFlipCamera}
-                activeOpacity={0.8}
-              >
-                <RefreshCw size={14} color="#FFF" />
-              </TouchableOpacity>
-            </View>
-          )}
-        </View>
-      ) : (
-        // 📞 TRUE WEBRTC VOICE CALL LAYOUT (Matching Screenshot)
+      {/* 📞 TRUE WEBRTC VOICE CALL LAYOUT (Matching Screenshot) */}
+      {!isVideo && (
         <Animated.View style={[styles.voiceCenterContainer, { opacity: fadeAnim }]}>
           <View style={styles.avatarSection}>
             {/* Animated Pulse Waves */}
@@ -641,8 +738,15 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
         </Animated.View>
       )}
 
-      {/* Bottom Section */}
-      <View style={styles.bottomSection}>
+      {/* Bottom Section with animated fade in video mode */}
+      <Animated.View
+        style={[
+          styles.bottomSection,
+          isVideo && styles.bottomSectionOverlay,
+          isVideo && { opacity: controlsOpacity },
+        ]}
+        pointerEvents={!isVideo || controlsVisible ? 'auto' : 'none'}
+      >
         {/* Floating Emoji Reactions Bar (Matches Screenshot) */}
         <View style={styles.reactionsBar}>
           {EMOJI_REACTIONS.map((emoji) => (
@@ -750,7 +854,7 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
             <PhoneOff size={26} color="#FFF" />
           </TouchableOpacity>
         </View>
-      </View>
+      </Animated.View>
 
       {/* ── More Options Overflow Modal (noise cancellation, etc.) ──── */}
       <Modal
@@ -848,8 +952,10 @@ export const CallScreen: React.FC<Props> = ({ route, navigation }) => {
                 <View style={styles.routeOptionLeft}>
                   <Bluetooth size={22} color="#3B82F6" />
                   <View style={styles.routeTextCol}>
-                    <Text style={styles.routeOptionTitle}>Bluetooth Device</Text>
-                    <Text style={styles.routeOptionSub}>Connected headset</Text>
+                    <Text style={styles.routeOptionTitle}>
+                      {audioStatus.bluetoothDeviceName || 'Bluetooth Device'}
+                    </Text>
+                    <Text style={styles.routeOptionSub}>Connected headset / earbuds</Text>
                   </View>
                 </View>
                 {audioStatus.selectedDevice === 'BLUETOOTH' && <Check size={20} color="#3B82F6" />}
@@ -935,6 +1041,24 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: Platform.OS === 'android' ? 14 : 8,
     zIndex: 10,
+  },
+  topHeaderOverlay: {
+    position: 'absolute',
+    top: Platform.OS === 'android' ? StatusBar.currentHeight || 16 : 44,
+    left: 0,
+    right: 0,
+    zIndex: 40,
+    backgroundColor: 'rgba(11, 16, 20, 0.65)',
+    borderRadius: 20,
+    marginHorizontal: 16,
+    paddingVertical: 8,
+  },
+  bottomSectionOverlay: {
+    position: 'absolute',
+    bottom: Platform.OS === 'android' ? 16 : 30,
+    left: 0,
+    right: 0,
+    zIndex: 40,
   },
   headerPillBtn: {
     width: 42,
@@ -1194,16 +1318,21 @@ const styles = StyleSheet.create({
   },
   pipContainer: {
     position: 'absolute',
-    top: 16,
+    top: 90,
     right: 16,
-    width: 100,
-    height: 140,
+    width: 110,
+    height: 155,
     borderRadius: 16,
     overflow: 'hidden',
     borderWidth: 2,
-    borderColor: 'rgba(255,255,255,0.25)',
+    borderColor: 'rgba(255,255,255,0.35)',
     backgroundColor: '#000',
-    elevation: 8,
+    elevation: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.5,
+    shadowRadius: 8,
+    zIndex: 50,
   },
   pipCamera: {
     flex: 1,

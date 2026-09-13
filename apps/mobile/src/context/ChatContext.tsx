@@ -115,6 +115,13 @@ interface ChatContextType {
     contactUsername?: string,
     document?: { uri: string; name: string; size?: number | string; mimeType?: string },
     contactPayload?: { name: string; phone: string; username?: string },
+    replyToPayload?: {
+      id: string;
+      text?: string;
+      isMe?: boolean;
+      imagePath?: string;
+      senderName?: string;
+    },
   ) => void;
   sendMediaMessage: (params: {
     conversationId: string;
@@ -342,19 +349,8 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       prevTokenRef.current = null;
       return;
     }
-    // Only fire on true login (previous token was null/empty)
-    const isFirstLogin = !prevTokenRef.current;
+    // Tracks active token state; initialization and blocked users are fetched in startup sequence below.
     prevTokenRef.current = token;
-    if (!isFirstLogin) return;
-
-    apiService
-      .getBlockedUsers(token)
-      .then((users) => {
-        if (Array.isArray(users)) {
-          setBlockedUserIds(users.map((u) => u.id));
-        }
-      })
-      .catch(() => {});
   }, [token, effectiveUserId]);
 
   const retrySecureStorageInit = useCallback(async () => {
@@ -504,38 +500,56 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // Mark initialized so subsequent token changes skip this block.
     hasInitializedRef.current = true;
 
-    syncServerConversations();
-    syncContactsWithBackend(token)
-      .then((res) => {
-        if (!res?.allSorted?.length) return;
-        const updated = conversationsRef.current.map((conv) => {
-          const matched = getResolvedContact({
-            username: conv.username,
-            name: conv.title,
-            phone: conv.phone,
-          });
-          if (!matched) return conv;
-          return {
-            ...conv,
-            title: matched.name || conv.title,
-            avatarUrl: matched.avatarUrl || conv.avatarUrl,
-            phone: matched.phone || conv.phone,
-            about: matched.about || conv.about,
-          };
-        });
-        dispatch(setConversations(updated));
-      })
-      .catch(() => {});
+    (async () => {
+      try {
+        const validToken = (await apiService.ensureValidToken()) || token;
 
-    // Register E2EE nacl.box public key once per app session — key material doesn't
-    // change during a session so re-registering on every token refresh is wasteful.
-    if (!hasRegisteredKeysRef.current) {
-      hasRegisteredKeysRef.current = true;
-      e2eCryptoService.registerPublicKeyWithBackend(token).catch(() => {});
-    }
+        // 1. Sync server conversations
+        await syncServerConversations().catch(() => {});
 
-    // Initialize push notifications — request permission, get FCM token, upload to backend
-    notificationService.init(token).catch(() => {});
+        // 2. Sync contacts with backend
+        try {
+          const res = await syncContactsWithBackend(validToken);
+          if (res?.allSorted?.length) {
+            const updated = conversationsRef.current.map((conv) => {
+              const matched = getResolvedContact({
+                username: conv.username,
+                name: conv.title,
+                phone: conv.phone,
+              });
+              if (!matched) return conv;
+              return {
+                ...conv,
+                title: matched.name || conv.title,
+                avatarUrl: matched.avatarUrl || conv.avatarUrl,
+                phone: matched.phone || conv.phone,
+                about: matched.about || conv.about,
+              };
+            });
+            dispatch(setConversations(updated));
+          }
+        } catch (_) {}
+
+        // 3. Register E2EE nacl.box public key once per session
+        if (!hasRegisteredKeysRef.current) {
+          hasRegisteredKeysRef.current = true;
+          await e2eCryptoService.registerPublicKeyWithBackend(validToken).catch(() => {});
+        }
+
+        // 4. Initialize push notifications
+        await notificationService.init(validToken).catch(() => {});
+
+        // 5. Fetch blocked users list sequentially
+        try {
+          const users = await apiService.getBlockedUsers(validToken);
+          if (Array.isArray(users)) {
+            setBlockedUserIds(users.map((u) => u.id));
+          }
+        } catch (_) {}
+      } catch (err) {
+        console.warn('Startup initialization sequence warning:', err);
+      }
+    })();
   }, [token]);
 
   // ─── Socket: connect / reconnect whenever token or userId changes ─────────
@@ -611,7 +625,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       if (!recipientDbId || !UUID_RE.test(recipientDbId)) return null;
 
-      const tok = tokenRef.current;
+      const tok = (await apiService.ensureValidToken()) || tokenRef.current;
       if (!tok) return null;
 
       const result = await apiService.getOrCreateDirectConversation(tok, recipientDbId);
@@ -1549,6 +1563,13 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     contactUsername?: string,
     document?: { uri: string; name: string; size?: number | string; mimeType?: string },
     contactPayload?: { name: string; phone: string; username?: string },
+    replyToPayload?: {
+      id: string;
+      text: string;
+      isMe: boolean;
+      imagePath?: string;
+      senderName?: string;
+    },
   ) => {
     const now = new Date();
     const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
@@ -1573,6 +1594,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       location,
       document,
       contact: contactPayload,
+      replyTo: replyToPayload,
       isStarred: false,
     };
 
@@ -1673,8 +1695,20 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
         }
 
-        // 2. If conversationId is a server UUID, fetch conversation members to find recipient
-        const tok = tokenRef.current;
+        // 2. Check contacts sync cache
+        if (!effectiveReceiverId) {
+          const matched = getResolvedContact({
+            username: contactUsername,
+            name: contactTitle,
+            phone: receiverId,
+          });
+          if (matched?.userId && UUID_RE.test(matched.userId)) {
+            effectiveReceiverId = matched.userId;
+          }
+        }
+
+        // 3. If conversationId is a server UUID, fetch conversation members to find recipient
+        const tok = (await apiService.ensureValidToken()) || tokenRef.current;
         if (!effectiveReceiverId && tok) {
           if (UUID_RE.test(conversationId)) {
             try {
@@ -1785,6 +1819,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
           location,
           document,
           contact: contactPayload,
+          replyTo: replyToPayload,
         });
       })().catch((err) => {
         console.warn('⚠️ [ChatContext] Error sending message:', err);

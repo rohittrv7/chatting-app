@@ -92,6 +92,7 @@ export const ChatBackupScreen: React.FC<Props> = ({ navigation }) => {
     { label: 'Weekly', value: 'weekly' },
     { label: 'Monthly', value: 'monthly' },
     { label: 'Only when I tap "Back up"', value: 'manual' },
+    { label: 'Never', value: 'never' },
   ];
 
   // Network options
@@ -361,10 +362,10 @@ export const ChatBackupScreen: React.FC<Props> = ({ navigation }) => {
               </View>
               <View style={{ flex: 1, marginLeft: 12 }}>
                 <Text style={[styles.connectTitle, { color: colors.textPrimary }]}>
-                  Connect Google Drive
+                  Link Google Drive
                 </Text>
                 <Text style={[styles.connectDesc, { color: colors.textSecondary }]}>
-                  Choose a Google account to save chat backups
+                  Connect your Google account to enable backup
                 </Text>
               </View>
               <ChevronRight size={18} color={colors.textSecondary} />

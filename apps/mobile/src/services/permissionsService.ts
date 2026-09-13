@@ -11,7 +11,7 @@
  * an Alert that opens the system Settings page so the user can manually allow it.
  */
 
-import { Alert, Linking, Platform } from 'react-native';
+import { Alert, Linking, Platform, PermissionsAndroid } from 'react-native';
 import * as Contacts from 'expo-contacts';
 import * as ImagePicker from 'expo-image-picker';
 import { Camera as ExpoCamera } from 'expo-camera';
@@ -205,6 +205,36 @@ export const ensureNotificationPermission = async (): Promise<boolean> => {
     return result.granted ?? false;
   } catch (error) {
     console.warn('[Permissions] Notification check failed:', error);
+    return false;
+  }
+};
+
+// ─── Bluetooth (Android 12+ BLUETOOTH_CONNECT) ───────────────────────────────
+
+/**
+ * Request runtime BLUETOOTH_CONNECT permission on Android 12+ (API 31+).
+ * Required for audio routing to Bluetooth headsets/earbuds during calls.
+ */
+export const ensureBluetoothPermission = async (): Promise<boolean> => {
+  if (Platform.OS !== 'android') return true;
+  try {
+    if (Platform.Version >= 31) {
+      const bluetoothConnectPermission = 'android.permission.BLUETOOTH_CONNECT' as any;
+      const checkResult = await PermissionsAndroid.check(bluetoothConnectPermission);
+      if (checkResult) return true;
+
+      const result = await PermissionsAndroid.request(bluetoothConnectPermission, {
+        title: 'Bluetooth Audio Permission',
+        message:
+          'WhatsApp Connect needs Bluetooth access to connect to your wireless earbuds and headphones during calls.',
+        buttonPositive: 'Allow',
+        buttonNegative: 'Deny',
+      });
+      return result === PermissionsAndroid.RESULTS.GRANTED;
+    }
+    return true;
+  } catch (error) {
+    console.warn('[Permissions] Bluetooth check failed:', error);
     return false;
   }
 };

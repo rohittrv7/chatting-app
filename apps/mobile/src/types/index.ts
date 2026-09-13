@@ -57,7 +57,7 @@ export interface ChatMessage {
   uploadProgress?: number;
   isUploading?: boolean;
   /** Reply-to: partial snapshot of the quoted message */
-  replyTo?: { id: string; text: string; isMe: boolean; imagePath?: string };
+  replyTo?: { id: string; text: string; isMe: boolean; imagePath?: string; senderName?: string };
   /** Emoji reactions: emoji string → count */
   reactions?: Record<string, number>;
   /** My own reaction on this message */

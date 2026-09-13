@@ -375,7 +375,11 @@ export async function upsertConversation(data: {
       last_message_at     = COALESCE(excluded.last_message_at, last_message_at),
       last_message_is_me  = excluded.last_message_is_me,
       last_message_status = COALESCE(excluded.last_message_status, last_message_status),
-      unread_count        = excluded.unread_count,
+      unread_count        = CASE
+                              WHEN excluded.unread_count IS NOT NULL THEN excluded.unread_count
+                              WHEN excluded.last_message_is_me = 0 THEN conversations.unread_count + 1
+                              ELSE conversations.unread_count
+                            END,
       updated_at_ms       = excluded.updated_at_ms,
       is_split_group      = COALESCE(excluded.is_split_group, is_split_group),
       split_expense_id    = COALESCE(excluded.split_expense_id, split_expense_id),
@@ -392,7 +396,7 @@ export async function upsertConversation(data: {
       data.lastMessageAt ?? null,
       data.lastMessageIsMe ? 1 : 0,
       data.lastMessageStatus ?? null,
-      data.unreadCount ?? 0,
+      data.unreadCount !== undefined ? data.unreadCount : null,
       data.isMuted ? 1 : 0,
       now,
       now,
