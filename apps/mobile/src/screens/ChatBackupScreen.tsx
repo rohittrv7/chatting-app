@@ -88,6 +88,7 @@ export const ChatBackupScreen: React.FC<Props> = ({ navigation }) => {
 
   // Frequency options
   const FREQUENCY_OPTIONS: { label: string; value: BackupFrequency }[] = [
+    { label: 'Never', value: 'never' },
     { label: 'Daily', value: 'daily' },
     { label: 'Weekly', value: 'weekly' },
     { label: 'Monthly', value: 'monthly' },

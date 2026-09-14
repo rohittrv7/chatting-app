@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -11,9 +11,13 @@ import {
   Platform,
   Image,
   BackHandler,
+  AppState,
+  Linking,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
+import { useFocusEffect } from '@react-navigation/native';
 import { RootStackParamList } from '../types';
 import { useChat, usePresence } from '../context/ChatContext';
 import { useTheme } from '../context/ThemeContext';
@@ -38,6 +42,7 @@ import {
   inviteContact,
   DeviceContact,
   requestContactsPermission,
+  requestContactsPermissionDetailed,
   getDeterministicConversationId,
 } from '../services/contactsService';
 import { apiService } from '../services/apiService';
@@ -56,47 +61,66 @@ export const ContactsScreen: React.FC<Props> = ({ navigation }) => {
   const [unregisteredContacts, setUnregisteredContacts] = useState<DeviceContact[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [hasPermission, setHasPermission] = useState<boolean>(false);
+  const [canAskAgain, setCanAskAgain] = useState<boolean>(true);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const searchInputRef = useRef<TextInput>(null);
 
   const loadContacts = async (forceRefresh = false) => {
     setIsLoading(true);
+    console.log('[ContactsScreen] loadContacts called, forceRefresh:', forceRefresh);
     const result = await fetchDeviceContacts(forceRefresh);
+    console.log('[ContactsScreen] fetchDeviceContacts result:', {
+      granted: result.granted,
+      contactsCount: result.contacts.length,
+      canAskAgain: result.canAskAgain,
+    });
     setHasPermission(result.granted);
+    setCanAskAgain(result.canAskAgain ?? true);
 
-    if (result.granted && result.contacts.length > 0) {
-      const syncRes = await syncContactsWithServer(
-        result.contacts,
-        token || undefined,
-        forceRefresh,
-      );
-      const myDigits = (userProfile.phone || '').replace(/\D/g, '').slice(-10);
-      const myUsername = (userProfile.username || '').toLowerCase().replace(/^@+/, '');
-
-      const isMe = (c: DeviceContact) => {
-        const cDigits = (c.phone || '').replace(/\D/g, '').slice(-10);
-        const cUsername = (c.username || '').toLowerCase().replace(/^@+/, '');
-        if (myDigits && cDigits && myDigits === cDigits) {
-          return true;
-        }
-        if (myUsername && cUsername && myUsername === cUsername) {
-          return true;
-        }
-        return false;
-      };
-
-      const dedupe = (list: DeviceContact[]) => {
-        const seen = new Set<string>();
-        return list.filter((c) => {
-          const key = c.userId || (c.phone ? c.phone.replace(/\D/g, '').slice(-10) : c.name);
-          if (!key || seen.has(key)) return false;
-          seen.add(key);
-          return true;
+    if (result.granted) {
+      if (result.contacts.length > 0) {
+        console.log('[ContactsScreen] Syncing', result.contacts.length, 'contacts with server...');
+        const syncRes = await syncContactsWithServer(
+          result.contacts,
+          token || undefined,
+          forceRefresh,
+        );
+        console.log('[ContactsScreen] Sync completed:', {
+          registered: syncRes.registered.length,
+          unregistered: syncRes.unregistered.length,
         });
-      };
+        const myDigits = (userProfile.phone || '').replace(/\D/g, '').slice(-10);
+        const myUsername = (userProfile.username || '').toLowerCase().replace(/^@+/, '');
 
-      setRegisteredContacts(dedupe(syncRes.registered.filter((c) => !isMe(c))));
-      setUnregisteredContacts(dedupe(syncRes.unregistered.filter((c) => !isMe(c))));
+        const isMe = (c: DeviceContact) => {
+          const cDigits = (c.phone || '').replace(/\D/g, '').slice(-10);
+          const cUsername = (c.username || '').toLowerCase().replace(/^@+/, '');
+          if (myDigits && cDigits && myDigits === cDigits) {
+            return true;
+          }
+          if (myUsername && cUsername && myUsername === cUsername) {
+            return true;
+          }
+          return false;
+        };
+
+        const dedupe = (list: DeviceContact[]) => {
+          const seen = new Set<string>();
+          return list.filter((c) => {
+            const key = c.userId || (c.phone ? c.phone.replace(/\D/g, '').slice(-10) : c.name);
+            if (!key || seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          });
+        };
+
+        setRegisteredContacts(dedupe(syncRes.registered.filter((c) => !isMe(c))));
+        setUnregisteredContacts(dedupe(syncRes.unregistered.filter((c) => !isMe(c))));
+      } else {
+        console.log('[ContactsScreen] Contacts permission granted, but 0 contacts found on phone.');
+        setRegisteredContacts([]);
+        setUnregisteredContacts([]);
+      }
     } else {
       setRegisteredContacts([]);
       setUnregisteredContacts([]);
@@ -107,10 +131,27 @@ export const ContactsScreen: React.FC<Props> = ({ navigation }) => {
   useEffect(() => {
     devInspector.logUi('ContactsScreen', 'mount', 'Select Contact Screen opened');
     loadContacts(false);
+
+    // Re-check permission and contacts if user went to phone Settings and returned to the app
+    const appStateSubscription = AppState.addEventListener('change', (nextAppState) => {
+      if (nextAppState === 'active') {
+        console.log('[ContactsScreen] App became active, re-checking contacts permission...');
+        loadContacts(true);
+      }
+    });
+
     return () => {
+      appStateSubscription.remove();
       devInspector.logUi('ContactsScreen', 'unmount', 'Select Contact Screen closed');
     };
   }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      console.log('[ContactsScreen] Screen focused, checking contacts...');
+      loadContacts(false);
+    }, [token]),
+  );
 
   const handleStartChat = (contact: DeviceContact) => {
     // Check if conversation already exists in conversations list
@@ -183,9 +224,35 @@ export const ContactsScreen: React.FC<Props> = ({ navigation }) => {
   };
 
   const handleRequestPermission = async () => {
-    const granted = await requestContactsPermission();
-    if (granted) {
+    console.log('[ContactsScreen] handleRequestPermission tapped, canAskAgain:', canAskAgain);
+    if (!canAskAgain) {
+      Alert.alert(
+        'Contacts Permission Required',
+        'Contacts access is disabled. Please enable Contacts in your device Settings to see your friends.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Open Settings', onPress: () => Linking.openSettings() },
+        ],
+      );
+      return;
+    }
+
+    const result = await requestContactsPermissionDetailed();
+    console.log('[ContactsScreen] requestContactsPermissionDetailed result:', result);
+    setHasPermission(result.granted);
+    setCanAskAgain(result.canAskAgain);
+
+    if (result.granted) {
       loadContacts(true);
+    } else if (!result.canAskAgain) {
+      Alert.alert(
+        'Contacts Permission Required',
+        'Contacts access was denied. Please enable Contacts in device Settings to continue.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Open Settings', onPress: () => Linking.openSettings() },
+        ],
+      );
     }
   };
 
@@ -367,10 +434,12 @@ export const ContactsScreen: React.FC<Props> = ({ navigation }) => {
           </Text>
           <TouchableOpacity
             style={[styles.grantBtn, { backgroundColor: colors.primaryIndigo }]}
-            onPress={handleRequestPermission}
+            onPress={!canAskAgain ? () => Linking.openSettings() : handleRequestPermission}
           >
             <UserPlus size={18} color="#FFF" style={{ marginRight: 8 }} />
-            <Text style={styles.grantBtnText}>Grant Contacts Permission</Text>
+            <Text style={styles.grantBtnText}>
+              {!canAskAgain ? 'Open Settings' : 'Grant Contacts Permission'}
+            </Text>
           </TouchableOpacity>
         </View>
       ) : listItems.length === 0 ? (

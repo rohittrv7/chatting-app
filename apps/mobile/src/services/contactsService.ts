@@ -1,5 +1,5 @@
 import * as Contacts from 'expo-contacts';
-import { Share, Platform as RNPlatform } from 'react-native';
+import { Share, Platform as RNPlatform, PermissionsAndroid } from 'react-native';
 import { apiService } from './apiService';
 
 export interface DeviceContact {
@@ -15,30 +15,141 @@ export interface DeviceContact {
   about?: string;
 }
 
+export interface ContactsPermissionDetails {
+  granted: boolean;
+  status: Contacts.PermissionStatus;
+  canAskAgain: boolean;
+}
+
+/**
+ * Check current contacts permission without triggering a prompt to the user.
+ * Queries expo-contacts and native PermissionsAndroid (authoritative for Android 6+).
+ */
+export const getContactsPermissionDetails = async (): Promise<ContactsPermissionDetails> => {
+  let isGranted = false;
+  let status = Contacts.PermissionStatus.UNDETERMINED;
+  let canAskAgain = true;
+
+  try {
+    const expoPerm = await Contacts.getPermissionsAsync();
+    console.log('[ContactsPermission] Current expo-contacts getPermissionsAsync:', {
+      status: expoPerm.status,
+      granted: expoPerm.granted,
+      canAskAgain: expoPerm.canAskAgain,
+    });
+    isGranted = expoPerm.granted || expoPerm.status === Contacts.PermissionStatus.GRANTED;
+    status = expoPerm.status;
+    canAskAgain = expoPerm.canAskAgain !== false;
+  } catch (error) {
+    console.warn('[ContactsPermission] Error calling Contacts.getPermissionsAsync:', error);
+  }
+
+  // On Android, directly check native PackageManager via PermissionsAndroid
+  if (RNPlatform.OS === 'android') {
+    try {
+      const androidGranted = await PermissionsAndroid.check(
+        PermissionsAndroid.PERMISSIONS.READ_CONTACTS,
+      );
+      console.log(
+        '[ContactsPermission] Android PermissionsAndroid.check READ_CONTACTS:',
+        androidGranted,
+      );
+      if (androidGranted) {
+        isGranted = true;
+        status = Contacts.PermissionStatus.GRANTED;
+      }
+    } catch (androidErr) {
+      console.warn('[ContactsPermission] PermissionsAndroid.check failed:', androidErr);
+    }
+  }
+
+  console.log('[ContactsPermission] Final resolved permission status:', {
+    granted: isGranted,
+    status,
+    canAskAgain,
+  });
+
+  return { granted: isGranted, status, canAskAgain };
+};
+
+/**
+ * Request contacts permission just-in-time.
+ * First checks if already granted (e.g. granted manually in Android Settings).
+ * Falls back to native PermissionsAndroid if Expo doesn't prompt.
+ */
+export const requestContactsPermissionDetailed = async (): Promise<ContactsPermissionDetails> => {
+  console.log('[ContactsPermission] Requesting contacts permission...');
+  const current = await getContactsPermissionDetails();
+  if (current.granted) {
+    console.log('[ContactsPermission] Permission already granted, skipping request prompt.');
+    return current;
+  }
+
+  let isGranted = false;
+  let status = current.status;
+  let canAskAgain = current.canAskAgain;
+
+  try {
+    const expoResult = await Contacts.requestPermissionsAsync();
+    console.log('[ContactsPermission] expo-contacts requestPermissionsAsync result:', {
+      status: expoResult.status,
+      granted: expoResult.granted,
+      canAskAgain: expoResult.canAskAgain,
+    });
+    isGranted = expoResult.granted || expoResult.status === Contacts.PermissionStatus.GRANTED;
+    status = expoResult.status;
+    canAskAgain = expoResult.canAskAgain !== false;
+  } catch (error) {
+    console.warn('[ContactsPermission] Error calling Contacts.requestPermissionsAsync:', error);
+  }
+
+  // On Android, if expo didn't grant, try native PermissionsAndroid dialog
+  if (!isGranted && RNPlatform.OS === 'android') {
+    try {
+      const reqRes = await PermissionsAndroid.request(
+        PermissionsAndroid.PERMISSIONS.READ_CONTACTS,
+        {
+          title: 'Contacts Permission',
+          message: 'WhatsApp Connect needs access to your contacts to let you chat with friends.',
+          buttonPositive: 'Allow',
+          buttonNegative: 'Deny',
+        },
+      );
+      console.log('[ContactsPermission] PermissionsAndroid.request result:', reqRes);
+      if (reqRes === PermissionsAndroid.RESULTS.GRANTED) {
+        isGranted = true;
+        status = Contacts.PermissionStatus.GRANTED;
+      } else if (reqRes === PermissionsAndroid.RESULTS.NEVER_ASK_AGAIN) {
+        canAskAgain = false;
+      }
+    } catch (androidErr) {
+      console.warn('[ContactsPermission] PermissionsAndroid.request failed:', androidErr);
+    }
+  }
+
+  console.log('[ContactsPermission] Final requestContactsPermissionDetailed result:', {
+    granted: isGranted,
+    status,
+    canAskAgain,
+  });
+
+  return { granted: isGranted, status, canAskAgain };
+};
+
 /**
  * Request contacts permissions from the user.
  */
 export const requestContactsPermission = async (): Promise<boolean> => {
-  try {
-    const { status } = await Contacts.requestPermissionsAsync();
-    return status === 'granted';
-  } catch (error) {
-    console.warn('Error requesting contacts permission:', error);
-    return false;
-  }
+  const result = await requestContactsPermissionDetailed();
+  return result.granted;
 };
 
 /**
  * Get current contacts permission status.
  */
 export const getContactsPermissionStatus = async (): Promise<Contacts.PermissionStatus> => {
-  try {
-    const { status } = await Contacts.getPermissionsAsync();
-    return status;
-  } catch (error) {
-    console.warn('Error checking contacts permission:', error);
-    return Contacts.PermissionStatus.UNDETERMINED;
-  }
+  const result = await getContactsPermissionDetails();
+  return result.status;
 };
 
 let cachedDeviceContacts: DeviceContact[] | null = null;
@@ -175,27 +286,39 @@ export const invalidateContactsCache = () => {
 
 /**
  * Fetch contacts list from the user's device (Cached in memory).
+ * Uses getContactsPermissionDetails() so it checks both Android native and Expo permission state.
  */
 export const fetchDeviceContacts = async (
   forceRefresh = false,
 ): Promise<{
   granted: boolean;
   contacts: DeviceContact[];
+  canAskAgain: boolean;
 }> => {
   if (!forceRefresh && cachedDeviceContacts && cachedDeviceContacts.length > 0) {
-    return { granted: true, contacts: cachedDeviceContacts };
+    console.log('[ContactsSync] Returning cached device contacts:', cachedDeviceContacts.length);
+    return { granted: true, contacts: cachedDeviceContacts, canAskAgain: true };
   }
 
   try {
-    const { status } = await Contacts.requestPermissionsAsync();
-    if (status !== 'granted') {
-      return { granted: false, contacts: [] };
+    const permission = await getContactsPermissionDetails();
+    if (!permission.granted) {
+      console.log(
+        '[ContactsSync] Contacts permission is not granted. Status:',
+        permission.status,
+        'canAskAgain:',
+        permission.canAskAgain,
+      );
+      return { granted: false, contacts: [], canAskAgain: permission.canAskAgain };
     }
 
+    console.log('[ContactsSync] Permission confirmed granted. Reading contacts from device OS...');
     const { data } = await Contacts.getContactsAsync({
       fields: [Contacts.Fields.PhoneNumbers, Contacts.Fields.Emails, Contacts.Fields.Image],
       sort: Contacts.SortTypes.FirstName,
     });
+
+    console.log('[ContactsSync] Raw contacts retrieved from OS:', data ? data.length : 0);
 
     if (data && data.length > 0) {
       const seenPhones = new Set<string>();
@@ -227,13 +350,14 @@ export const fetchDeviceContacts = async (
         });
       }
 
+      console.log('[ContactsSync] Normalized valid device contacts:', formatted.length);
       cachedDeviceContacts = formatted;
-      return { granted: true, contacts: formatted };
+      return { granted: true, contacts: formatted, canAskAgain: true };
     }
-    return { granted: true, contacts: [] };
+    return { granted: true, contacts: [], canAskAgain: true };
   } catch (error) {
-    console.warn('Error fetching device contacts:', error);
-    return { granted: false, contacts: [] };
+    console.warn('[ContactsSync] Error fetching device contacts:', error);
+    return { granted: false, contacts: [], canAskAgain: true };
   }
 };
 
@@ -273,18 +397,22 @@ export const syncContactsWithServer = async (
 }> => {
   const now = Date.now();
   if (!forceRefresh && cachedSyncResult && now - lastSyncTimestamp < SYNC_CACHE_TTL_MS) {
+    console.log('[ContactsSync] Using cached sync result (within 30s TTL)');
     return cachedSyncResult;
   }
 
   if (syncInFlightPromise) {
+    console.log('[ContactsSync] Reusing in-flight sync promise');
     return syncInFlightPromise;
   }
 
   if (!contacts || contacts.length === 0) {
+    console.log('[ContactsSync] No device contacts to sync with server');
     return { registered: [], unregistered: [], allSorted: [] };
   }
 
   if (!token) {
+    console.log('[ContactsSync] No auth token available, cannot sync contacts with server');
     return {
       registered: [],
       unregistered: contacts,
@@ -301,7 +429,16 @@ export const syncContactsWithServer = async (
         })
         .filter((p) => p && p.trim().length >= 7);
 
+      console.log(
+        '[ContactsSync] Firing POST /api/v1/auth/contacts/sync with',
+        phoneNumbers.length,
+        'phone numbers',
+      );
       const syncResult = await apiService.syncContacts(token, phoneNumbers);
+      console.log('[ContactsSync] POST /api/v1/auth/contacts/sync response received:', {
+        registeredCount: syncResult.registered?.length,
+        unregisteredCount: syncResult.unregistered?.length,
+      });
 
       const registeredPhoneMap = new Map<string, any>();
       for (const regUser of syncResult.registered) {

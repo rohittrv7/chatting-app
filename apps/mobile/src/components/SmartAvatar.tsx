@@ -30,14 +30,11 @@ interface FailedAvatarEntry {
 // - Real HTTP 404 responses are permanently blacklisted (no retry loops).
 // - Generic network errors / timeouts expire after 5 minutes to allow recovery.
 const failedAvatarMap = new Map<string, FailedAvatarEntry>();
-const RETRY_EXPIRY_MS = 5 * 60 * 1000; // 5 minutes
+const RETRY_EXPIRY_MS = 30 * 1000; // 30 seconds transient cache
 
 export function isAvatarBlacklisted(url: string): boolean {
   const entry = failedAvatarMap.get(url);
   if (!entry) return false;
-  // Confirmed 404: permanently blacklist
-  if (entry.isPermanent404) return true;
-  // Generic network error: allow retry after 5 minutes
   if (Date.now() - entry.timestamp > RETRY_EXPIRY_MS) {
     failedAvatarMap.delete(url);
     return false;
@@ -127,14 +124,14 @@ const SmartAvatarComponent: React.FC<SmartAvatarProps> = ({
   const effectiveUri = !imageError && !isFailed ? resolvedUri : null;
 
   if (effectiveUri) {
-    const token = getAuthToken();
+    const isStaticUpload = effectiveUri.includes('/uploads/');
+    const token = !isStaticUpload ? getAuthToken() : null;
     const source = {
       uri: effectiveUri,
       headers:
         token && (effectiveUri.startsWith('http://') || effectiveUri.startsWith('https://'))
           ? { Authorization: `Bearer ${token}` }
           : undefined,
-      cache: 'force-cache' as const,
     };
 
     return (

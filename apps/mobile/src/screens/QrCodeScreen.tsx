@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -26,6 +26,7 @@ import {
   ensureCameraPermission,
   ensureMediaLibraryPermission,
 } from '../services/permissionsService';
+import { saveBase64ImageToGallery } from '../services/mediaSaveService';
 import { apiService } from '../services/apiService';
 import {
   ArrowLeft,
@@ -69,6 +70,7 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
 
   const [isSavingQr, setIsSavingQr] = useState(false);
   const [isSavedQr, setIsSavedQr] = useState(false);
+  const qrSvgRef = useRef<any>(null);
 
   // 1. Dynamic User ID — always comes from auth state or userProfile (never hardcoded)
   const resolvedUserId = authUserId || (userProfile as any).userId || (userProfile as any).id || '';
@@ -84,21 +86,51 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
   });
 
   const handleSaveToGallery = async () => {
-    const granted = await ensureMediaLibraryPermission();
-    if (!granted) {
-      Alert.alert(
-        'Permission Required',
-        'Gallery permission is needed to save your QR code. Grant it in Settings.',
-      );
+    console.log('[QrCodeScreen] handleSaveToGallery initiated');
+    if (!qrSvgRef.current || typeof qrSvgRef.current.toDataURL !== 'function') {
+      Alert.alert('Save Failed', 'QR code is not ready yet. Please try again in a moment.');
       return;
     }
+
     setIsSavingQr(true);
-    setTimeout(() => {
+
+    try {
+      qrSvgRef.current.toDataURL(async (data: string) => {
+        try {
+          if (!data) {
+            setIsSavingQr(false);
+            Alert.alert('Save Failed', 'Could not generate QR code image data.');
+            return;
+          }
+          console.log('[QrCodeScreen] Got QR base64 data, saving to gallery...');
+          const result = await saveBase64ImageToGallery(
+            data,
+            `whatsapp_qr_${resolvedUserId || Date.now()}.png`,
+          );
+          console.log('[QrCodeScreen] saveBase64ImageToGallery result:', result);
+          setIsSavingQr(false);
+
+          if (result.success) {
+            setIsSavedQr(true);
+            Alert.alert(
+              'Saved to Gallery! 📸',
+              'Your QR code has been saved to your Photos / Gallery.',
+            );
+            setTimeout(() => setIsSavedQr(false), 3000);
+          } else {
+            Alert.alert('Save Failed', result.error || 'Could not save QR code to gallery.');
+          }
+        } catch (innerErr: any) {
+          setIsSavingQr(false);
+          console.error('[QrCodeScreen] Save callback error:', innerErr);
+          Alert.alert('Save Failed', innerErr?.message || 'Error occurred while saving image.');
+        }
+      });
+    } catch (outerErr: any) {
       setIsSavingQr(false);
-      setIsSavedQr(true);
-      Alert.alert('Saved!', 'QR code saved to your gallery.');
-      setTimeout(() => setIsSavedQr(false), 3000);
-    }, 700);
+      console.error('[QrCodeScreen] QR toDataURL error:', outerErr);
+      Alert.alert('Save Failed', outerErr?.message || 'Error generating QR code.');
+    }
   };
 
   const checkCameraAccess = useCallback(async () => {
@@ -378,6 +410,9 @@ export const QrCodeScreen: React.FC<Props> = ({ navigation }) => {
             {/* Real, Scannable Dynamic QR Code */}
             <View style={styles.svgQrWrapper}>
               <QRCode
+                getRef={(c) => {
+                  qrSvgRef.current = c;
+                }}
                 value={myQrData}
                 size={210}
                 color="#0F172A"

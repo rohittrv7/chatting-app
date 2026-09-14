@@ -1,15 +1,20 @@
 /**
- * RestoreBackupScreen.tsx — WhatsApp-Style Chat History Restore UI
+ * RestoreBackupScreen.tsx — WhatsApp-Style Modern Chat History Restore UI
  *
  * Screen displayed post-OTP verification when a backup exists on Google Drive.
  *
  * Visual hierarchy:
- * 1. App logo & Cloud sync illustration
- * 2. Header: "Restore your chat history"
- * 3. Backup Info Card (Google Drive cloud badge, phone/email, date, size)
- * 4. Dual Action Buttons: "Restore" (Primary) & "Skip" (Secondary with confirmation)
- * 5. In-Progress Screen State with live percentage, step messages & media counter
- * 6. Auto-navigation to MainTabs upon completion
+ * 1. Hero Cloud Illustration with multi-layer glow
+ * 2. Header & description
+ * 3. Prominent Backup Info Card:
+ *    - Google Drive account identifier
+ *    - "Last backup: [formattedDate] • [sizeFormatted]"
+ *    - Message & media counter pill badges
+ *    - End-to-end encrypted security badge
+ * 4. Distinct Action Buttons:
+ *    - "Restore" (Primary solid rounded button with shadow)
+ *    - "Skip" (Secondary outlined button with confirmation dialog)
+ * 5. In-progress restore card with live percentage bar & stage indicators
  */
 
 import React, { useState } from 'react';
@@ -21,7 +26,6 @@ import {
   StatusBar,
   Alert,
   ActivityIndicator,
-  Animated,
   Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -39,6 +43,8 @@ import {
   Image as ImageIcon,
   ShieldCheck,
   RefreshCw,
+  Clock,
+  Sparkles,
 } from 'lucide-react-native';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'RestoreBackup'>;
@@ -61,6 +67,12 @@ export const RestoreBackupScreen: React.FC<Props> = ({ navigation, route }) => {
 
   const [hasCompleted, setHasCompleted] = useState(false);
 
+  const formattedDate = lastBackup?.formattedDate || 'Recent backup';
+  const formattedSize = lastBackup?.sizeFormatted || '342 MB';
+  const chatsCount = lastBackup?.chatsCount ?? 24;
+  const messagesCount = lastBackup?.messagesCount ?? 1420;
+  const mediaCount = lastBackup?.mediaFilesCount ?? 1204;
+
   const executeSkip = () => {
     showToast('Started fresh without restoring backup', 'info', 2000);
     navigation.reset({
@@ -73,7 +85,7 @@ export const RestoreBackupScreen: React.FC<Props> = ({ navigation, route }) => {
     const success = await startRestore();
     if (success) {
       setHasCompleted(true);
-      showToast('1,420 messages and media restored!', 'success', 2500);
+      showToast(`${messagesCount.toLocaleString()} messages and media restored!`, 'success', 2500);
       setTimeout(() => {
         navigation.reset({
           index: 0,
@@ -85,7 +97,6 @@ export const RestoreBackupScreen: React.FC<Props> = ({ navigation, route }) => {
 
   const handleSkipPrompt = () => {
     if (Platform.OS === 'web') {
-      // React Native Web Alert.alert button callbacks are unsupported stubs
       executeSkip();
       return;
     }
@@ -118,9 +129,25 @@ export const RestoreBackupScreen: React.FC<Props> = ({ navigation, route }) => {
       <View style={styles.content}>
         {/* ── Top Hero Illustration ─────────────────────────────────────── */}
         <View style={styles.illustrationWrapper}>
-          <View style={[styles.outerGlowCircle, { backgroundColor: 'rgba(99, 102, 241, 0.08)' }]}>
-            <View style={[styles.innerIconCircle, { backgroundColor: 'rgba(99, 102, 241, 0.16)' }]}>
-              <CloudDownload size={48} color={colors.primaryIndigo} />
+          <View
+            style={[
+              styles.outerGlowCircle,
+              {
+                backgroundColor:
+                  themeMode === 'dark' ? 'rgba(99, 102, 241, 0.12)' : 'rgba(99, 102, 241, 0.08)',
+              },
+            ]}
+          >
+            <View
+              style={[
+                styles.innerIconCircle,
+                {
+                  backgroundColor:
+                    themeMode === 'dark' ? 'rgba(99, 102, 241, 0.22)' : 'rgba(99, 102, 241, 0.14)',
+                },
+              ]}
+            >
+              <CloudDownload size={44} color={colors.primaryIndigo} />
             </View>
           </View>
         </View>
@@ -130,8 +157,8 @@ export const RestoreBackupScreen: React.FC<Props> = ({ navigation, route }) => {
           Restore your chat history
         </Text>
         <Text style={[styles.description, { color: colors.textSecondary }]}>
-          Restore your messages and media from Google Drive. If you don't restore now, you won't be
-          able to restore later.
+          We found a backup of your messages and media on Google Drive. Restore now to bring back
+          your conversations.
         </Text>
 
         {/* ── Backup Info Card OR Progress Card ─────────────────────────── */}
@@ -157,7 +184,7 @@ export const RestoreBackupScreen: React.FC<Props> = ({ navigation, route }) => {
               </Text>
             </View>
 
-            {/* Progress Bar */}
+            {/* Progress Bar Track */}
             <View style={[styles.progressBarTrack, { backgroundColor: colors.cardBorder }]}>
               <View
                 style={[
@@ -170,26 +197,36 @@ export const RestoreBackupScreen: React.FC<Props> = ({ navigation, route }) => {
               />
             </View>
 
-            {/* Changing WhatsApp status label */}
+            {/* Status description */}
             <Text style={[styles.progressStageLabel, { color: colors.textSecondary }]}>
               {hasCompleted
-                ? 'Your messages have been restored. Entering chats...'
-                : restoreStageLabel}
+                ? 'Your messages and media have been restored. Entering chats...'
+                : restoreStageLabel || 'Connecting to Google Drive and downloading messages...'}
             </Text>
 
             {/* Live Counter Badges */}
             {!hasCompleted && (
               <View style={styles.badgeRow}>
-                <View style={[styles.counterBadge, { backgroundColor: colors.bg }]}>
+                <View
+                  style={[
+                    styles.counterBadge,
+                    { backgroundColor: colors.bg, borderColor: colors.cardBorder },
+                  ]}
+                >
                   <Database size={13} color={colors.primaryIndigo} />
                   <Text style={[styles.counterText, { color: colors.textPrimary }]}>
-                    1,420 Messages
+                    {messagesCount.toLocaleString()} Messages
                   </Text>
                 </View>
-                <View style={[styles.counterBadge, { backgroundColor: colors.bg }]}>
+                <View
+                  style={[
+                    styles.counterBadge,
+                    { backgroundColor: colors.bg, borderColor: colors.cardBorder },
+                  ]}
+                >
                   <ImageIcon size={13} color="#22C55E" />
                   <Text style={[styles.counterText, { color: colors.textPrimary }]}>
-                    1,204 Media
+                    {mediaCount.toLocaleString()} Media
                   </Text>
                 </View>
               </View>
@@ -203,7 +240,7 @@ export const RestoreBackupScreen: React.FC<Props> = ({ navigation, route }) => {
               { backgroundColor: 'rgba(239, 68, 68, 0.08)', borderColor: '#EF4444' },
             ]}
           >
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <View style={styles.errorHeader}>
               <AlertCircle size={20} color="#EF4444" />
               <Text style={styles.errorTitle}>Restore failed</Text>
             </View>
@@ -224,47 +261,92 @@ export const RestoreBackupScreen: React.FC<Props> = ({ navigation, route }) => {
               { backgroundColor: colors.surface, borderColor: colors.cardBorder },
             ]}
           >
-            {/* Top row: Drive brand & Account */}
+            {/* Top row: Google Drive source & Account */}
             <View style={styles.accountHeaderRow}>
               <View style={[styles.driveLogoBox, { backgroundColor: '#EA4335' }]}>
                 <HardDrive size={20} color="#FFF" />
               </View>
               <View style={{ flex: 1, marginLeft: 12 }}>
-                <Text style={[styles.foundTitle, { color: colors.textPrimary }]}>Backup found</Text>
+                <View style={styles.badgeHeaderRow}>
+                  <Text style={[styles.foundTitle, { color: colors.textPrimary }]}>
+                    Google Drive Backup
+                  </Text>
+                  <View style={[styles.foundPill, { backgroundColor: 'rgba(34, 197, 94, 0.12)' }]}>
+                    <Text style={[styles.foundPillText, { color: '#22C55E' }]}>Found</Text>
+                  </View>
+                </View>
                 <Text
                   style={[styles.foundAccount, { color: colors.textSecondary }]}
                   numberOfLines={1}
                 >
-                  {account?.email || 'rohit.sharma@gmail.com'}
-                  {phoneNumber ? ` • ${phoneNumber}` : ''}
+                  {account?.email ||
+                    (phoneNumber ? `Connected to ${phoneNumber}` : 'Google Account')}
                 </Text>
               </View>
             </View>
 
-            <View style={[styles.separator, { backgroundColor: colors.cardBorder }]} />
+            {/* Prominent Banner: Last backup info */}
+            <View
+              style={[
+                styles.backupHighlightBanner,
+                {
+                  backgroundColor:
+                    themeMode === 'dark' ? 'rgba(99, 102, 241, 0.10)' : 'rgba(99, 102, 241, 0.06)',
+                  borderColor:
+                    themeMode === 'dark' ? 'rgba(99, 102, 241, 0.25)' : 'rgba(99, 102, 241, 0.18)',
+                },
+              ]}
+            >
+              <Clock size={16} color={colors.primaryIndigo} style={{ marginRight: 8 }} />
+              <Text style={[styles.backupHighlightText, { color: colors.textPrimary }]}>
+                <Text style={styles.backupHighlightLabel}>Last backup: </Text>
+                <Text style={styles.backupHighlightDate}>{formattedDate}</Text>
+                <Text style={styles.backupHighlightDot}> • </Text>
+                <Text style={[styles.backupHighlightSize, { color: colors.primaryIndigo }]}>
+                  {formattedSize}
+                </Text>
+              </Text>
+            </View>
 
-            {/* Details row: Last backup time and size */}
-            <View style={styles.metaRow}>
-              <View style={styles.metaCol}>
-                <Text style={[styles.metaLabel, { color: colors.textSecondary }]}>Last backup</Text>
-                <Text style={[styles.metaValue, { color: colors.textPrimary }]}>
-                  {lastBackup?.formattedDate || 'Today at 8:15 AM'}
+            {/* Stats Breakdown Row */}
+            <View style={styles.statsBreakdownRow}>
+              <View
+                style={[
+                  styles.statBadge,
+                  { backgroundColor: colors.bg, borderColor: colors.cardBorder },
+                ]}
+              >
+                <Database size={14} color={colors.primaryIndigo} />
+                <Text style={[styles.statBadgeText, { color: colors.textPrimary }]}>
+                  {messagesCount.toLocaleString()} messages
                 </Text>
               </View>
-              <View style={[styles.verticalDivider, { backgroundColor: colors.cardBorder }]} />
-              <View style={styles.metaCol}>
-                <Text style={[styles.metaLabel, { color: colors.textSecondary }]}>Size</Text>
-                <Text style={[styles.metaValue, { color: colors.textPrimary }]}>
-                  {lastBackup?.sizeFormatted || '342 MB'}
+              <View
+                style={[
+                  styles.statBadge,
+                  { backgroundColor: colors.bg, borderColor: colors.cardBorder },
+                ]}
+              >
+                <ImageIcon size={14} color="#22C55E" />
+                <Text style={[styles.statBadgeText, { color: colors.textPrimary }]}>
+                  {mediaCount.toLocaleString()} media items
                 </Text>
               </View>
             </View>
 
-            {/* Cloud encrypted info pill */}
-            <View style={[styles.securityPill, { backgroundColor: colors.bg }]}>
-              <ShieldCheck size={14} color="#22C55E" />
+            {/* End-to-end encrypted security pill */}
+            <View
+              style={[
+                styles.securityPill,
+                {
+                  backgroundColor: colors.bg,
+                  borderColor: colors.cardBorder,
+                },
+              ]}
+            >
+              <ShieldCheck size={16} color="#22C55E" />
               <Text style={[styles.securityPillText, { color: colors.textSecondary }]}>
-                Safe & private restore directly into your device
+                End-to-end encrypted. Restores directly to local storage.
               </Text>
             </View>
           </View>
@@ -277,23 +359,33 @@ export const RestoreBackupScreen: React.FC<Props> = ({ navigation, route }) => {
           <View style={styles.buttonGroup}>
             {/* Primary: Restore */}
             <TouchableOpacity
-              style={[styles.primaryBtn, { backgroundColor: colors.primaryIndigo }]}
+              style={[
+                styles.primaryBtn,
+                {
+                  backgroundColor: colors.primaryIndigo,
+                  shadowColor: colors.primaryIndigo,
+                },
+              ]}
               onPress={handleStartRestore}
               activeOpacity={0.85}
             >
-              <CloudDownload size={20} color="#FFFFFF" style={{ marginRight: 8 }} />
+              <CloudDownload size={20} color="#FFFFFF" style={{ marginRight: 10 }} />
               <Text style={styles.primaryBtnText}>Restore</Text>
             </TouchableOpacity>
 
             {/* Secondary: Skip */}
             <TouchableOpacity
-              style={[styles.skipBtn, { borderColor: colors.cardBorder }]}
+              style={[
+                styles.skipBtn,
+                {
+                  backgroundColor: colors.surface,
+                  borderColor: colors.cardBorder,
+                },
+              ]}
               onPress={handleSkipPrompt}
               activeOpacity={0.7}
             >
-              <Text style={[styles.skipBtnText, { color: colors.textSecondary }]}>
-                Skip this step
-              </Text>
+              <Text style={[styles.skipBtnText, { color: colors.textSecondary }]}>Skip</Text>
             </TouchableOpacity>
           </View>
         )}
@@ -303,33 +395,35 @@ export const RestoreBackupScreen: React.FC<Props> = ({ navigation, route }) => {
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
+  container: {
+    flex: 1,
+  },
   content: {
     flex: 1,
     paddingHorizontal: 24,
-    paddingTop: 32,
+    paddingTop: 28,
     paddingBottom: 24,
     width: '100%',
     maxWidth: 480,
     alignSelf: 'center',
   },
 
-  // Illustration
+  // Hero Illustration
   illustrationWrapper: {
     alignItems: 'center',
-    marginBottom: 24,
+    marginBottom: 20,
   },
   outerGlowCircle: {
-    width: 108,
-    height: 108,
-    borderRadius: 54,
+    width: 96,
+    height: 96,
+    borderRadius: 48,
     justifyContent: 'center',
     alignItems: 'center',
   },
   innerIconCircle: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
+    width: 68,
+    height: 68,
+    borderRadius: 34,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -339,26 +433,27 @@ const styles = StyleSheet.create({
     fontSize: 24,
     fontWeight: '800',
     textAlign: 'center',
-    marginBottom: 10,
+    marginBottom: 8,
+    letterSpacing: -0.3,
   },
   description: {
     fontSize: 14,
     textAlign: 'center',
     lineHeight: 21,
-    marginBottom: 28,
-    paddingHorizontal: 8,
+    marginBottom: 24,
+    paddingHorizontal: 12,
   },
 
-  // Info Card
+  // Card Container
   cardContainer: {
     borderRadius: 20,
     borderWidth: 1,
     padding: 18,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.08,
+    shadowOpacity: 0.06,
     shadowRadius: 10,
-    elevation: 3,
+    elevation: 2,
   },
   accountHeaderRow: {
     flexDirection: 'row',
@@ -371,33 +466,99 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  foundTitle: { fontSize: 16, fontWeight: '800' },
-  foundAccount: { fontSize: 13, marginTop: 2 },
-  separator: {
-    height: StyleSheet.hairlineWidth,
-    marginVertical: 14,
-  },
-  metaRow: {
+  badgeHeaderRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-around',
+    justifyContent: 'space-between',
   },
-  metaCol: { alignItems: 'center' },
-  metaLabel: { fontSize: 12, marginBottom: 3 },
-  metaValue: { fontSize: 15, fontWeight: '700' },
-  verticalDivider: { width: 1, height: 26 },
+  foundTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  foundPill: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  foundPillText: {
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
+  foundAccount: {
+    fontSize: 13,
+    marginTop: 2,
+  },
+
+  // Prominent Backup Highlight Banner
+  backupHighlightBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    marginTop: 16,
+  },
+  backupHighlightText: {
+    fontSize: 14,
+    flex: 1,
+  },
+  backupHighlightLabel: {
+    fontWeight: '600',
+  },
+  backupHighlightDate: {
+    fontWeight: '700',
+  },
+  backupHighlightDot: {
+    fontWeight: '700',
+    opacity: 0.6,
+  },
+  backupHighlightSize: {
+    fontWeight: '800',
+  },
+
+  // Stats Breakdown Row
+  statsBreakdownRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 12,
+  },
+  statBadge: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 9,
+    paddingHorizontal: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    gap: 6,
+  },
+  statBadgeText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+
+  // Security Pill
   securityPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderRadius: 10,
+    borderRadius: 12,
+    borderWidth: 1,
     paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingVertical: 10,
     marginTop: 14,
     gap: 8,
   },
-  securityPillText: { fontSize: 11, fontWeight: '500', flex: 1 },
+  securityPillText: {
+    fontSize: 12,
+    fontWeight: '500',
+    flex: 1,
+    lineHeight: 16,
+  },
 
-  // Progress state
+  // Progress Card State
   progressCard: {
     borderWidth: 1.5,
     gap: 12,
@@ -407,8 +568,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
   },
-  progressTitle: { fontSize: 15, fontWeight: '700', flex: 1, marginLeft: 10 },
-  progressPercent: { fontSize: 16, fontWeight: '800' },
+  progressTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    flex: 1,
+    marginLeft: 10,
+  },
+  progressPercent: {
+    fontSize: 16,
+    fontWeight: '800',
+  },
   progressBarTrack: {
     height: 8,
     borderRadius: 4,
@@ -418,7 +587,11 @@ const styles = StyleSheet.create({
     height: '100%',
     borderRadius: 4,
   },
-  progressStageLabel: { fontSize: 13, marginTop: 2 },
+  progressStageLabel: {
+    fontSize: 13,
+    lineHeight: 18,
+    marginTop: 2,
+  },
   badgeRow: {
     flexDirection: 'row',
     gap: 10,
@@ -430,16 +603,32 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 8,
+    borderWidth: 1,
     gap: 6,
   },
-  counterText: { fontSize: 12, fontWeight: '600' },
+  counterText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
 
-  // Error Card
+  // Error Card State
   errorCard: {
     gap: 10,
   },
-  errorTitle: { color: '#EF4444', fontSize: 16, fontWeight: '700' },
-  errorDesc: { fontSize: 13 },
+  errorHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  errorTitle: {
+    color: '#EF4444',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  errorDesc: {
+    fontSize: 13,
+    lineHeight: 18,
+  },
   retryBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -448,9 +637,13 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     marginTop: 4,
   },
-  retryBtnText: { color: '#FFF', fontSize: 14, fontWeight: '700' },
+  retryBtnText: {
+    color: '#FFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
 
-  // Button Group
+  // Action Buttons
   buttonGroup: {
     gap: 12,
   },
@@ -460,7 +653,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingVertical: 16,
     borderRadius: 16,
-    shadowColor: '#6366F1',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.25,
     shadowRadius: 8,
@@ -479,7 +671,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   skipBtnText: {
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: '700',
   },
 });

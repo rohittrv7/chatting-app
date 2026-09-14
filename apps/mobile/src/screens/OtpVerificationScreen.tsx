@@ -19,7 +19,7 @@ import { useTheme } from '../context/ThemeContext';
 import { useToast } from '../context/ToastContext';
 import { otpVerifiedSuccess } from '../store/authSlice';
 import { apiService } from '../services/apiService';
-import { mockBackupService } from '../services/mockBackupService';
+import { googleDriveBackupService } from '../services/googleDriveBackupService';
 import { ArrowLeft, CheckCircle, RefreshCw, KeyRound } from 'lucide-react-native';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'OtpVerification'>;
@@ -145,6 +145,8 @@ export const OtpVerificationScreen: React.FC<Props> = ({ route, navigation }) =>
       showToast('Phone Number Verified!', 'success', 2000);
 
       if (verifyRes.isNewUser) {
+        // ── SCENARIO 1: Brand new user (first time registration) ──────────────
+        // Skip backup check entirely; route straight to onboarding / profile setup.
         navigation.reset({
           index: 0,
           routes: [{ name: 'NewUserProfileSetup', params: { phoneNumber } }],
@@ -154,20 +156,24 @@ export const OtpVerificationScreen: React.FC<Props> = ({ route, navigation }) =>
           updateUserProfile(verifyRes.user);
         }
 
-        // 🛡️ WhatsApp Restore Flow: Check if cloud backup exists
-        // Screen 2: If backup exists, prompt user to restore
-        // Screen 3: If no backup exists, skip restore and go straight to chats
+        // ── SCENARIOS 2 & 3: Existing user login (reinstall or new device) ────
+        // Query Google Drive API directly to verify genuine backup file existence.
         try {
-          const backupCheck = await mockBackupService.checkBackupExists(phoneNumber);
-          if (backupCheck.exists) {
+          const backupCheck = await googleDriveBackupService.checkBackupExists(phoneNumber);
+          if (backupCheck.exists && backupCheck.metadata) {
+            // SCENARIO 3: Genuine backup file exists on Google Drive -> Show Restore screen
             navigation.reset({
               index: 0,
               routes: [{ name: 'RestoreBackup', params: { phoneNumber } }],
             });
             return;
           }
-        } catch {}
+        } catch (backupErr) {
+          console.warn('[OtpVerification] Cloud backup check error:', backupErr);
+        }
 
+        // SCENARIO 2: No genuine backup exists on Google Drive / setting was "never"
+        // Skip restore screen and proceed directly to chat list.
         navigation.reset({
           index: 0,
           routes: [{ name: 'MainTabs' }],

@@ -55,7 +55,7 @@ const BackupContext = createContext<BackupContextValue | undefined>(undefined);
 export const BackupProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [settings, setSettings] = useState<BackupSettings>({
     account: null,
-    frequency: 'daily',
+    frequency: 'never',
     networkType: 'wifi',
     includeImages: true,
     includeVideos: false,

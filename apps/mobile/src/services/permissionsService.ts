@@ -14,6 +14,7 @@
 import { Alert, Linking, Platform } from 'react-native';
 import * as Contacts from 'expo-contacts';
 import * as ImagePicker from 'expo-image-picker';
+import * as MediaLibrary from 'expo-media-library';
 import { Camera as ExpoCamera } from 'expo-camera';
 import { Audio } from 'expo-av';
 
@@ -91,6 +92,15 @@ export const ensureMicrophonePermission = async (): Promise<boolean> => {
  */
 export const ensureContactsPermission = async (): Promise<boolean> => {
   try {
+    // Check native Android first if on Android
+    if (Platform.OS === 'android') {
+      const { PermissionsAndroid } = require('react-native');
+      const androidGranted = await PermissionsAndroid.check(
+        PermissionsAndroid.PERMISSIONS.READ_CONTACTS,
+      );
+      if (androidGranted) return true;
+    }
+
     const { granted, canAskAgain } = await Contacts.getPermissionsAsync();
     if (granted) return true;
 
@@ -116,24 +126,46 @@ export const ensureContactsPermission = async (): Promise<boolean> => {
  * Request photo/media library permission just-in-time
  * (called when user taps photo picker or save-to-gallery).
  */
-export const ensureMediaLibraryPermission = async (): Promise<boolean> => {
+export const ensureMediaLibraryPermission = async (writeOnly = true): Promise<boolean> => {
   try {
-    const { granted, canAskAgain } = await ImagePicker.getMediaLibraryPermissionsAsync();
-    if (granted) return true;
+    console.log(
+      '[MediaPermissions] Checking MediaLibrary permission (writeOnly =',
+      writeOnly,
+      ')...',
+    );
+    const { granted, canAskAgain, status } = await MediaLibrary.getPermissionsAsync(writeOnly);
+    console.log('[MediaPermissions] Current MediaLibrary permission status:', {
+      granted,
+      canAskAgain,
+      status,
+    });
+    if (granted || status === 'granted') return true;
 
     if (!canAskAgain) {
-      openSettingsPrompt('Photo Library');
+      openSettingsPrompt('Photo Library / Gallery');
       return false;
     }
 
-    const result = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!result.granted && !result.canAskAgain) {
-      openSettingsPrompt('Photo Library');
+    const result = await MediaLibrary.requestPermissionsAsync(writeOnly);
+    console.log('[MediaPermissions] Request MediaLibrary permission result:', {
+      granted: result.granted,
+      canAskAgain: result.canAskAgain,
+      status: result.status,
+    });
+    if (result.granted || result.status === 'granted') return true;
+
+    if (!result.canAskAgain) {
+      openSettingsPrompt('Photo Library / Gallery');
     }
-    return result.granted;
-  } catch (error) {
-    console.warn('[Permissions] Media library check failed:', error);
     return false;
+  } catch (error) {
+    console.warn('[Permissions] Media library check failed, trying ImagePicker fallback:', error);
+    try {
+      const imgRes = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      return imgRes.granted;
+    } catch {
+      return false;
+    }
   }
 };
 

@@ -881,13 +881,25 @@ export const ConversationListScreen: React.FC<Props> = ({ navigation }) => {
               setSelectedAvatarProfile(item);
             }}
           >
-            <SmartAvatar
-              avatarUrl={item.avatarUrl}
-              name={item.title}
-              username={item.username}
-              size={48}
-              groupBg={item.groupBg || colors.cardBorder}
-            />
+            {(() => {
+              const resolvedContact = getResolvedContact({
+                userId: item.recipientDbId,
+                username: item.username,
+                phone: item.phone,
+                name: item.title,
+              });
+              const effectiveAvatarUrl = item.avatarUrl || resolvedContact?.avatarUrl;
+
+              return (
+                <SmartAvatar
+                  avatarUrl={effectiveAvatarUrl}
+                  name={item.title}
+                  username={item.username}
+                  size={48}
+                  groupBg={item.groupBg || colors.cardBorder}
+                />
+              );
+            })()}
             {isUserOnline(item.recipientDbId) ||
             isUserOnline(item.username) ||
             isUserOnline(item.id) ||

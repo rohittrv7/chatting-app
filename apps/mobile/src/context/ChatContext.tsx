@@ -747,9 +747,19 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       senderDisplayName,
     );
 
+    const matchedSenderContact = getResolvedContact({
+      userId: payload.senderId,
+      username: senderUsernameClean,
+      phone: payload.senderPhone,
+      name: payload.senderName,
+    });
+
+    const existingConv = conversationsRef.current.find(
+      (c) => c.id === convId || (c.recipientDbId && c.recipientDbId === payload.senderId),
+    );
     const resolvedAvatar = payload.senderAvatarUrl
       ? apiService.getResolvedMediaUrl(payload.senderAvatarUrl)
-      : undefined;
+      : matchedSenderContact?.avatarUrl || existingConv?.avatarUrl;
 
     // ── E2EE: Decrypt incoming message text using nacl.box ───────────────
     // If ciphertexts contains e2e fields (ciphertext + nonce + senderPublicKey),
@@ -927,11 +937,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     })();
 
-    // 2. Find any matching existing conversation by ID or recipientDbId
-    const existingConv = conversationsRef.current.find(
-      (c) => c.id === convId || (c.recipientDbId && c.recipientDbId === payload.senderId),
-    );
-
+    // 2. User active screen check (existingConv resolved above)
     const isUserLooking =
       activeConvIdRef.current === convId ||
       (existingConv ? activeConvIdRef.current === existingConv.id : false);
@@ -1205,8 +1211,9 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
           : undefined;
         const otherPhone = otherMember?.user?.phoneNumber;
         const otherDbId: string | undefined = otherMember?.user?.id;
-        const otherAvatar = otherMember?.user?.avatarUrl
-          ? apiService.getResolvedMediaUrl(otherMember.user.avatarUrl)
+        const rawAvatarCandidate = otherMember?.user?.avatarUrl || sc.avatarUrl;
+        const otherAvatar = rawAvatarCandidate
+          ? apiService.getResolvedMediaUrl(rawAvatarCandidate)
           : undefined;
 
         const resolvedTitle = getResolvedDisplayName(
@@ -1305,12 +1312,18 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
               ? localLastMsg.status
               : existing?.lastMessageStatus;
 
+        const effectiveAvatar =
+          otherAvatar ||
+          matchedContact?.avatarUrl ||
+          existing?.avatarUrl ||
+          (sc.avatarUrl ? apiService.getResolvedMediaUrl(sc.avatarUrl) : undefined);
+
         currentMap.set(sc.id, {
           id: sc.id,
           title: resolvedTitle,
           username: otherUsername,
           recipientDbId: otherDbId,
-          avatarUrl: otherAvatar || matchedContact?.avatarUrl || existing?.avatarUrl,
+          avatarUrl: effectiveAvatar,
           phone: otherPhone || matchedContact?.phone || existing?.phone,
           about: otherMember?.user?.about || matchedContact?.about || existing?.about,
           lastMessage: lastMsgObj ? lastMsgText : existing?.lastMessage || lastMsgText,
@@ -1327,7 +1340,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
           serverId: sc.id,
           type: sc.type || 'DIRECT',
           title: resolvedTitle && resolvedTitle !== 'DIRECT' ? resolvedTitle : undefined,
-          avatarUrl: otherAvatar || matchedContact?.avatarUrl,
+          avatarUrl: effectiveAvatar,
           recipientDbId: otherDbId,
           recipientUsername: otherUsername,
           recipientPhone: otherPhone,
@@ -1595,6 +1608,14 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // ── WatermelonDB: persist optimistic outgoing message ──────────────────
     (async () => {
       try {
+        const existingConv = conversationsRef.current.find((c) => c.id === conversationId);
+        const resolvedContact = getResolvedContact({
+          userId: receiverId,
+          username: contactUsername,
+          name: contactTitle,
+        });
+        const convAvatar = existingConv?.avatarUrl || resolvedContact?.avatarUrl;
+
         await dbUpsertConversation({
           serverId: conversationId,
           type: 'DIRECT',
@@ -1602,6 +1623,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
             resolvedTitle && resolvedTitle !== 'DIRECT'
               ? resolvedTitle
               : contactTitle || contactUsername || undefined,
+          avatarUrl: convAvatar,
           recipientDbId: receiverId,
           recipientUsername: contactUsername,
           lastMessageText: snippet || text,
@@ -1872,10 +1894,15 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // ── WatermelonDB: persist optimistic media message ─────────────────────
     (async () => {
       try {
+        const existingConv = conversationsRef.current.find((c) => c.id === conversationId);
+        const resolvedContact = getResolvedContact({ userId: receiverId });
+        const convAvatar = existingConv?.avatarUrl || resolvedContact?.avatarUrl;
+
         await dbUpsertConversation({
           serverId: conversationId,
           type: 'DIRECT',
           recipientDbId: receiverId,
+          avatarUrl: convAvatar,
           lastMessageText: caption || '📷 Photo',
           lastMessageAt: newMsg.createdAtMs,
           lastMessageIsMe: true,
@@ -2097,10 +2124,15 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // Persist to local SQLite
     (async () => {
       try {
+        const existingConv = conversationsRef.current.find((c) => c.id === conversationId);
+        const resolvedContact = getResolvedContact({ userId: receiverId });
+        const convAvatar = existingConv?.avatarUrl || resolvedContact?.avatarUrl;
+
         await dbUpsertConversation({
           serverId: conversationId,
           type: 'DIRECT',
           recipientDbId: receiverId,
+          avatarUrl: convAvatar,
           lastMessageText: '🎤 Voice message',
           lastMessageAt: newMsg.createdAtMs,
           lastMessageIsMe: true,

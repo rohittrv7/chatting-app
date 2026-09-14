@@ -35,11 +35,17 @@ export class ConversationRepository {
       },
     });
 
-    return convs.find((c: (typeof convs)[number]) => c.members.length === 2) || null;
+    const conv = convs.find((c: (typeof convs)[number]) => c.members.length === 2) || null;
+    if (!conv) return null;
+    const otherMember = conv.members.find((m) => m.userId === userBId);
+    return {
+      ...conv,
+      avatarUrl: otherMember?.user?.avatarUrl || conv.avatarUrl || null,
+    };
   }
 
   async createDirectConversation(userAId: string, userBId: string) {
-    return this.prisma.conversation.create({
+    const created = await this.prisma.conversation.create({
       data: {
         type: ConversationType.DIRECT,
         members: {
@@ -66,6 +72,12 @@ export class ConversationRepository {
         },
       },
     });
+
+    const otherMember = created.members.find((m) => m.userId === userBId);
+    return {
+      ...created,
+      avatarUrl: otherMember?.user?.avatarUrl || created.avatarUrl || null,
+    };
   }
 
   async createGroupConversation(
@@ -165,19 +177,24 @@ export class ConversationRepository {
       orderBy: { updatedAt: 'desc' },
     });
 
-    // For DIRECT conversations, derive a human-readable title from the other member's
-    // displayName or username so the mobile never shows the raw enum string "DIRECT".
+    // For DIRECT conversations, derive a human-readable title and avatar from the other member's
+    // profile so the client receives the contact's avatarUrl directly on the conversation object.
     return rows.map((conv) => {
-      if (conv.type !== 'DIRECT' || (conv.title && conv.title !== 'DIRECT')) return conv;
-
       const otherMember = conv.members.find((m) => m.userId !== targetUserId);
       const derivedTitle =
-        otherMember?.user?.displayName ||
-        otherMember?.user?.username ||
-        otherMember?.user?.phoneNumber ||
-        null;
+        conv.type === 'DIRECT' && (!conv.title || conv.title === 'DIRECT')
+          ? otherMember?.user?.displayName ||
+            otherMember?.user?.username ||
+            otherMember?.user?.phoneNumber ||
+            null
+          : conv.title;
 
-      return { ...conv, title: derivedTitle };
+      const derivedAvatarUrl =
+        conv.type === 'DIRECT'
+          ? otherMember?.user?.avatarUrl || conv.avatarUrl || null
+          : conv.avatarUrl || null;
+
+      return { ...conv, title: derivedTitle, avatarUrl: derivedAvatarUrl };
     });
   }
 

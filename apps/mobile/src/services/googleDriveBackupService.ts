@@ -110,7 +110,7 @@ export interface BackupMetadata {
   accountEmail: string;
 }
 
-export type BackupFrequency = 'daily' | 'weekly' | 'monthly' | 'manual';
+export type BackupFrequency = 'never' | 'daily' | 'weekly' | 'monthly' | 'manual';
 export type BackupNetworkType = 'wifi' | 'cellular';
 
 export interface BackupSettings {
@@ -162,9 +162,19 @@ export const MOCK_GOOGLE_ACCOUNTS: GoogleAccount[] = [];
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
 
 function getClientId(): string {
-  if (Platform.OS === 'ios') return GOOGLE_CLIENT_ID_IOS;
-  if (Platform.OS === 'android') return GOOGLE_CLIENT_ID_ANDROID;
-  return GOOGLE_CLIENT_ID_WEB; // Expo Go / web
+  // For browser-based OAuth with custom URI redirect (expo-auth-session / WebBrowser),
+  // Google OAuth requires a Web Application Client ID.
+  // Android OAuth Client IDs cannot have redirect URIs and will cause Google to return "400: invalid_request" or custom scheme block.
+  if (GOOGLE_CLIENT_ID_WEB) {
+    return GOOGLE_CLIENT_ID_WEB;
+  }
+  if (Platform.OS === 'android' && GOOGLE_CLIENT_ID_ANDROID) {
+    return GOOGLE_CLIENT_ID_ANDROID;
+  }
+  if (Platform.OS === 'ios' && GOOGLE_CLIENT_ID_IOS) {
+    return GOOGLE_CLIENT_ID_IOS;
+  }
+  return GOOGLE_CLIENT_ID_WEB;
 }
 
 function getRedirectUri(): string {
@@ -625,7 +635,7 @@ async function importLocalDatabase(
 
 const DEFAULT_SETTINGS: BackupSettings = {
   account: null,
-  frequency: 'daily',
+  frequency: 'never',
   networkType: 'wifi',
   includeImages: true,
   includeVideos: false,
@@ -669,6 +679,12 @@ class GoogleDriveBackupService {
     const clientId = getClientId();
     const redirectUri = getRedirectUri();
 
+    console.log('[GoogleOAuth] Initiating Google Sign-In with:', {
+      clientId,
+      redirectUri,
+      platform: Platform.OS,
+    });
+
     const request = new AuthSession.AuthRequest({
       clientId,
       scopes: [
@@ -687,17 +703,48 @@ class GoogleDriveBackupService {
 
     await request.makeAuthUrlAsync(GOOGLE_DISCOVERY);
 
+    console.log('[GoogleOAuth] Opening browser prompt for OAuth...');
     const result = await request.promptAsync(GOOGLE_DISCOVERY);
+    console.log('[GoogleOAuth] Prompt finished with result:', JSON.stringify(result, null, 2));
 
     if (result.type !== 'success') {
+      const errorParam = (result as any).params?.error;
+      const errorDesc = (result as any).params?.error_description;
+      console.warn('[GoogleOAuth] OAuth prompt returned non-success:', {
+        type: result.type,
+        errorParam,
+        errorDesc,
+      });
+
+      if (result.type === 'cancel' || result.type === 'dismiss') {
+        throw new Error('Google Sign-In was cancelled.');
+      }
+
+      if (errorParam === 'access_denied' || errorParam === 'org_internal') {
+        throw new Error(
+          'Google blocked sign-in (Access Denied / Unverified App). In Google Cloud Console, ensure your test Google account is added under OAuth Consent Screen -> Test Users.',
+        );
+      }
+
+      if (errorParam === 'redirect_uri_mismatch') {
+        throw new Error(
+          `Google OAuth redirect URI mismatch. Please add "${redirectUri}" to Authorized Redirect URIs in Google Cloud Console for Client ID ${clientId}.`,
+        );
+      }
+
       throw new Error(
-        result.type === 'cancel'
-          ? 'Google Sign-In was cancelled.'
-          : `Google Sign-In failed: ${result.type}`,
+        errorDesc ||
+          (result as any).error?.message ||
+          `Google Sign-In failed (${result.type}): ${errorParam || 'Unknown error'}`,
       );
     }
 
+    if (!result.params?.code) {
+      throw new Error('Google Sign-In failed: No authorization code returned from Google.');
+    }
+
     // Exchange auth code for tokens
+    console.log('[GoogleOAuth] Exchanging authorization code for access & refresh tokens...');
     const tokenRes = await AuthSession.exchangeCodeAsync(
       {
         clientId,
@@ -785,17 +832,26 @@ class GoogleDriveBackupService {
     if (forceNoBackup === 'false') return { exists: false };
 
     try {
+      // Check if user has an active Google OAuth token
+      const tokenState = await loadTokenState();
+      if (!tokenState) {
+        // No Google account connected -> genuine Drive backup cannot exist
+        return { exists: false };
+      }
+
       // Check Drive directly (most authoritative source)
       const accessToken = await getValidAccessToken();
       const files = await driveListFiles(accessToken, BACKUP_META_FILE);
-      if (files.length === 0) return { exists: false };
+      if (!files || files.length === 0) return { exists: false };
 
       const meta = await this._fetchMetadataFromDrive();
-      return { exists: !!meta, metadata: meta ?? undefined };
-    } catch {
-      // If we can't reach Drive (no auth / offline), fall back to local cache
-      const meta = await this.getBackupMetadata();
-      return { exists: !!meta, metadata: meta ?? undefined };
+      if (!meta) return { exists: false };
+
+      return { exists: true, metadata: meta };
+    } catch (err) {
+      // If not authenticated or Drive API cannot verify file existence, return false
+      console.log('[GoogleDriveBackup] checkBackupExists: No valid backup found on Drive:', err);
+      return { exists: false };
     }
   }
 

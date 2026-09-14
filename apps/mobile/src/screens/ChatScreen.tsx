@@ -99,6 +99,7 @@ import {
   Upload,
 } from 'lucide-react-native';
 import { ensureMediaLibraryPermission } from '../services/permissionsService';
+import { saveLocalImageToGallery, normalizeLocalFileUri } from '../services/mediaSaveService';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Chat'>;
 
@@ -1342,45 +1343,26 @@ export const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
         }
       }
 
-      let permissionGranted = false;
-      try {
-        const { status } = await MediaLibrary.requestPermissionsAsync(false);
-        permissionGranted = status === 'granted';
-      } catch (_) {
-        permissionGranted = await ensureMediaLibraryPermission();
-      }
+      console.log('[ChatScreen] Saving prepared image to gallery. Local path:', localUri);
+      const saveResult = await saveLocalImageToGallery(localUri);
+      console.log('[ChatScreen] saveLocalImageToGallery result:', saveResult);
 
-      if (permissionGranted) {
-        try {
-          const asset = await MediaLibrary.createAssetAsync(localUri);
-          if (asset) {
-            try {
-              let album = await MediaLibrary.getAlbumAsync('WhatsApp');
-              if (!album) album = await MediaLibrary.getAlbumAsync('Pictures');
-              if (!album) {
-                await MediaLibrary.createAlbumAsync('WhatsApp', asset, false);
-              } else {
-                await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
-              }
-            } catch (_) {}
-            showToast('Saved to gallery 📸', 'success', 2500);
-            return;
-          }
-        } catch (mlErr: any) {
-          console.warn('MediaLibrary save error:', mlErr?.message || mlErr);
+      if (saveResult.success) {
+        showToast('Saved to gallery 📸', 'success', 2500);
+      } else {
+        console.warn('[ChatScreen] Direct gallery save failed:', saveResult.error);
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(normalizeLocalFileUri(localUri), {
+            mimeType: 'image/jpeg',
+            dialogTitle: 'Save Photo to Device',
+          });
+        } else {
+          showToast(`Could not save photo: ${saveResult.error || 'Failed'}`, 'error', 3000);
         }
       }
-
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(localUri, {
-          mimeType: 'image/jpeg',
-          dialogTitle: 'Save Photo to Device',
-        });
-      } else {
-        showToast('Could not save photo to gallery', 'error');
-      }
-    } catch {
-      showToast('Could not save photo', 'error');
+    } catch (err: any) {
+      console.error('[ChatScreen] handleDownloadPhoto error:', err);
+      showToast(`Could not save photo: ${err?.message || 'Unknown error'}`, 'error', 3000);
     }
   };
 

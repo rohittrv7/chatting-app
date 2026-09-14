@@ -34,7 +34,7 @@ export interface BackupMetadata {
   accountEmail: string;
 }
 
-export type BackupFrequency = 'daily' | 'weekly' | 'monthly' | 'manual';
+export type BackupFrequency = 'never' | 'daily' | 'weekly' | 'monthly' | 'manual';
 export type BackupNetworkType = 'wifi' | 'cellular';
 
 export interface BackupSettings {
@@ -102,8 +102,8 @@ export const MOCK_GOOGLE_ACCOUNTS: GoogleAccount[] = [
 ];
 
 const DEFAULT_SETTINGS: BackupSettings = {
-  account: MOCK_GOOGLE_ACCOUNTS[0],
-  frequency: 'daily',
+  account: null,
+  frequency: 'never',
   networkType: 'wifi',
   includeImages: true,
   includeVideos: false,
@@ -209,6 +209,11 @@ class MockBackupService {
     // Check if developer has forced "no backup" mode for testing Screen 3
     const forceNoBackup = await safeStorage.getItem(STORAGE_KEY_TEST_HAS_BACKUP);
     if (forceNoBackup === 'false') {
+      return { exists: false };
+    }
+
+    const settings = await this.getSettings();
+    if (!settings.account || settings.frequency === 'never') {
       return { exists: false };
     }
 

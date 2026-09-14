@@ -43,6 +43,7 @@ const KEY_LAST_BACKUP_ATTEMPT = '@chat_last_backup_attempt_ms';
 // ─── Frequency → minimum interval (ms) ───────────────────────────────────────
 
 const FREQUENCY_INTERVALS_MS: Record<BackupFrequency, number> = {
+  never: Infinity,
   daily: 24 * 60 * 60 * 1000, // 24 hours
   weekly: 7 * 24 * 60 * 60 * 1000, // 7 days
   monthly: 30 * 24 * 60 * 60 * 1000, // 30 days
@@ -76,7 +77,7 @@ async function isNetworkSuitable(networkType: BackupNetworkType): Promise<boolea
  * for the configured frequency.
  */
 async function isBackupDue(frequency: BackupFrequency): Promise<boolean> {
-  if (frequency === 'manual') return false;
+  if (frequency === 'never' || frequency === 'manual') return false;
 
   const minInterval = FREQUENCY_INTERVALS_MS[frequency];
   const lastBackupStr = await safeStorage.getItem(KEY_LAST_BACKUP_TIME);
@@ -117,9 +118,9 @@ TaskManager.defineTask(BACKGROUND_BACKUP_TASK, async () => {
       return BackgroundFetch.BackgroundFetchResult.NoData;
     }
 
-    // Manual frequency → skip auto-backup
-    if (settings.frequency === 'manual') {
-      console.log('[BackupScheduler] Manual frequency — skipping auto-backup');
+    // Never or Manual frequency → skip auto-backup
+    if (settings.frequency === 'never' || settings.frequency === 'manual') {
+      console.log(`[BackupScheduler] Frequency is ${settings.frequency} — skipping auto-backup`);
       return BackgroundFetch.BackgroundFetchResult.NoData;
     }
 
