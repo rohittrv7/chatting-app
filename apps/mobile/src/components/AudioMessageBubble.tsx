@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
 import { Play, Pause, Mic } from 'lucide-react-native';
-import { Audio, AVPlaybackStatus } from 'expo-av';
+import { createAudioPlayer, setAudioModeAsync, AudioPlayer, AudioStatus } from 'expo-audio';
 import * as FileSystem from 'expo-file-system/legacy';
 import nacl from 'tweetnacl';
 import type { ChatMessage } from '../types';
@@ -35,7 +35,7 @@ export const AudioMessageBubble: React.FC<AudioMessageBubbleProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [positionMs, setPositionMs] = useState(0);
   const [durationMs, setDurationMs] = useState<number>((message.audioDurationSeconds || 0) * 1000);
-  const soundRef = useRef<Audio.Sound | null>(null);
+  const playerRef = useRef<AudioPlayer | null>(null);
   const isSeekingRef = useRef(false);
 
   // Fallback audio URI
@@ -44,16 +44,17 @@ export const AudioMessageBubble: React.FC<AudioMessageBubbleProps> = ({
   // Cleanup on unmount
   useEffect(() => {
     return () => {
-      if (soundRef.current) {
-        soundRef.current.unloadAsync().catch(() => {});
-        soundRef.current = null;
+      if (playerRef.current) {
+        playerRef.current.pause();
+        playerRef.current.release();
+        playerRef.current = null;
       }
     };
   }, []);
 
-  const onPlaybackStatusUpdate = useCallback((status: AVPlaybackStatus) => {
+  const onPlaybackStatusUpdate = useCallback((status: AudioStatus) => {
     if (!status.isLoaded) {
-      if ('error' in status && status.error) {
+      if (status.error) {
         console.warn('Playback error:', status.error);
         setIsPlaying(false);
         setIsLoading(false);
@@ -61,20 +62,20 @@ export const AudioMessageBubble: React.FC<AudioMessageBubbleProps> = ({
       return;
     }
 
-    setIsPlaying(status.isPlaying);
+    setIsPlaying(status.playing);
     setIsLoading(false);
 
     if (!isSeekingRef.current) {
-      setPositionMs(status.positionMillis);
-      if (status.durationMillis) {
-        setDurationMs(status.durationMillis);
+      setPositionMs(Math.round(status.currentTime * 1000));
+      if (status.duration > 0) {
+        setDurationMs(Math.round(status.duration * 1000));
       }
     }
 
     if (status.didJustFinish) {
       setIsPlaying(false);
       setPositionMs(0);
-      soundRef.current?.setPositionAsync(0).catch(() => {});
+      playerRef.current?.seekTo(0).catch(() => {});
     }
   }, []);
 
@@ -147,18 +148,15 @@ export const AudioMessageBubble: React.FC<AudioMessageBubbleProps> = ({
   // Toggle play/pause
   const handleTogglePlay = useCallback(async () => {
     try {
-      if (soundRef.current) {
-        const status = await soundRef.current.getStatusAsync();
-        if (status.isLoaded) {
-          if (status.isPlaying) {
-            await soundRef.current.pauseAsync();
-            setIsPlaying(false);
-            return;
-          } else {
-            await soundRef.current.playAsync();
-            setIsPlaying(true);
-            return;
-          }
+      if (playerRef.current) {
+        if (isPlaying) {
+          playerRef.current.pause();
+          setIsPlaying(false);
+          return;
+        } else {
+          playerRef.current.play();
+          setIsPlaying(true);
+          return;
         }
       }
 
@@ -170,35 +168,33 @@ export const AudioMessageBubble: React.FC<AudioMessageBubbleProps> = ({
         return;
       }
 
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: false,
-        playsInSilentModeIOS: true,
+      await setAudioModeAsync({
+        allowsRecording: false,
+        playsInSilentMode: true,
       });
 
-      const { sound } = await Audio.Sound.createAsync(
-        { uri: uriToPlay },
-        { shouldPlay: true, progressUpdateIntervalMillis: 100 },
-        onPlaybackStatusUpdate,
-      );
+      const player = createAudioPlayer({ uri: uriToPlay }, { updateInterval: 100 });
+      player.addListener('playbackStatusUpdate', onPlaybackStatusUpdate);
 
-      soundRef.current = sound;
+      playerRef.current = player;
+      player.play();
       setIsPlaying(true);
     } catch (err) {
       console.warn('Voice message playback failed:', err);
       setIsLoading(false);
       setIsPlaying(false);
     }
-  }, [resolvePlayableUri, onPlaybackStatusUpdate]);
+  }, [isPlaying, resolvePlayableUri, onPlaybackStatusUpdate]);
 
   // Seek on waveform bar tap
   const handleSeek = useCallback(
     async (ratio: number) => {
-      if (!soundRef.current || durationMs <= 0) return;
+      if (!playerRef.current || durationMs <= 0) return;
       try {
         isSeekingRef.current = true;
         const targetMs = Math.floor(durationMs * ratio);
         setPositionMs(targetMs);
-        await soundRef.current.setPositionAsync(targetMs);
+        await playerRef.current.seekTo(targetMs / 1000);
       } catch (err) {
         console.warn('Seek failed:', err);
       } finally {

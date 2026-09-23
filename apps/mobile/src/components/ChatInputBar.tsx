@@ -17,7 +17,12 @@ import {
   PanResponder,
 } from 'react-native';
 import { Plus, X, Smile, Send, Mic, ChevronLeft } from 'lucide-react-native';
-import { Audio } from 'expo-av';
+import {
+  useAudioRecorder,
+  RecordingPresets,
+  setAudioModeAsync,
+  requestRecordingPermissionsAsync,
+} from 'expo-audio';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Haptics from 'expo-haptics';
 import { socketService } from '../services/socket';
@@ -73,7 +78,7 @@ const ChatInputBarComponent = forwardRef<ChatInputBarRef, ChatInputBarProps>(
     const [isRecording, setIsRecording] = useState(false);
     const [recordingDurationSec, setRecordingDurationSec] = useState(0);
     const [isCancelHighlighted, setIsCancelHighlighted] = useState(false);
-    const recordingRef = useRef<Audio.Recording | null>(null);
+    const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
     const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const recordingStartTimeRef = useRef<number>(0);
     const isCancelledRef = useRef(false);
@@ -132,12 +137,9 @@ const ChatInputBarComponent = forwardRef<ChatInputBarRef, ChatInputBarProps>(
     useEffect(() => {
       return () => {
         if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
-        if (recordingRef.current) {
-          recordingRef.current.stopAndUnloadAsync().catch(() => {});
-          recordingRef.current = null;
-        }
+        audioRecorder.stop().catch(() => {});
       };
-    }, []);
+    }, [audioRecorder]);
 
     // Stop typing helper
     const stopTyping = useCallback(() => {
@@ -197,22 +199,20 @@ const ChatInputBarComponent = forwardRef<ChatInputBarRef, ChatInputBarProps>(
     // ── Audio Recording Flow ──────────────────────────────────────────────────
     const startAudioRecording = useCallback(async () => {
       try {
-        const perm = await Audio.requestPermissionsAsync();
+        const perm = await requestRecordingPermissionsAsync();
         if (!perm.granted) {
           alert('Microphone permission is required to record voice messages.');
           return;
         }
 
-        await Audio.setAudioModeAsync({
-          allowsRecordingIOS: true,
-          playsInSilentModeIOS: true,
+        await setAudioModeAsync({
+          allowsRecording: true,
+          playsInSilentMode: true,
         });
 
-        const rec = new Audio.Recording();
-        await rec.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
-        await rec.startAsync();
+        await audioRecorder.prepareToRecordAsync();
+        audioRecorder.record();
 
-        recordingRef.current = rec;
         isCancelledRef.current = false;
         setIsCancelHighlighted(false);
         setIsRecording(true);
@@ -233,7 +233,7 @@ const ChatInputBarComponent = forwardRef<ChatInputBarRef, ChatInputBarProps>(
         console.warn('Failed to start recording:', err);
         setIsRecording(false);
       }
-    }, [panX]);
+    }, [audioRecorder, panX]);
 
     const stopAudioRecording = useCallback(
       async (shouldCancel: boolean) => {
@@ -242,17 +242,13 @@ const ChatInputBarComponent = forwardRef<ChatInputBarRef, ChatInputBarProps>(
           recordingTimerRef.current = null;
         }
 
-        const rec = recordingRef.current;
-        recordingRef.current = null;
         setIsRecording(false);
         setIsCancelHighlighted(false);
         panX.setValue(0);
 
-        if (!rec) return;
-
         try {
-          await rec.stopAndUnloadAsync();
-          const uri = rec.getURI();
+          await audioRecorder.stop();
+          const uri = audioRecorder.uri;
           const totalSec = (Date.now() - recordingStartTimeRef.current) / 1000;
 
           if (shouldCancel || totalSec < 1 || !uri) {
@@ -280,7 +276,7 @@ const ChatInputBarComponent = forwardRef<ChatInputBarRef, ChatInputBarProps>(
           console.warn('Failed to stop/send recording:', err);
         }
       },
-      [onSendAudio, panX],
+      [audioRecorder, onSendAudio, panX],
     );
 
     // PanResponder for drag-to-cancel gesture on Mic button

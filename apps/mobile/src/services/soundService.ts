@@ -6,9 +6,9 @@ try {
   Haptics = require('expo-haptics');
 } catch (_) {}
 
-let Audio: any = null;
+let ExpoAudio: any = null;
 try {
-  Audio = require('expo-av').Audio;
+  ExpoAudio = require('expo-audio');
 } catch (_) {}
 
 /**
@@ -264,14 +264,11 @@ class SoundService {
   private async _initNativeAudio() {
     if (Platform.OS === 'web') return;
     try {
-      if (Audio && !this.isAudioModeConfigured) {
-        await Audio.setAudioModeAsync({
-          playsInSilentModeIOS: true, // Ring even when iOS silent switch is on
-          allowsRecordingIOS: false,
-          staysActiveInBackground: true,
-          // Android: do NOT duck — calls must be heard at full volume
-          shouldDuckAndroid: false,
-          playThroughEarpieceAndroid: false, // Play through speaker by default
+      if (ExpoAudio?.setAudioModeAsync && !this.isAudioModeConfigured) {
+        await ExpoAudio.setAudioModeAsync({
+          playsInSilentMode: true,
+          allowsRecording: false,
+          shouldPlayInBackground: true,
         });
         this.isAudioModeConfigured = true;
       }
@@ -332,18 +329,18 @@ class SoundService {
   }
 
   private async _playNativeFile(fileUri: string, volume = 1.0) {
-    if (!Audio) return;
+    if (!ExpoAudio?.createAudioPlayer || !fileUri) return;
     try {
       await this._initNativeAudio();
-      if (!fileUri) return;
-
-      const { sound } = await Audio.Sound.createAsync(
-        { uri: fileUri },
-        { shouldPlay: true, volume },
-      );
-      sound.setOnPlaybackStatusUpdate((status: any) => {
-        if (status.didJustFinish || status.isLoaded === false) {
-          sound.unloadAsync().catch(() => {});
+      const player = ExpoAudio.createAudioPlayer({ uri: fileUri });
+      player.volume = volume;
+      player.play();
+      const sub = player.addListener?.('playbackStatusUpdate', (status: any) => {
+        if (status?.didJustFinish) {
+          try {
+            sub?.remove?.();
+            player.release?.();
+          } catch (_) {}
         }
       });
     } catch (_) {}
@@ -515,28 +512,27 @@ class SoundService {
       return;
     }
 
-    // Native expo-av implementation
+    // Native expo-audio implementation
     try {
       if (this._initPromise) await this._initPromise;
       await this._initNativeAudio();
-      if (this.currentSoundGeneration !== genAfterStop || !Audio) return;
+      if (this.currentSoundGeneration !== genAfterStop || !ExpoAudio?.createAudioPlayer) return;
 
       const source = this.ringbackFileUri
         ? { uri: this.ringbackFileUri }
         : { uri: `data:audio/wav;base64,${RINGBACK_BASE64}` };
 
-      const { sound } = await Audio.Sound.createAsync(source, {
-        shouldPlay: true,
-        isLooping: true,
-        volume: 1.0,
-      });
+      const player = ExpoAudio.createAudioPlayer(source);
+      player.volume = 1.0;
+      player.loop = true;
+      player.play();
       if (this.currentSoundGeneration !== genAfterStop) {
-        sound.stopAsync().catch(() => {});
-        sound.unloadAsync().catch(() => {});
+        player.pause?.();
+        player.release?.();
         return;
       }
-      this.activeLoopingSound = sound;
-      this.activeSounds.add(sound);
+      this.activeLoopingSound = player;
+      this.activeSounds.add(player);
       console.log('🔔 [SoundService] Outgoing ringback tone playing (Native)');
     } catch (e) {
       console.warn('Could not start ringback tone:', e);
@@ -596,28 +592,27 @@ class SoundService {
       return;
     }
 
-    // Native expo-av implementation
+    // Native expo-audio implementation
     try {
       if (this._initPromise) await this._initPromise;
       await this._initNativeAudio();
-      if (this.currentSoundGeneration !== genAfterStop || !Audio) return;
+      if (this.currentSoundGeneration !== genAfterStop || !ExpoAudio?.createAudioPlayer) return;
 
       const source = this.incomingRingtoneFileUri
         ? { uri: this.incomingRingtoneFileUri }
         : { uri: `data:audio/wav;base64,${INCOMING_RINGTONE_BASE64}` };
 
-      const { sound } = await Audio.Sound.createAsync(source, {
-        shouldPlay: true,
-        isLooping: true,
-        volume: 1.0,
-      });
+      const player = ExpoAudio.createAudioPlayer(source);
+      player.volume = 1.0;
+      player.loop = true;
+      player.play();
       if (this.currentSoundGeneration !== genAfterStop) {
-        sound.stopAsync().catch(() => {});
-        sound.unloadAsync().catch(() => {});
+        player.pause?.();
+        player.release?.();
         return;
       }
-      this.activeLoopingSound = sound;
-      this.activeSounds.add(sound);
+      this.activeLoopingSound = player;
+      this.activeSounds.add(player);
       console.log('🔔 [SoundService] Incoming call ringtone playing (Native)');
     } catch (e) {
       console.warn('Could not start incoming ringtone:', e);
@@ -648,16 +643,11 @@ class SoundService {
     }
     this.activeWebOscillators = [];
 
-    // Stop and unload native sounds
-    const unloadPromises: Promise<any>[] = [];
+    // Stop and release native players
     for (const snd of this.activeSounds) {
       try {
-        unloadPromises.push(
-          snd
-            .stopAsync()
-            .catch(() => {})
-            .then(() => snd.unloadAsync().catch(() => {})),
-        );
+        snd.pause?.();
+        snd.release?.();
       } catch (_) {}
     }
     this.activeSounds.clear();
@@ -666,16 +656,10 @@ class SoundService {
       const loopSnd = this.activeLoopingSound;
       this.activeLoopingSound = null;
       try {
-        unloadPromises.push(
-          loopSnd
-            .stopAsync()
-            .catch(() => {})
-            .then(() => loopSnd.unloadAsync().catch(() => {})),
-        );
+        loopSnd.pause?.();
+        loopSnd.release?.();
       } catch (_) {}
     }
-
-    await Promise.all(unloadPromises);
   }
 
   /**

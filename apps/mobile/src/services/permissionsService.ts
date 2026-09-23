@@ -16,7 +16,7 @@ import * as Contacts from 'expo-contacts';
 import * as ImagePicker from 'expo-image-picker';
 import * as MediaLibrary from 'expo-media-library';
 import { Camera as ExpoCamera } from 'expo-camera';
-import { Audio } from 'expo-av';
+import { requestRecordingPermissionsAsync, getRecordingPermissionsAsync } from 'expo-audio';
 
 // ─── Utility: open OS settings when a permission is permanently denied ────────
 
@@ -66,7 +66,15 @@ export const ensureCameraPermission = async (): Promise<boolean> => {
  */
 export const ensureMicrophonePermission = async (): Promise<boolean> => {
   try {
-    const { granted, canAskAgain } = await Audio.getPermissionsAsync();
+    if (Platform.OS === 'android') {
+      const { PermissionsAndroid } = require('react-native');
+      const androidGranted = await PermissionsAndroid.check(
+        PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
+      );
+      if (androidGranted) return true;
+    }
+
+    const { granted, canAskAgain } = await getRecordingPermissionsAsync();
     if (granted) return true;
 
     if (!canAskAgain) {
@@ -74,7 +82,7 @@ export const ensureMicrophonePermission = async (): Promise<boolean> => {
       return false;
     }
 
-    const result = await Audio.requestPermissionsAsync();
+    const result = await requestRecordingPermissionsAsync();
     if (!result.granted && !result.canAskAgain) {
       openSettingsPrompt('Microphone');
     }

@@ -3,7 +3,7 @@
     "name": "WhatsApp Connect",
     "slug": "whatsapp-connect",
     "scheme": "whatsappconnect",
-    "version": "1.0.7",
+    "version": "1.0.8",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -27,7 +27,7 @@
         "backgroundColor": "#0D0D0D"
       },
       "package": "com.anonymous.whatsappconnect",
-      "versionCode": 8,
+      "versionCode": 9,
       "allowBackup": false,
       "softwareKeyboardLayoutMode": "resize",
       "permissions": [
@@ -83,6 +83,12 @@
         "@config-plugins/react-native-webrtc",
         {
           "cameraPermission": "Allow WhatsApp Connect to access your camera for video calls.",
+          "microphonePermission": "Allow WhatsApp Connect to access your microphone for voice and video calls."
+        }
+      ],
+      [
+        "expo-audio",
+        {
           "microphonePermission": "Allow WhatsApp Connect to access your microphone for voice and video calls."
         }
       ],

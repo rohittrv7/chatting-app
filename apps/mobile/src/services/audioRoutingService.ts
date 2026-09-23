@@ -12,7 +12,7 @@
  * (allowsRecordingIOS, playsInSilentModeIOS).
  */
 import { Platform, DeviceEventEmitter } from 'react-native';
-import { Audio } from 'expo-av';
+import { setAudioModeAsync } from 'expo-audio';
 
 // Safe dynamic import — InCallManager is a native module.
 // metro.config.js maps this to inCallManagerShim.js in Expo Go / metro bundles.
@@ -25,7 +25,7 @@ try {
     InCallManager = null; // shim loaded — treat as unavailable
   }
 } catch (_) {
-  // Not available — expo-av fallback will be used
+  // Not available — expo-audio fallback will be used
 }
 
 export type AudioRoute = 'EARPIECE' | 'SPEAKER_PHONE' | 'BLUETOOTH' | 'WIRED_HEADSET';
@@ -121,16 +121,16 @@ class AudioRoutingService {
 
     this._setupEventListener();
 
-    // expo-av: configure iOS audio session for recording + playback
+    // expo-audio: configure audio session for recording + playback
     try {
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: true,
-        playsInSilentModeIOS: true,
-        staysActiveInBackground: true,
-        playThroughEarpieceAndroid: false, // InCallManager handles routing on Android
+      await setAudioModeAsync({
+        allowsRecording: true,
+        playsInSilentMode: true,
+        shouldPlayInBackground: true,
+        shouldRouteThroughEarpiece: false, // InCallManager handles routing on Android
       });
     } catch (err) {
-      console.warn('[AudioRoutingService] expo-av setAudioModeAsync:', err);
+      console.warn('[AudioRoutingService] setAudioModeAsync:', err);
     }
 
     // InCallManager: start native call audio session
@@ -161,15 +161,15 @@ class AudioRoutingService {
         this.currentStatus.selectedDevice = isVideo ? 'SPEAKER_PHONE' : 'EARPIECE';
       }
     } else {
-      // Fallback: expo-av only
+      // Fallback: expo-audio only
       this.currentStatus.selectedDevice = isVideo ? 'SPEAKER_PHONE' : 'EARPIECE';
       if (!isVideo) {
         try {
-          await Audio.setAudioModeAsync({
-            playThroughEarpieceAndroid: true,
-            allowsRecordingIOS: true,
-            playsInSilentModeIOS: true,
-            staysActiveInBackground: true,
+          await setAudioModeAsync({
+            shouldRouteThroughEarpiece: true,
+            allowsRecording: true,
+            playsInSilentMode: true,
+            shouldPlayInBackground: true,
           });
         } catch (_) {}
       }
@@ -198,13 +198,13 @@ class AudioRoutingService {
       }
     }
 
-    // Restore expo-av to normal media playback mode
+    // Restore audio to normal media playback mode
     try {
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: false,
-        playsInSilentModeIOS: true,
-        staysActiveInBackground: false,
-        playThroughEarpieceAndroid: false,
+      await setAudioModeAsync({
+        allowsRecording: false,
+        playsInSilentMode: true,
+        shouldPlayInBackground: false,
+        shouldRouteThroughEarpiece: false,
       });
     } catch (_) {}
 
@@ -258,13 +258,13 @@ class AudioRoutingService {
         console.warn('[AudioRoutingService] chooseAudioRoute error:', err);
       }
     } else {
-      // expo-av fallback: speaker/earpiece only
+      // expo-audio fallback: speaker/earpiece only
       try {
-        await Audio.setAudioModeAsync({
-          allowsRecordingIOS: true,
-          playsInSilentModeIOS: true,
-          staysActiveInBackground: true,
-          playThroughEarpieceAndroid: route === 'EARPIECE',
+        await setAudioModeAsync({
+          allowsRecording: true,
+          playsInSilentMode: true,
+          shouldPlayInBackground: true,
+          shouldRouteThroughEarpiece: route === 'EARPIECE',
         });
       } catch (_) {}
     }
